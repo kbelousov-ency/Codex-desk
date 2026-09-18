@@ -1,0 +1,56 @@
+.changes-panel .changes-summary {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+}
+
+.changes-summary small { color: #7e9285; font-size: 10px; line-height: 1.6; }
+.changes-panel .file-diff { background: #171d19; border-color: #344139; }
+.changes-panel .file-diff > summary { align-items: flex-start; gap: 8px; padding: 12px 10px; }
+.changes-panel .file-diff > summary > svg { margin-top: 2px; }
+.changes-panel .file-diff > summary > .change-file-heading { min-width: 0; overflow: visible; white-space: normal; }
+.change-path { display: block; font-size: 11px; font-weight: 500; line-height: 1.6; color: #d0ded3; overflow-wrap: anywhere; }
+.change-file-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 9px; margin-top: 5px; font-size: 9px; color: #859d8b; }
+.change-status { color: #a8c8b1; }
+.change-status.failed, .change-status.declined { color: #e1ad99; }
+.change-line-counts { display: inline-flex; gap: 7px; white-space: nowrap; font: 10px/1.5 'Cascadia Code', Consolas, monospace; }
+.change-line-counts b { font-weight: 500; }
+.change-file-toolbar { display: flex; align-items: center; gap: 8px; border-top: 1px solid #2d3730; padding: 7px 10px; color: #779080; }
+.change-file-toolbar .text-button { font-size: 10px; padding: 3px 0; text-align: left; }
+.change-file-toolbar small { margin-left: auto; font-size: 9px; }
+.change-patch + .change-patch { border-top: 1px solid #35423a; }
+.change-patch-label { display: flex; flex-wrap: wrap; gap: 5px 8px; align-items: center; padding: 9px 10px; background: #1b231e; font-size: 10px; color: #9cb3a3; }
+.change-patch-label > strong { font-weight: 500; color: #c7d7ca; }
+.change-patch-label .change-line-counts { margin-left: auto; }
+.change-move-path { padding: 8px 10px; font-size: 10px; color: #a1b7a9; overflow-wrap: anywhere; }
+.changes-panel .change-turn-diff { margin-top: 18px; border-style: dashed; }
+.change-turn-heading { font-size: 10px; line-height: 1.7; }
+.changes-panel .file-diff > summary > .change-turn-heading { overflow: visible; white-space: normal; }
+.change-turn-heading .change-line-counts { display: flex; margin-top: 4px; }
+.changes-panel .file-full-path { font-size: 10px; }
+
+/* A narrow side panel must keep every source line visible without sideways scrolling. */
+pre.diff-code {
+  margin: 0;
+  max-height: 480px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  font: 11px/1.75 'Cascadia Code', Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+pre.diff-code > .diff-line {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  padding: 1px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-left: 2px solid transparent;
+}
+pre.diff-code > .diff-add { border-left-color: #729f79; background: #24462a80; color: #bce2c2; }
+pre.diff-code > .diff-remove { border-left-color: #b47c65; background: #53352666; color: #e2b4a1; }
+pre.diff-code > .diff-range { padding-top: 6px; padding-bottom: 6px; color: #aebedb; font-size: 10px; line-height: 1.6; }
+pre.diff-code > .diff-header { color: #819789; font-size: 10px; }

@@ -1,0 +1,22 @@
+/* A familiar left/right conversation without narrowing code or changing its content. */
+.conversation .message{display:flex;flex-direction:column;align-items:flex-start;min-width:0;margin-bottom:18px}
+.conversation .message-label{gap:7px;min-height:22px;margin-bottom:5px;width:100%;font-size:10px}
+.conversation .message-avatar{width:20px;height:20px;border-radius:6px}
+.conversation .message-content{min-width:0;max-width:100%;padding:10px 13px;border:1px solid #303b34;border-radius:3px 13px 13px;background:#1d2420}
+.conversation .assistant-message{max-width:94%;margin-right:auto}
+.conversation .assistant-message .message-content{width:fit-content}
+.conversation .assistant-message .copy-button{width:23px;height:23px;margin-left:2px}
+.conversation .user-message{align-items:flex-end;margin-left:auto;max-width:82%;width:fit-content}
+.conversation .user-message .message-label{justify-content:flex-end;color:#9eb7a9}
+.conversation .user-message .message-avatar{order:1;background:#3a5042;border-color:#506956;color:#d0e2d4}
+.conversation .user-avatar>.pixel-avatar{flex-shrink:0;color:#c6e2ce}
+.notice-alert>.continue-button{display:inline-flex;align-items:center;gap:5px;flex-shrink:0;padding:5px 8px;border:1px solid #52654a;border-radius:5px;background:#35432f;color:#d1e5c5;font-size:11px;white-space:nowrap}
+.notice-alert>.continue-button:hover:not(:disabled){background:#46573e;color:#e8f2e2}
+.conversation .user-message .message-content{padding:10px 13px;border-color:#405749;background:#2b3c32;border-radius:13px 3px 13px 13px}
+.conversation .user-message .user-text{color:#e0e9e1}
+.conversation .message-images{max-width:100%;margin-bottom:6px}
+.conversation .message-images img{max-width:100%}
+.conversation .work-log{margin-left:0;max-width:94%}
+.conversation .work-log[open]>.work-log-summary{top:var(--chat-search-offset,0px)}
+.conversation .message-content>.markdown,.conversation .message-content>.user-text{line-height:1.6}
+@media(max-width:700px){.conversation .assistant-message,.conversation .work-log{max-width:100%}.conversation .user-message{max-width:90%}.conversation .message-content,.conversation .user-message .message-content{padding:9px 11px}}

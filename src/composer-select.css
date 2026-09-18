@@ -1,0 +1,12 @@
+.composer-picker{min-width:0;max-width:100%}
+.composer-select-trigger.select-chip{border:1px solid transparent;min-height:30px;padding:5px 8px;gap:7px;border-radius:7px;cursor:pointer;max-width:100%;color:#b7cdbf}
+.composer-select-trigger>span{min-width:0;max-width:145px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;line-height:1.5;text-align:left}
+.composer-select-trigger.effort-select>span{max-width:120px}
+.composer-select-trigger:hover,.composer-select-trigger[aria-expanded=true]{background:#304037;border-color:#506959;color:#e0eee4}
+.composer-select-trigger>svg:last-child{transition:transform .15s}.composer-chevron-open{transform:rotate(180deg)}
+.composer-select-menu{z-index:40;box-sizing:border-box;overflow:auto;padding:5px;background:#1b2420;color:#bfd3c5;border:1px solid #485e50;border-radius:10px;box-shadow:0 14px 40px #0009;scrollbar-width:thin}
+.composer-menu-heading{display:flex;align-items:center;gap:8px;padding:7px 10px 10px;color:#829d8c;font-size:10px;border-bottom:1px solid #33473b;margin-bottom:4px}
+.composer-select-option{display:flex;align-items:center;gap:12px;padding:8px 10px;min-height:35px;border:1px solid transparent;border-radius:6px;cursor:pointer;font-size:12px;line-height:1.5}
+.composer-select-option>span{flex:1;min-width:0;overflow-wrap:anywhere}
+.composer-select-option[aria-selected=true]{color:#d9efdf;background:#293b30}.composer-select-option.highlighted{background:#304537;border-color:#526e5a}.composer-select-option>svg{color:#bfdfbf;flex-shrink:0}
+@media(max-width:700px){.composer-select-trigger.select-chip{gap:5px;padding:4px 6px}.composer-select-trigger>span{max-width:123px}.composer-select-trigger.effort-select>span{max-width:100px}}

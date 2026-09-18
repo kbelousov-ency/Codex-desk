@@ -1,0 +1,42 @@
+/* Dense navigation and chat spacing; keep the text legible. */
+.workspace-shell .sidebar>.brand{margin-bottom:8px}
+.new-project{display:flex;align-items:center;gap:7px;width:100%;padding:6px 7px;margin:0 0 8px;min-height:29px;border:1px solid transparent;border-radius:6px;text-align:left;color:#a8beb0;font-size:11px;line-height:17px}
+.new-project:hover{background:#253129;border-color:#394d40;color:#d4e7db}
+.folder-tree-entry{margin-bottom:1px}
+.folder-tree-row{min-height:26px}
+.folder-toggle{padding:4px 7px;line-height:18px}
+.folder-threads{margin-top:0;margin-bottom:3px}
+.folder-thread{padding:3px 7px;min-height:24px;line-height:18px}
+.folder-history-status{padding:4px 7px;line-height:1.4}
+.folder-history-more{padding:4px 7px}
+.file-browser .file-browser-header{gap:7px;padding:5px 8px 8px;margin-bottom:4px}
+.file-browser .file-browser-header>div{gap:2px}
+.file-browser .tree-file-row{min-height:24px;padding-top:3px;padding-bottom:3px;line-height:18px;gap:5px}
+.file-browser .tree-file-feedback{margin:2px 3px;padding:4px 6px;line-height:1.4}
+.file-browser .tree-file-more{margin:1px 0 2px 20px;padding:4px 8px}
+.details-panel .panel-content{padding:12px 12px}
+.details-panel .activity-list{gap:5px}
+.details-panel .activity-item>summary{min-height:28px;padding:5px 8px;line-height:17px}
+.details-panel .activity-body{padding:7px 8px}
+.details-panel .command-output{padding:7px;margin-top:6px;margin-bottom:5px;line-height:1.45}
+.details-panel .plan-card{margin-bottom:10px;padding:9px}
+.details-panel .plan-step{margin:6px 0;line-height:1.4}
+.details-panel .changes-panel .file-diff{margin-bottom:6px}
+.details-panel .changes-panel .file-diff>summary{padding:7px 8px;min-height:30px;gap:6px}
+.details-panel .change-path{line-height:1.4}
+.details-panel .change-file-meta{margin-top:3px;gap:3px 7px}
+.details-panel .change-patch-label{padding:6px 8px}
+.details-panel pre.diff-code{line-height:1.5}
+.details-panel .panel-footnote{padding:18px 5px 4px;line-height:1.45;font-size:10px}
+.conversation{padding-top:20px;padding-bottom:12px}
+.message{margin-bottom:18px}
+.message-content{padding-top:5px}
+.message-content>.markdown,.message-content>.user-text{line-height:1.6}
+.markdown p{margin-bottom:10px}
+.markdown li{margin-top:3px;margin-bottom:3px}
+.markdown ul,.markdown ol{margin-top:6px;margin-bottom:11px}
+.markdown h1,.markdown h2,.markdown h3,.markdown h4{margin-top:16px;margin-bottom:8px;line-height:1.4}
+.working-indicator{margin-top:3px;font-size:10px}
+.reasoning-card{margin-bottom:10px}
+.reasoning-card summary{min-height:28px}
+.reasoning-body .markdown{line-height:1.5}

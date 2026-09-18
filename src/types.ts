@@ -1,0 +1,74 @@
+export type Access = 'inherited' | 'auto' | 'read-only' | 'workspace-write' | 'danger-full-access';
+export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string };
+export type BridgeEvent = { type: 'notification' | 'serverRequest' | 'status' | 'diagnostic' | 'terminal' | 'mcp'; data: any };
+export type Attachment = { name: string; dataUrl: string; path?: string };
+export type Item = { id: string; type: string; turnId?: string; complete?: boolean; [key: string]: any };
+// Internal timestamps are milliseconds; App Server turn timestamps are seconds.
+export type TurnWork = { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; answerStartedAt?: number };
+export type Thread = { id: string; name?: string; preview?: string; cwd?: string; updatedAt?: number; turns?: any[]; [key: string]: any };
+export type ThreadAction = 'rename' | 'archive' | 'delete' | 'restore';
+export type ArchivedThreadPage = { thread: Thread; items: Item[]; turns: any[]; nextCursor: string | null };
+export type Request = { id: number | string; method: string; params: any };
+export type Model = { id: string; model: string; displayName: string; hidden?: boolean; isDefault?: boolean; defaultReasoningEffort: string; supportedReasoningEfforts: { reasoningEffort: string; description: string }[]; inputModalities?: string[] };
+
+export type SessionInfo = { id: string; cwd: string };
+export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[] };
+export type UpdateSnapshot = { version: 1; activeIndex: number; tabs: UpdateTabSnapshot[] };
+export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[] };
+export type UpdateStatus = { state: 'waiting' | 'preparing' | 'error'; message?: string };
+export type WorkspaceInfo = { projects: string[]; sessions: SessionInfo[]; restore?: { activeIndex: number; tabs: RestoredTab[] } };
+export type BuildInfo = { channel: 'stable' | 'nightly' | 'development'; version: string; buildId?: string; builtAt?: string };
+export type DiagnosticsStatus = { enabled: boolean; directory: string | null; error?: string };
+export type RendererErrorReport = { kind: 'error' | 'unhandledrejection' | 'react'; name?: string; message?: string; stack?: string; componentStack?: string };
+export type ProjectFile = { name: string; path: string; type: 'directory' | 'file' | 'link' };
+export type ProjectFilePage = { path: string; entries: ProjectFile[]; nextCursor: number | null };
+export type McpServerSummary = { name: string; transport: 'http' | 'stdio'; address: string; enabled: boolean; headerNames: string[]; envNames: string[] };
+export type McpConfigInfo = { configPath: string; servers: McpServerSummary[] };
+export type McpImportPreview = { previewId: string; configPath: string; servers: (McpServerSummary & { exists: boolean })[]; conflicts: string[] };
+export type McpSaveResult = { configPath: string; backupPath: string | null; servers: string[]; message?: string };
+export type McpConnectionReport = { servers: { name: string; authStatus: string; status: string; toolCount: number }[]; message?: string };
+export interface CodexBridge {
+  start(options?: { cwd?: string }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string }>;
+  request(method: string, params?: any): Promise<any>;
+  respond(id: number | string, result: any): Promise<void>;
+  chooseDirectory(): Promise<string | null>;
+  saveImages(images: Attachment[]): Promise<Attachment[]>;
+  readAttachment(path: string): Promise<string | null>;
+  onEvent(listener: (event: BridgeEvent) => void): () => void;
+  getSettings(): Promise<Settings>;
+  setSettings(settings: Partial<Settings>): Promise<void>;
+  openPath(path: string): Promise<void>;
+  showPathMenu(path: string): Promise<void>;
+  listFiles(relativePath?: string, cursor?: number): Promise<ProjectFilePage>;
+  chooseExecutable(): Promise<string | null>;
+  openTerminal(options: { threadId: string; model: string; effort: string; access: Access }): Promise<{ threadId: string }>;
+  getMcpConfig(): Promise<McpConfigInfo>;
+  previewMcpImport(text: string): Promise<McpImportPreview>;
+  saveMcpImport(options: { previewId: string; replaceExisting: boolean }): Promise<McpSaveResult>;
+  reloadMcp(): Promise<{ status: 'applied' | 'deferred'; message: string }>;
+  checkMcp(): Promise<McpConnectionReport>;
+}
+export interface WorkspaceBridge extends CodexBridge {
+  getBuildInfo(): Promise<BuildInfo>;
+  getDiagnosticsStatus(): Promise<DiagnosticsStatus>;
+  exportDiagnostics(): Promise<{ canceled: boolean; path?: string }>;
+  openDiagnosticsFolder(): Promise<void>;
+  reportRendererError(report: RendererErrorReport): void;
+  getWorkspace(): Promise<WorkspaceInfo>;
+  onUpdatePrepare(listener: (request: { requestId: string }) => void): () => void;
+  onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
+  completeUpdatePrepare(result: { requestId: string; snapshot?: UpdateSnapshot; defer?: boolean }): Promise<void>;
+  completeUpdateRestore(): Promise<void>;
+  listProjectThreads(cwd: string, cursor?: string): Promise<{ data: Thread[]; nextCursor: string | null }>;
+  searchThreads(options: { query: string; archived: boolean; cursor?: string }): Promise<{ data: Thread[]; nextCursor: string | null }>;
+  listArchivedThreads(cursor?: string): Promise<{ data: Thread[]; nextCursor: string | null }>;
+  readArchivedThread(options: { threadId: string; cursor?: string }): Promise<ArchivedThreadPage>;
+  openArchivedPath(options: { threadId: string; target: string; menu?: boolean }): Promise<void>;
+  manageThread(options: { action: ThreadAction; threadId: string; cwd: string; name?: string }): Promise<{ thread?: Thread; affectedThreadIds?: string[] }>;
+  createSession(options?: { cwd?: string; fromSessionId?: string; settings?: Settings }): Promise<SessionInfo | null>;
+  closeSession(id: string): Promise<void>;
+  forSession(id: string): CodexBridge;
+}
+declare global {
+  interface Window { codex: WorkspaceBridge; }
+}

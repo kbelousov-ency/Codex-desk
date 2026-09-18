@@ -1,0 +1,7 @@
+.command-menu{position:absolute;bottom:calc(100% + 8px);left:0;right:0;z-index:18;max-height:min(390px,60vh);overflow:auto;padding:6px;background:#1b2420;border:1px solid #485f50;border-radius:10px;box-shadow:0 12px 38px #0008}
+.command-menu-heading{display:flex;align-items:center;gap:8px;padding:7px 9px 10px;color:#8fa695;font-size:10px;border-bottom:1px solid #314438;margin-bottom:4px}
+.command-menu-option{display:flex;align-items:center;gap:14px;text-align:left;width:100%;padding:7px 9px;border:1px solid transparent;border-radius:6px}
+.command-menu-option.selected,.command-menu-option:hover{background:#2c4033;border-color:#496350}
+.command-menu-option>code{min-width:86px;font:11px Consolas,monospace;color:#b7d7c1}.command-menu-option>span{min-width:0}.command-menu-option strong{display:block;font-size:11px;color:#c9ddce;font-weight:550}.command-menu-option small{display:block;color:#8ba493;font-size:10px;line-height:1.5;margin-top:2px}
+.command-history{padding:14px 20px;display:flex;flex-direction:column;gap:4px;max-height:55vh;overflow:auto}.command-history>button{text-align:left;padding:8px 10px;border-radius:6px;font-size:12px;color:#c4d9ca}.command-history>button:hover{background:#2c3d32}
+.token-compact-action{display:flex;align-items:center;gap:8px;width:100%;text-align:left;justify-content:center}

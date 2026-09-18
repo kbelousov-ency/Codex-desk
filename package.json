@@ -1,0 +1,92 @@
+{
+  "name": "codex-desk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local desktop interface for Codex CLI",
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc --noEmit && vite build",
+    "start": "node scripts/start.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "test:ui": "node scripts/ui-smoke.mjs",
+    "package": "npm run build && node scripts/package.mjs",
+    "package:nightly": "npm run package",
+    "release:promote": "node scripts/promote.mjs",
+    "release:rollback": "node scripts/rollback.mjs",
+    "release:cleanup": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/cleanup-releases.ps1",
+    "test:build-channel": "node scripts/ui-build-channel.mjs",
+    "test:release-host": "node scripts/ui-release-host.mjs",
+    "test:nightly-restore": "node scripts/ui-nightly-restore.mjs",
+    "test:nightly-update-host": "node scripts/ui-nightly-update-host.mjs",
+    "test:scenarios": "node scripts/ui-scenarios.mjs",
+    "test:resume": "node scripts/ui-resume.mjs",
+    "test:continue": "node scripts/ui-continue.mjs",
+    "test:continue-host": "node scripts/ui-continue-host.mjs",
+    "test:diagnostics-ui": "node scripts/ui-diagnostics.mjs",
+    "test:diagnostics-host": "node scripts/ui-diagnostics-host.mjs",
+    "test:scroll": "node scripts/ui-scroll.mjs",
+    "test:sessions": "node scripts/ui-tabs.mjs",
+    "test:tabs": "node scripts/ui-tabs-browser.mjs",
+    "test:links": "node scripts/ui-links.mjs",
+    "test:cache": "node scripts/ui-cache.mjs",
+    "test:cache-history": "node scripts/ui-cache-history.mjs",
+    "test:cache-history-host": "node scripts/ui-cache-history-host.mjs",
+    "test:project-tree": "node scripts/ui-project-tree.mjs",
+    "test:panels": "node scripts/ui-panels.mjs",
+    "test:model-menus": "node scripts/ui-model-menus.mjs",
+    "test:access": "node scripts/ui-access.mjs",
+    "test:work-log": "node scripts/ui-work-log.mjs",
+    "test:work-collapse": "node scripts/ui-work-collapse.mjs",
+    "test:token-details": "node scripts/ui-token-details.mjs",
+    "test:commands": "node scripts/ui-commands.mjs",
+    "test:commands-host": "node scripts/ui-commands-host.mjs",
+    "test:terminal": "node scripts/ui-terminal.mjs",
+    "test:terminal-host": "node scripts/ui-terminal-host.mjs",
+    "test:archive": "node scripts/ui-archive.mjs",
+    "test:archive-host": "node scripts/ui-archive-host.mjs",
+    "test:mcp": "node scripts/ui-mcp.mjs",
+    "test:mcp-host": "node scripts/ui-mcp-host.mjs",
+    "test:mcp-native": "node scripts/mcp-native-smoke.mjs",
+    "test:chat-search": "node scripts/ui-chat-search.mjs",
+    "test:search-host": "node scripts/ui-search-host.mjs"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "lucide-react": "^0.468.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.5.0",
+    "electron": "^44.4.1",
+    "electron-builder": "^26.0.12",
+    "playwright": "^1.55.0",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "local.codex.desk",
+    "productName": "Codex Desk",
+    "directories": {
+      "output": "artifacts/channel-build/output"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "dir",
+      "icon": "electron/icon.ico",
+      "signExecutable": false
+    },
+    "asar": true
+  }
+}

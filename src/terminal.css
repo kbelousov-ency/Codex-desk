@@ -1,0 +1,5 @@
+.terminal-button{display:inline-flex;align-items:center;gap:5px;flex-shrink:0;padding:4px 6px;border:1px solid transparent;border-radius:5px;color:#9aafa2;font-size:9px;white-space:nowrap}
+.terminal-button:hover:not(:disabled){background:#29382f;color:#d1e6d7;border-color:#3d5446}
+.terminal-button:disabled{opacity:.45;cursor:default}
+.terminal-button.terminal-open{opacity:1;color:#abcbb8;background:#26332b}
+@media(max-width:700px){.composer-footer{flex-wrap:wrap;gap:6px}.composer-footer>.terminal-button{padding-left:0}}

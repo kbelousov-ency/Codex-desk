@@ -1,0 +1,15 @@
+.brand .version-badge.build-badge{display:inline-block;flex-shrink:0;font-size:7px;letter-spacing:.55px;padding:3px 4px;line-height:11px;cursor:help}
+.build-badge.stable{color:#b6d8cc;border-color:#466150;background:#20352a}
+.build-badge.nightly{color:#d3c0f4;border-color:#645179;background:#32273f}
+.build-badge.development{color:#b3bbc2;border-color:#48515a}
+.build-details{padding:13px 0 12px;margin-bottom:13px;border-bottom:1px solid #344034}
+.build-details>strong{display:flex;align-items:center;gap:8px;color:#d2e0d7;font-size:12px;font-weight:550}
+.build-channel-text{font-size:9px;letter-spacing:.65px;color:#b6d8cc}
+.build-channel-text.nightly{color:#d3c0f4}
+.build-channel-text.development{color:#b3bbc2}
+.build-details dl{display:flex;flex-wrap:wrap;gap:5px 20px;margin:8px 0 0;font-size:11px}
+.build-details dl>div{display:flex;gap:7px}
+.build-details dt{color:#819689}
+.build-details dd{margin:0;color:#bed0c4;user-select:text}
+.diagnostics-content>.build-details-unavailable{padding-top:13px;color:#819689;font-size:11px}
+@media(max-width:1200px){.brand:has(.build-badge){gap:5px;font-size:17px}.brand:has(.build-badge) .brand-mark{width:26px;height:26px;flex-shrink:0}.brand .version-badge.build-badge{font-size:6.5px;letter-spacing:.35px;padding:2px 3px}}

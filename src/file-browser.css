@@ -1,0 +1,21 @@
+.file-browser { min-width: 0; font-size: 12px; }
+.file-browser-header { display: flex; align-items: center; gap: 10px; padding: 3px 0 16px; margin-bottom: 9px; border-bottom: 1px solid var(--line, #29302d); color: var(--text-secondary, #a5b7ad); }
+.file-browser-header > svg { flex-shrink: 0; color: var(--accent, #aecfc0); }
+.file-browser-header > div { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 5px; }
+.file-browser-header strong { color: var(--text, #e1e8e4); font-size: 12px; font-weight: 600; }
+.file-browser-header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-muted, #7d9187); }
+.tree-file-list { padding: 0; margin: 0; list-style: none; }
+.tree-file-row { width: 100%; min-width: 0; min-height: 31px; display: flex; align-items: center; gap: 7px; padding: 6px 6px 6px calc(3px + var(--tree-depth, 0) * 13px); border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary, #a5b7ad); text-align: left; font-size: 12px; cursor: pointer; }
+.tree-file-row:hover { background: #222b26; color: #e1e8e4; }
+.tree-file-row:focus-visible { outline: 1px solid #aecfc0; outline-offset: -1px; background: #222b26; }
+.tree-file-row > svg, .tree-file-chevron-space { flex-shrink: 0; }
+.tree-file-directory > svg:nth-child(2) { color: #abc6b8; }
+.tree-file-chevron { color: #7d9187; transition: transform 120ms ease; }
+.tree-file-chevron.expanded { transform: rotate(90deg); }
+.tree-file-chevron-space { width: 12px; }
+.tree-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-file-kind { color: #7d9187; font-size: 10px; flex-shrink: 0; }
+.tree-file-feedback { display: flex; gap: 6px; align-items: center; margin: 5px 3px; padding: 6px; color: #7d9187; font-size: 11px; line-height: 1.6; }
+.tree-file-feedback > svg { flex-shrink: 0; }
+.tree-file-error { color: #e0a38d; align-items: flex-start; flex-wrap: wrap; overflow-wrap: anywhere; }
+.tree-file-more { padding: 6px 10px; margin: 3px 0 5px 20px; }
