@@ -1,4 +1,5 @@
-import { ChevronRight, LoaderCircle, MessageSquare, Plus, RefreshCw } from 'lucide-react';
+import { ChevronRight, LoaderCircle, Plus, RefreshCw } from 'lucide-react';
+import AgentLogo from './AgentLogo';
 import { folderName } from './useCodex';
 import type { Thread } from './types';
 import ThreadMenu, { type ThreadAction } from './ThreadMenu';
@@ -55,8 +56,7 @@ export default function ProjectTree({ controls, active = true }: { controls: Pro
             const title = thread.name || thread.preview || 'Новый диалог';
             const selected = activeFolder && controls.activeThreadId === thread.id;
             return <div className={`folder-thread-row ${selected ? 'active' : ''}`} key={thread.id}>
-              <button className={`folder-thread ${selected ? 'active' : ''}`} data-thread-id={thread.id} aria-current={selected ? 'page' : undefined} title={title} disabled={controls.opening} onClick={() => controls.openThread(cwd, thread)}><MessageSquare size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
-              {thread.id.startsWith('claude:') && <span className="provider-history-label">Claude</span>}
+              <button className={`folder-thread ${selected ? 'active' : ''}`} data-thread-id={thread.id} aria-current={selected ? 'page' : undefined} title={title} disabled={controls.opening} onClick={() => controls.openThread(cwd, thread)}><AgentLogo provider={thread.id.startsWith('claude:') ? 'claude' : 'codex'} size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
               {controls.threadAction && <ThreadMenu title={title} threadId={thread.id} archivable={!thread.id.startsWith('claude:')} active={active} disabled={controls.opening || controls.actionBusy || controls.threadLocked?.(thread.id)} onAction={action => controls.threadAction?.(action, cwd, thread)} />}
             </div>;
           })}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Archive, Bell, FolderPlus, LoaderCircle, MessageSquare, Plus, Terminal, X } from 'lucide-react';
+import AgentLogo from './AgentLogo';
 import App, { type SessionSummary, type WorkspaceControls } from './App';
 import { projectKey, type ProjectHistory } from './ProjectTree';
 import ProjectSidebar from './ProjectSidebar';
@@ -579,8 +580,8 @@ function TabbedWorkspace() {
               const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : -1;
               if (next >= 0) { event.preventDefault(); activate(tabs[next].id); document.getElementById(`tab-${tabs[next].id}`)?.focus(); }
             }}>
-              {tab.archivedThread ? <Archive size={13} /> : state?.terminalOpen ? <Terminal size={13} /> : state?.busy ? <LoaderCircle size={13} className="spin" /> : <MessageSquare size={13} />}
-              <span className="session-tab-label"><strong>{folderName(tab.cwd)}{(state?.settings.provider || tab.provider) === 'claude' ? ' · Claude' : ''}</strong><span>{title}</span></span>
+              {tab.archivedThread ? <Archive size={13} /> : state?.terminalOpen ? <Terminal size={13} /> : state?.busy ? <LoaderCircle size={13} className="spin" /> : <AgentLogo provider={(state?.settings.provider || tab.provider) === 'claude' ? 'claude' : 'codex'} size={13} />}
+              <span className="session-tab-label"><strong>{folderName(tab.cwd)}</strong><span>{title}</span></span>
               <span className={`tab-state ${state?.pending ? 'waiting' : state?.busy ? 'running' : state?.connection === 'error' ? 'error' : ''}`} aria-label={status} />
               {attention[tab.id] && <span className="tab-unread" aria-label={attention[tab.id].kind === 'completed' ? 'Непрочитанный результат' : 'Непрочитанное событие'} title={attention[tab.id].kind === 'completed' ? 'Новый результат' : 'Требует внимания'} />}
             </button>
