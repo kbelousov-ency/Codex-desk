@@ -214,7 +214,10 @@ async function launchNightly(instance, { launch = spawn } = {}) {
   const env = { ...process.env, CODEX_DESK_DATA_DIR: instance.userData };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.CODEX_DESK_DEV_URL;
-  const child = launch(instance.executable, [], { cwd: instance.cwd, detached: true, windowsHide: false, stdio: 'ignore', env });
+  // Never start the app with its working directory inside the release folder: a relaunched instance
+  // (and its Chromium children) would then hold that directory and block the next rename.
+  const cwd = path.resolve(instance.executable, '..', '..', '..');
+  const child = launch(instance.executable, [], { cwd, detached: true, windowsHide: false, stdio: 'ignore', env });
   await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
   child.unref();
 }

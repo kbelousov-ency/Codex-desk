@@ -75,13 +75,13 @@ export default function ChangeTurnPicker({ value, turns, unknown, active, onChan
       if (!button?.width || !button.height) { setOpen(false); return; }
       const scroller = trigger.current?.closest('.panel-scroll')?.getBoundingClientRect();
       if (scroller && (button.bottom <= scroller.top || button.top >= scroller.bottom)) { setOpen(false); return; }
-      const edge = 12, gap = 8;
-      const width = Math.min(390, window.innerWidth - edge * 2);
+      const edge = 10, gap = 6;
+      const width = Math.min(340, window.innerWidth - edge * 2);
       const above = Math.max(0, button.top - edge - gap);
       const below = Math.max(0, window.innerHeight - button.bottom - edge - gap);
-      const upwards = below < 300 && above > below;
+      const upwards = below < 240 && above > below;
       setPosition({
-        position: 'fixed', width, maxHeight: Math.min(460, upwards ? above : below),
+        position: 'fixed', width, maxHeight: Math.min(340, upwards ? above : below),
         left: Math.max(edge, Math.min(button.right - width, window.innerWidth - edge - width)),
         ...(upwards ? { bottom: window.innerHeight - button.top + gap } : { top: button.bottom + gap }),
         visibility: 'visible',
@@ -110,22 +110,20 @@ export default function ChangeTurnPicker({ value, turns, unknown, active, onChan
     <button ref={trigger} type="button" className="change-turn-trigger" aria-label="Изменения по запросу" aria-haspopup="dialog" aria-expanded={visible} aria-controls={visible ? `${id}-menu` : undefined} data-value={value} title={`${current.title} · ${current.description}`} onClick={() => visible ? close() : show()} onKeyDown={event => {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(); }
     }}>
-      <span className="change-turn-trigger-icon"><Layers size={16} /></span>
-      <span className="change-turn-current"><strong>{current.title}</strong><small>{current.description}</small></span>
-      <ChevronDown size={14} className={visible ? 'change-turn-chevron-open' : ''} />
+      <Layers size={14} />
+      <span className="change-turn-current"><strong>{current.title}</strong>{current.number && <small>{current.description}</small>}</span>
+      <ChevronDown size={12} className={visible ? 'change-turn-chevron-open' : ''} />
     </button>
     {visible && createPortal(<div ref={menu} id={`${id}-menu`} className="change-turn-menu" role="dialog" aria-label="Выбор запроса" style={position} onKeyDown={navigate}>
-      <header><strong>Выбор запроса</strong><span>{turns.length}</span><button type="button" className="icon-button small" aria-label="Закрыть выбор запроса" onClick={() => close(true)}><X size={15} /></button></header>
-      <div className="change-turn-search"><Search size={15} /><input ref={search} role="combobox" aria-label="Найти запрос" aria-autocomplete="list" aria-expanded={true} aria-controls={`${id}-list`} aria-activedescendant={filtered[activeIndex] ? `${id}-option-${activeIndex}` : undefined} placeholder="Найти по тексту или номеру…" autoComplete="off" spellCheck={false} value={query} onChange={event => { setQuery(event.target.value); setHighlight(''); }} /></div>
+      <div className="change-turn-toolbar"><div className="change-turn-search"><Search size={14} /><input ref={search} role="combobox" aria-label="Найти запрос" aria-autocomplete="list" aria-expanded={true} aria-controls={`${id}-list`} aria-activedescendant={filtered[activeIndex] ? `${id}-option-${activeIndex}` : undefined} placeholder="Текст или номер запроса…" autoComplete="off" spellCheck={false} value={query} onChange={event => { setQuery(event.target.value); setHighlight(''); }} /></div><button type="button" className="icon-button small" aria-label="Закрыть выбор запроса" onClick={() => close(true)}><X size={14} /></button></div>
       <div className="change-turn-list" ref={list} id={`${id}-list`} role="listbox" aria-label="Запросы">
-        {filtered.map((option, index) => <div key={option.id} id={`${id}-option-${index}`} role="option" aria-selected={option.id === value} data-value={option.id} title={`${option.title} · ${option.description}`} className={`change-turn-option ${option.number ? '' : 'change-turn-scope'} ${index === activeIndex ? 'highlighted' : ''}`} onPointerMove={() => setHighlight(option.id)} onPointerDown={event => event.preventDefault()} onClick={() => choose(option)}>
-          <span className="change-turn-number" aria-hidden="true">{option.number || (option.id === 'all' ? <Layers size={16} /> : <Unlink size={15} />)}</span>
-          <span className="change-turn-option-copy"><strong>{option.title}</strong><span>{option.description}</span></span>
-          <span className="change-turn-check">{option.id === value && <Check size={15} />}</span>
+        {filtered.map((option, index) => <div key={option.id} id={`${id}-option-${index}`} role="option" aria-label={`${option.title} · ${option.description}`} aria-selected={option.id === value} data-value={option.id} title={`${option.title} · ${option.description}`} className={`change-turn-option ${option.number ? '' : 'change-turn-scope'} ${index === activeIndex ? 'highlighted' : ''}`} onPointerMove={() => setHighlight(option.id)} onPointerDown={event => event.preventDefault()} onClick={() => choose(option)}>
+          <span className="change-turn-number" aria-hidden="true">{option.number ? `№ ${option.number}` : option.id === 'all' ? <Layers size={14} /> : <Unlink size={14} />}</span>
+          <span className="change-turn-option-copy">{option.number ? option.description : option.title}</span>
+          <span className="change-turn-check">{option.id === value && <Check size={14} />}</span>
         </div>)}
       </div>
-      {!filtered.length && <div className="change-turn-empty" role="status"><Search size={22} /><strong>Запросы не найдены</strong><span>Попробуйте другое слово или номер.</span></div>}
-      <footer><span>Сначала последние</span><span><kbd>↑</kbd><kbd>↓</kbd> выбор <kbd>↵</kbd></span></footer>
+      {!filtered.length && <div className="change-turn-empty" role="status">Запросы не найдены</div>}
     </div>, document.body)}
   </div>;
 }

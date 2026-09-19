@@ -137,8 +137,8 @@ test('persistent Windows lock has bounded retries and rolls back the previous Ni
       },
     },
   }), error => error === denied);
-  assert.equal(failures, 20);
-  assert.ok(time <= 5000);
+  assert.equal(failures, 180, '45 s window at 250 ms per attempt');
+  assert.ok(time <= 45000);
   assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'a'.repeat(64));
   assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable'))).buildId, 'a'.repeat(64));
   assert.deepEqual(await fileChecksums(root, candidate), originalCandidate);

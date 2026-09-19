@@ -8,8 +8,10 @@ import asar from '@electron/asar';
 const EXE = 'Codex Desk.exe';
 const EXCLUDED = new Set(['release-manifest.json', 'resources/channel.json']);
 const TRANSIENT_MOVE_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
-const MOVE_RETRY_WINDOW_MS = 5000;
+// Antivirus scans and lingering Chromium handles held release/nightly for more than 5 s on 2026-09-19 (EBUSY).
+const MOVE_RETRY_WINDOW_MS = 45000;
 const MOVE_RETRY_DELAY_MS = 250;
+const MOVE_RETRY_MAX_ATTEMPTS = Math.ceil(MOVE_RETRY_WINDOW_MS / MOVE_RETRY_DELAY_MS);
 const TRANSACTION_NAMES = new Set(['nightly', 'stable', 'stable-previous', '.nightly-incoming', '.stable-incoming', '.nightly-old', '.previous-old', '.stable-swap']);
 const TRANSACTION_PLANS = new Set([
   ...[false, true].map(replace => JSON.stringify({ steps: [...(replace ? [['nightly', '.nightly-old']] : []), ['.nightly-incoming', 'nightly']], cleanup: ['.nightly-incoming', '.nightly-old'] })),
@@ -77,7 +79,7 @@ async function moveChecked(root, source, destination, options) {
     if (lastError && now() >= deadline) throw lastError;
     try { await move(inside(root, source), inside(root, destination)); return; }
     catch (error) {
-      if (!windows || !TRANSIENT_MOVE_ERRORS.has(error.code) || attempt >= 20 || now() >= deadline) throw error;
+      if (!windows || !TRANSIENT_MOVE_ERRORS.has(error.code) || attempt >= MOVE_RETRY_MAX_ATTEMPTS || now() >= deadline) throw error;
       lastError = error;
       await sleep(Math.min(MOVE_RETRY_DELAY_MS, Math.max(0, deadline - now())));
     }
