@@ -31,7 +31,7 @@ async function binary(root, tag) {
 }
 
 function instance(root) {
-  return { version: 1, pid: 987654321, pipe: `\\\\.\\pipe\\codex-desk-nightly-987654321-${'a'.repeat(32)}`, token: 'b'.repeat(64), buildId: 'a'.repeat(64), executable: path.join(root, 'release', 'nightly', 'Codex Desk.exe'), userData: path.join(root, 'profile'), cwd: root };
+  return { version: 1, updateProtocol: 2, pid: 987654321, pipe: `\\\\.\\pipe\\codex-desk-nightly-987654321-${'a'.repeat(32)}`, token: 'b'.repeat(64), buildId: 'a'.repeat(64), executable: path.join(root, 'release', 'nightly', 'Codex Desk.exe'), userData: path.join(root, 'profile'), cwd: root };
 }
 
 async function queued(t) {
@@ -144,7 +144,7 @@ test('candidate revalidation after host exit prevents bytes changed during long 
   assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'a'.repeat(64));
 });
 
-test('lost ready reply after preparing still reopens accepted update; manually closed busy host stays closed', async t => {
+test('manual exit or lost ready reply before acknowledgment stays closed after publication', async t => {
   for (const prepared of [false, true]) {
     const { root } = await queued(t);
     let running = true;
@@ -157,9 +157,53 @@ test('lost ready reply after preparing still reopens accepted update; manually c
       publish: async source => publishNightly(root, source, { guard }),
       launch: async () => { launches++; },
     });
-    assert.equal(result.restarted, prepared);
-    assert.equal(launches, prepared ? 1 : 0);
+    assert.equal(result.restarted, false);
+    assert.equal(launches, 0);
   }
+});
+
+test('legacy host receives no automatic prepare and manual exit never relaunches even with stale restart intent', async t => {
+  const { root } = await queued(t);
+  const stateFile = path.join(root, 'artifacts/nightly-update/state.json');
+  const queue = JSON.parse(await readFile(stateFile, 'utf8'));
+  delete queue.instance.updateProtocol;
+  queue.restartRequested = true;
+  await writeFile(stateFile, JSON.stringify(queue));
+  let running = true;
+  let waits = 0;
+  const result = await applyNightlyUpdate(root, {
+    alive: () => running, guard,
+    request: async () => assert.fail('Legacy prepare automatically closes the old host and must never be sent'),
+    sleep: async () => { waits++; assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).restartRequested, false); running = false; },
+    publish: async source => { assert.equal(running, false); await publishNightly(root, source, { guard }); },
+    launch: async () => assert.fail('Manual close must stay closed'),
+  });
+  assert.equal(waits, 1);
+  assert.equal(result.restarted, false);
+  assert.match(await readFile(path.join(root, 'artifacts/nightly-update.log'), 'utf8'), /host_manual_legacy/);
+});
+
+test('awaiting and Later keep the helper waiting without publication; manual close installs without relaunch', async t => {
+  const { root } = await queued(t);
+  const stateFile = path.join(root, 'artifacts/nightly-update/state.json');
+  const queue = JSON.parse(await readFile(stateFile, 'utf8'));
+  await writeFile(stateFile, JSON.stringify({ ...queue, restartRequested: true }));
+  const phases = ['awaiting', 'awaiting', 'waiting', 'preparing', 'manual', 'manual'];
+  let running = true;
+  let publications = 0;
+  const result = await applyNightlyUpdate(root, {
+    alive: () => running, guard,
+    request: async (_record, action) => { assert.equal(action, 'prepare'); return { state: phases.shift() }; },
+    sleep: async () => {
+      assert.equal(publications, 0);
+      assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).restartRequested, false);
+      if (!phases.length) running = false;
+    },
+    publish: async source => { publications++; assert.equal(running, false); await publishNightly(root, source, { guard }); },
+    launch: async () => assert.fail('Later followed by manual close must stay closed'),
+  });
+  assert.equal(publications, 1);
+  assert.equal(result.restarted, false);
 });
 
 test('hung graceful exit is never killed, cancels preparation and keeps candidate retryable', async t => {
@@ -191,6 +235,97 @@ test('publication retry preserves an accepted restart after the original host al
   const result = await applyNightlyUpdate(root, { alive: () => false, guard, publish: async source => publishNightly(root, source, { guard }), launch: async () => { launches++; } });
   assert.equal(result.restarted, true);
   assert.equal(launches, 1);
+});
+
+test('retry rebinds a restarted host in the same profile and prepares its busy tasks and current draft again', async t => {
+  const { root, registration } = await queued(t);
+  const stateFile = path.join(root, 'artifacts/nightly-update/state.json');
+  const original = JSON.parse(await readFile(stateFile, 'utf8'));
+  await writeFile(stateFile, JSON.stringify({ ...original, restartRequested: true }));
+  const replacement = { ...registration, pid: registration.pid + 1, pipe: `\\\\.\\pipe\\codex-desk-nightly-${registration.pid + 1}-${'c'.repeat(32)}`, token: 'd'.repeat(64), cwd: path.join(root, 'current-working-folder') };
+  await writeFile(path.join(root, 'release/.nightly-instance.json'), JSON.stringify(replacement));
+  let running = true;
+  const actions = [];
+  const phases = ['busy', 'preparing', 'ready'];
+  let launched;
+  const result = await applyNightlyUpdate(root, {
+    alive: pid => pid === replacement.pid && running,
+    request: async (record, action, params) => {
+      assert.deepEqual(record, replacement);
+      actions.push(action);
+      if (action === 'status') return { state: 'busy' };
+      assert.equal(action, 'prepare');
+      assert.equal(params.requestId, original.requestId);
+      assert.equal(params.buildId, original.buildId);
+      const queue = JSON.parse(await readFile(stateFile, 'utf8'));
+      assert.deepEqual(queue.instance, replacement);
+      const state = phases.shift();
+      if (state === 'busy' || state === 'preparing') assert.equal(queue.restartRequested, false, 'The old checkpoint cannot count as preparation of the new host');
+      if (state === 'ready') { assert.equal(queue.restartRequested, false); running = false; }
+      return { state };
+    },
+    sleep: async () => {}, guard,
+    publish: async source => { assert.equal(running, false); await publishNightly(root, source, { guard }); },
+    launch: async record => { launched = record; },
+  });
+  assert.deepEqual(actions, ['status', 'prepare', 'prepare', 'prepare']);
+  assert.deepEqual(launched, replacement);
+  assert.deepEqual(result, { restarted: true, buildId: original.buildId });
+  assert.match(await readFile(path.join(root, 'artifacts/nightly-update.log'), 'utf8'), / host_rebound\n/);
+});
+
+test('retry refuses a reopened Nightly with a different profile without preparing it or altering the queue', async t => {
+  const { root, registration, candidate } = await queued(t);
+  const stateFile = path.join(root, 'artifacts/nightly-update/state.json');
+  const original = await readFile(stateFile, 'utf8');
+  const replacement = { ...registration, pid: registration.pid + 1, pipe: `\\\\.\\pipe\\codex-desk-nightly-${registration.pid + 1}-${'c'.repeat(32)}`, userData: path.join(root, 'other-profile') };
+  await writeFile(path.join(root, 'release/.nightly-instance.json'), JSON.stringify(replacement));
+  const actions = [];
+  await assert.rejects(applyNightlyUpdate(root, {
+    alive: pid => pid === replacement.pid, guard,
+    request: async (_record, action) => { actions.push(action); return { state: 'ready' }; },
+    publish: async () => assert.fail('Another profile must not be replaced'),
+    launch: async () => assert.fail('Another profile must not be launched'),
+  }), /другим профилем/);
+  assert.deepEqual(actions, ['status']);
+  assert.equal(await readFile(stateFile, 'utf8'), original);
+  assert.equal((await verifyRelease(root, candidate, 'nightly')).buildId, 'b'.repeat(64));
+  assert.equal((await verifyRelease(root, path.join(root, 'release/nightly'), 'nightly')).buildId, 'a'.repeat(64));
+});
+
+test('failure diagnostics retain only a known stage and allowlisted error code, never raw failure details', async t => {
+  const { root } = await queued(t);
+  for (const [code, suffix] of [['EPERM', 'eperm'], ['EPROCESSCHECK', 'processcheck'], ['private_token_path', 'unknown']]) {
+    const states = [];
+    const failure = Object.assign(new Error('secret token path pipe'), { code });
+    await assert.rejects(applyNightlyUpdate(root, {
+      alive: () => false, guard,
+      publish: async () => { throw failure; },
+      log: async state => { states.push(state); await logUpdate(root, state); },
+    }), error => error === failure);
+    assert.ok(states.includes(`failed_publishing_${suffix}`));
+    assert.ok(states.every(state => /^[a-z_-]{1,64}$/.test(state)));
+  }
+  const logged = await readFile(path.join(root, 'artifacts/nightly-update.log'), 'utf8');
+  for (const secret of ['secret', 'token', 'path', 'pipe', 'private']) assert.equal(logged.includes(secret), false);
+});
+
+test('publication failure records syscall and fixed path role without names or sensitive paths', async t => {
+  const { root } = await queued(t);
+  for (const [syscall, relative, expected] of [
+    ['rename', 'release/nightly/private-file', 'failure_io_rename_nightly'],
+    ['copyfile', 'release/.nightly-incoming/private-file', 'failure_io_copyfile_incoming'],
+    ['rename', 'release/.transaction.json.tmp', 'failure_io_rename_journal'],
+    ['secret-syscall', 'private-directory/private-file', 'failure_io_unknown_unknown'],
+  ]) {
+    const failure = Object.assign(new Error('secret details'), { code: 'EPERM', syscall, path: path.join(root, relative) });
+    const states = [];
+    await assert.rejects(applyNightlyUpdate(root, {
+      alive: () => false, guard, publish: async () => { throw failure; }, log: async state => states.push(state),
+    }), error => error === failure);
+    assert.ok(states.includes(expected));
+    assert.ok(states.every(value => !value.includes('private') && !value.includes('secret') && !value.includes(root)));
+  }
 });
 
 test('post-publication launch failure clears candidate and reports ordinary shortcut recovery', async t => {

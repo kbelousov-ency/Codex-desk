@@ -7,6 +7,9 @@ import asar from '@electron/asar';
 
 const EXE = 'Codex Desk.exe';
 const EXCLUDED = new Set(['release-manifest.json', 'resources/channel.json']);
+const TRANSIENT_MOVE_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const MOVE_RETRY_WINDOW_MS = 5000;
+const MOVE_RETRY_DELAY_MS = 250;
 const TRANSACTION_NAMES = new Set(['nightly', 'stable', 'stable-previous', '.nightly-incoming', '.stable-incoming', '.nightly-old', '.previous-old', '.stable-swap']);
 const TRANSACTION_PLANS = new Set([
   ...[false, true].map(replace => JSON.stringify({ steps: [...(replace ? [['nightly', '.nightly-old']] : []), ['.nightly-incoming', 'nightly']], cleanup: ['.nightly-incoming', '.nightly-old'] })),
@@ -52,14 +55,33 @@ export async function checkedTree(root, directory) {
 
 export async function removeChecked(root, target) {
   await checkedTree(root, target);
-  await rm(inside(root, target), { recursive: true, force: true });
+  await rm(inside(root, target), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
-async function moveChecked(root, source, destination) {
-  await checkedTree(root, source);
-  await checkedPath(root, destination);
-  if (await statOrNull(destination)) throw new Error(`Каталог назначения уже существует: ${path.basename(destination)}.`);
-  await rename(inside(root, source), inside(root, destination));
+async function moveChecked(root, source, destination, options) {
+  const dependencies = options.moveRetry ?? {};
+  const move = dependencies.rename ?? rename;
+  const now = dependencies.now ?? Date.now;
+  const sleep = dependencies.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  const windows = (dependencies.platform ?? process.platform) === 'win32';
+  const deadline = now() + MOVE_RETRY_WINDOW_MS;
+  let lastError;
+  for (let attempt = 0; ; attempt++) {
+    if (lastError && now() >= deadline) throw lastError;
+    // Windows may briefly retain directory handles after the application exits.
+    // Revalidate before every attempt: the user may reopen it while we wait.
+    await options.guard(source);
+    await checkedTree(root, source);
+    await checkedPath(root, destination);
+    if (await statOrNull(destination)) throw new Error(`Каталог назначения уже существует: ${path.basename(destination)}.`);
+    if (lastError && now() >= deadline) throw lastError;
+    try { await move(inside(root, source), inside(root, destination)); return; }
+    catch (error) {
+      if (!windows || !TRANSIENT_MOVE_ERRORS.has(error.code) || attempt >= 20 || now() >= deadline) throw error;
+      lastError = error;
+      await sleep(Math.min(MOVE_RETRY_DELAY_MS, Math.max(0, deadline - now())));
+    }
+  }
 }
 
 export async function fileChecksums(root, directory, excluded = EXCLUDED) {
@@ -117,11 +139,11 @@ export async function assertNotRunning(directory) {
   const stdout = await new Promise((resolve, reject) => {
     const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); @(Get-CimInstance Win32_Process -Filter \"Name = 'Codex Desk.exe'\" | Select-Object ExecutablePath, ProcessId) | ConvertTo-Json -Compress"], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
-    const timeout = setTimeout(() => { child.kill(); reject(new Error('Не удалось проверить запущенные экземпляры приложения.')); }, 15000);
+    const timeout = setTimeout(() => { child.kill(); reject(Object.assign(new Error('Не удалось проверить запущенные экземпляры приложения.'), { code: 'EPROCESSCHECK' })); }, 15000);
     child.stdout.on('data', chunk => { output += chunk.toString('utf8'); });
     child.stderr.resume();
     child.once('error', error => { clearTimeout(timeout); reject(error); });
-    child.once('close', code => { clearTimeout(timeout); code === 0 ? resolve(output) : reject(new Error('Не удалось проверить запущенные экземпляры приложения.')); });
+    child.once('close', code => { clearTimeout(timeout); code === 0 ? resolve(output) : reject(Object.assign(new Error('Не удалось проверить запущенные экземпляры приложения.'), { code: 'EPROCESSCHECK' })); });
   });
   const parsed = stdout.trim() ? JSON.parse(stdout) : [];
   const running = Array.isArray(parsed) ? parsed : [parsed];
@@ -147,7 +169,8 @@ async function writeJournal(root, journal) {
   await rename(temp, file);
 }
 
-export async function recoverRelease(root, { guard = assertNotRunning } = {}) {
+export async function recoverRelease(root, options = {}) {
+  const guard = options.guard ?? assertNotRunning;
   const file = path.join(root, 'release', '.transaction.json');
   await checkedPath(root, file);
   if (!(await statOrNull(file))) return;
@@ -173,8 +196,7 @@ export async function recoverRelease(root, { guard = assertNotRunning } = {}) {
       const [from, to] = journal.steps[journal.completed - 1].map(name => transactionPath(root, name));
       // A previous recovery may have moved the directory before saving its cursor.
       if (await statOrNull(to)) {
-        await guard(to);
-        await moveChecked(root, to, from);
+        await moveChecked(root, to, from, { ...options, guard });
       } else if (!(await statOrNull(from))) throw new Error('Не найдены файлы для восстановления выпуска.');
       journal.completed--;
       await writeJournal(root, journal);
@@ -190,8 +212,7 @@ async function transaction(root, steps, cleanup, options) {
   try {
     for (let index = 0; index < steps.length; index++) {
       const [from, to] = steps[index].map(name => transactionPath(root, name));
-      await options.guard(from);
-      await moveChecked(root, from, to);
+      await moveChecked(root, from, to, options);
       journal.completed = index + 1;
       await writeJournal(root, journal);
       await options.afterMove?.(index + 1);

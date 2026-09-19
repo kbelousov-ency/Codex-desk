@@ -166,9 +166,9 @@ test('native path menu reveals the selected file and cancellation also resolves'
     item.click();
     options.callback();
   });
-  await showLocalPathMenu({ target, cwd, shell, Menu, window });
+  assert.equal(await showLocalPathMenu({ target, cwd, shell, Menu, window }), undefined);
   assert.deepEqual(revealed, [await realpath(target)]);
-  await showLocalPathMenu({ target, cwd, shell, window, Menu: menuFixture((_item, options) => options.callback()) });
+  assert.equal(await showLocalPathMenu({ target, cwd, shell, window, Menu: menuFixture((_item, options) => options.callback()) }), undefined);
   assert.equal(revealed.length, 1);
   // Native closure can notify before delivering the selected item's click.
   await showLocalPathMenu({ target, cwd, shell, window, Menu: menuFixture((item, options) => {
@@ -191,4 +191,73 @@ test('native menu propagates shell errors and checks file existence again after 
   await unlink(target);
   select();
   await assert.rejects(pending, /не найдены/);
+});
+
+function askMenuFixture(onPopup) {
+  return {
+    buildFromTemplate: items => {
+      assert.deepEqual(items.map(item => item.label), ['Спросить Codex', 'Открыть в проводнике']);
+      return { popup: options => onPopup(items, options) };
+    },
+  };
+}
+
+test('Ask Codex returns canonical paths for files and folders without launching native file actions', async t => {
+  const { cwd, target } = await fixture(t);
+  const shell = {
+    openPath: () => assert.fail('Ask Codex must not open a file'),
+    showItemInFolder: () => assert.fail('Ask Codex must not reveal a file'),
+  };
+  const Menu = askMenuFixture((items, options) => {
+    // Native closure can notify before delivering the selected item's click.
+    options.callback();
+    queueMicrotask(() => items[0].click());
+  });
+  for (const input of [path.basename(target), '.']) {
+    assert.deepEqual(await showLocalPathMenu({ target: input, cwd, shell, Menu, options: { askCodex: true } }), {
+      action: 'askCodex', path: await realpath(path.resolve(cwd, input)),
+    });
+  }
+});
+
+test('Ask Codex menu cancellation and reveal resolve without an action result; opt-out keeps the original menu', async t => {
+  const { cwd, target } = await fixture(t);
+  const revealed = [];
+  const shell = { showItemInFolder: value => revealed.push(value) };
+  const options = { askCodex: true };
+  assert.equal(await showLocalPathMenu({ target, cwd, shell, options, Menu: askMenuFixture((_items, popup) => popup.callback()) }), undefined);
+  assert.deepEqual(revealed, []);
+  assert.equal(await showLocalPathMenu({ target, cwd, shell, options, Menu: askMenuFixture((items, popup) => {
+    items[1].click(); popup.callback();
+  }) }), undefined);
+  assert.deepEqual(revealed, [await realpath(target)]);
+  assert.equal(await showLocalPathMenu({ target, cwd, shell, options: { askCodex: false }, Menu: menuFixture((_item, popup) => popup.callback()) }), undefined);
+});
+
+test('Ask Codex rechecks file existence after the native menu opens', async t => {
+  const { cwd, target } = await fixture(t);
+  let opened;
+  const ready = new Promise(resolve => { opened = resolve; });
+  let select;
+  const pending = showLocalPathMenu({ target, cwd, options: { askCodex: true }, Menu: askMenuFixture((items, popup) => {
+    select = () => { items[0].click(); popup.callback(); };
+    opened();
+  }) });
+  await ready;
+  await unlink(target);
+  select();
+  await assert.rejects(pending, /не найдены/);
+});
+
+test('Ask Codex rejects a closed session or changed working folder after the native menu opens', async t => {
+  const { cwd, target } = await fixture(t);
+  for (const message of ['Вкладка закрыта.', 'Рабочая папка изменилась.']) {
+    let active = true;
+    let checks = 0;
+    await assert.rejects(showLocalPathMenu({ target, cwd, options: { askCodex: true },
+      assertActive: () => { checks++; if (!active) throw new Error(message); },
+      Menu: askMenuFixture((items, popup) => { active = false; items[0].click(); popup.callback(); }),
+    }), { message });
+    assert.equal(checks, 2, 'The session is checked before opening the menu and again before returning the selected path');
+  }
 });

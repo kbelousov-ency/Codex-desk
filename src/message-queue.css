@@ -1,0 +1,50 @@
+.message-queue { margin-bottom: 10px; border: 1px solid var(--border, #34363e); border-radius: 10px; padding: 10px 12px; background: var(--panel, #202127); font-size: 12px; }
+.queue-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.queue-header > span { color: var(--muted, #aaa); flex: 1; }
+.message-queue button { border: 1px solid var(--border, #45464f); border-radius: 6px; padding: 5px 8px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.message-queue button:disabled { opacity: .45; cursor: default; }
+.message-queue ol { margin: 8px 0 0; padding-left: 22px; max-height: 210px; overflow-y: auto; }
+.message-queue li { padding: 7px 0; border-top: 1px solid var(--border, #34363e); }
+.queue-content p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 68px; overflow: auto; }
+.queue-content small { display: block; color: var(--muted, #aaa); margin-top: 3px; overflow-wrap: anywhere; }
+.queue-content .queue-uncertain { color: #e7bf83; }
+.queue-item-actions, .queue-edit > div { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.queue-reason { margin: 7px 0 0; color: var(--muted, #bbb); }
+.queue-edit textarea { box-sizing: border-box; width: 100%; resize: vertical; border: 1px solid var(--border, #45464f); border-radius: 6px; padding: 8px; color: inherit; background: #18191e; font: inherit; }
+.composer { container: composer / inline-size; }
+.composer .composer-toolbar { gap: 12px; }
+.composer .composer-tools { flex-wrap: nowrap; flex: 0 1 auto; }
+.composer .composer-actions { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 6px; margin-left: auto; }
+.composer .composer-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 10px; border: 1px solid #45534b; border-radius: 8px; color: #b7c7bd; font-size: 11px; font-weight: 550; white-space: nowrap; }
+.composer .composer-action:hover:not(:disabled) { color: #e0ece4; border-color: #697e6f; background: #344139; }
+.composer .composer-steer { background: #b6d2bf; border-color: #b6d2bf; color: #25342a; }
+.composer .composer-steer:hover:not(:disabled) { background: #c7e6d0; border-color: #c7e6d0; color: #25342a; }
+.composer .composer-action:disabled { opacity: .45; cursor: default; }
+.composer .composer-action-divider { height: 18px; width: 1px; margin: 0 3px; background: #465048; }
+@container composer (max-width: 600px) {
+  .composer .composer-toolbar { gap: 8px; }
+  .composer .composer-tools { gap: 4px; }
+  .composer .composer-select-trigger.select-chip { padding: 4px 6px; gap: 4px; }
+  .composer .composer-select-trigger > span { max-width: 88px; }
+  .composer .composer-select-trigger.effort-select > span { max-width: 70px; }
+  .composer .composer-action { padding: 0 8px; gap: 5px; }
+}
+@container composer (max-width: 500px) {
+  .composer .composer-enqueue { width: 32px; padding: 0; }
+  .composer .composer-enqueue > span { display: none; }
+  .composer .composer-select-trigger > svg:first-child { display: none; }
+  .composer .composer-select-trigger > span { max-width: 82px; }
+  .composer .composer-select-trigger.effort-select > span { max-width: 58px; }
+}
+@container composer (max-width: 380px) {
+  .composer .composer-toolbar { gap: 5px; }
+  .composer .composer-tools { gap: 2px; }
+  .composer .composer-select-trigger.select-chip { padding: 4px; gap: 3px; }
+  .composer .composer-select-trigger > span { max-width: 54px; }
+  .composer .composer-select-trigger.effort-select > span { max-width: 38px; }
+  .composer .composer-steer > svg { display: none; }
+  .composer .composer-actions { gap: 4px; }
+  .composer .composer-action-divider { margin: 0; }
+  .composer .toolbar-divider { display: none; }
+}
+@media (max-height: 720px) { .message-queue ol { max-height: 125px; } }

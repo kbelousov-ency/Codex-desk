@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { ChevronRight, File, Folder, FolderOpen, Link, LoaderCircle, RefreshCw } from 'lucide-react';
 import { useBridge } from './BridgeContext';
@@ -10,7 +10,7 @@ type Directory = { entries: ProjectFile[]; nextCursor: number | null; loaded: bo
 const emptyDirectory = (): Directory => ({ entries: [], nextCursor: null, loaded: false, loading: false, error: '' });
 const errorText = (error: unknown) => String(error instanceof Error ? error.message : error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
 
-export default function FileBrowser({ cwd, active = true, refreshKey }: { cwd: string; active?: boolean; refreshKey?: unknown }) {
+export default function FileBrowser({ cwd, active = true, refreshKey, onAskCodex }: { cwd: string; active?: boolean; refreshKey?: unknown; onAskCodex?: (path: string) => void }) {
   const bridge = useBridge();
   const [directories, setDirectories] = useState<Record<string, Directory>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -18,8 +18,12 @@ export default function FileBrowser({ cwd, active = true, refreshKey }: { cwd: s
   const directoriesRef = useRef(directories);
   const expandedRef = useRef(expanded);
   const generation = useRef(0);
+  const actionGeneration = useRef(0);
   const pending = useRef(new Set<string>());
   const lastRefresh = useRef(refreshKey);
+
+  // A native menu can resolve after switching tabs, projects, or hiding the tree.
+  useLayoutEffect(() => () => { actionGeneration.current += 1; }, [bridge, cwd, active]);
 
   const setDirectory = useCallback((relative: string, value: Directory) => {
     directoriesRef.current = { ...directoriesRef.current, [relative]: value };
@@ -91,10 +95,12 @@ export default function FileBrowser({ cwd, active = true, refreshKey }: { cwd: s
   };
 
   const fileAction = async (relative: string, menu = false) => {
-    const version = generation.current;
+    const version = actionGeneration.current;
     setActionError('');
-    try { await (menu ? bridge.showPathMenu(relative) : bridge.openPath(relative)); }
-    catch (error) { if (generation.current === version) setActionError(errorText(error)); }
+    try {
+      const result = menu ? await bridge.showPathMenu(relative, { askCodex: Boolean(onAskCodex) }) : await bridge.openPath(relative);
+      if (actionGeneration.current === version && result?.action === 'askCodex') onAskCodex?.(result.path);
+    } catch (error) { if (actionGeneration.current === version) setActionError(errorText(error)); }
   };
 
   const renderDirectory = (relative: string, depth: number): ReactNode => {

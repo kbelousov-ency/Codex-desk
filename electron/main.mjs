@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell } from 'electron';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import { directoryPath, decodeImage } from './host-utils.mjs';
 import { openLink, showLocalPathMenu } from './file-links.mjs';
 import { listProjectThreads } from './project-history.mjs';
 import { listProjectFiles } from './project-files.mjs';
+import { getGitStatus, getGitDiff } from './git-reader.mjs';
 import { ThreadActionCoordinator, ThreadManagement } from './thread-management.mjs';
 import { McpConfigService } from './mcp-service.mjs';
 import { readAttachment, hydrateAttachmentPreviews } from './attachments.mjs';
@@ -17,6 +18,9 @@ import { createDiagnostics } from './diagnostics.mjs';
 import { resolveReleaseChannel, resolveChannelPaths, initializeChannelProfile } from './release-channel.mjs';
 import { createNightlyUpdate } from './nightly-update.mjs';
 import { captureUpdateCheckpoint, createUpdateCheckpoint } from './update-checkpoint.mjs';
+import { captureWorkspaceState, createWorkspaceState, createWorkspaceSaveHandshake } from './workspace-state.mjs';
+import { NotificationService, NotificationSettingsStore } from './notification-service.mjs';
+import { applicationIdentity } from './app-identity.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let buildInfo = {};
@@ -29,11 +33,14 @@ catch {
   throw new Error('Invalid release channel metadata.');
 }
 const channelLabel = { stable: 'Release', nightly: 'Nightly', development: 'Development' }[releaseInfo.channel];
-const applicationName = releaseInfo.channel === 'stable' ? 'Codex Desk' : `Codex Desk ${channelLabel}`;
 const channelPaths = resolveChannelPaths({ appData: app.getPath('appData'), channel: releaseInfo.channel, dataDirOverride: process.env.CODEX_DESK_DATA_DIR });
+const standardChannelPaths = resolveChannelPaths({ appData: app.getPath('appData'), channel: releaseInfo.channel });
+const isolatedProfile = path.resolve(channelPaths.userData).toLowerCase() !== path.resolve(standardChannelPaths.userData).toLowerCase();
+const identity = applicationIdentity(releaseInfo.channel, process.env.CODEX_DESK_TEST === '1' || isolatedProfile ? process.pid : undefined);
+const applicationName = identity.name;
 app.setName(applicationName);
 app.setPath('userData', channelPaths.userData);
-app.setAppUserModelId(`local.codex.desk.${releaseInfo.channel}`);
+app.setAppUserModelId(identity.appId);
 const diagnosticsDirectory = path.join(channelPaths.userData, 'logs');
 const diagnostics = createDiagnostics({ directory: diagnosticsDirectory, metadata: {
   appVersion: app.getVersion(), electronVersion: process.versions.electron, chromeVersion: process.versions.chrome,
@@ -49,18 +56,35 @@ const windows = new Map();
 const threadActions = new ThreadActionCoordinator();
 const settingsStore = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'));
 const workspaceStore = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
+const notificationSettings = new NotificationSettingsStore(path.join(app.getPath('userData'), 'notifications.json'));
 let quitting = false;
 let settingsFlushed = false;
 let operationSequence = 0;
 let pendingOperations = 0;
 let updateFrozen = false;
 let updater = null;
+let latestUpdateStatus = null;
 let updatePreparation = null;
 let updateGeneration = 0;
 let updateStorageBusy = false;
 let checkpointCleanup = Promise.resolve();
+const notifications = new NotificationService({
+  // Automated IPC fixtures use isolated profiles and must never toast on the user's desktop.
+  Notification: process.env.CODEX_DESK_TEST === '1' || isolatedProfile ? null : Notification,
+  settings: notificationSettings, icon: path.join(here, 'icon.ico'), diagnostics,
+  available: () => !quitting && !updateFrozen,
+});
 const updateCheckpoint = createUpdateCheckpoint(channelPaths.userData);
-const updateAllowedChannels = new Set(['host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getBuildInfo', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder']);
+const workspaceState = createWorkspaceState(channelPaths.userData);
+const workspaceSave = createWorkspaceSaveHandshake({
+  send: (record, request) => {
+    if (record.restoration || record.rendererGone || record.window.isDestroyed() || record.window.webContents.isDestroyed()) throw new Error("Окно недоступно.");
+    record.window.webContents.send('host:workspaceSave', request);
+  },
+  save: (record, snapshot) => workspaceState.save(captureWorkspaceState(snapshot, record.sessions)),
+});
+const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate', 'host:getBuildInfo', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
+const projectKey = cwd => process.platform === 'win32' ? path.resolve(cwd).toLowerCase() : path.resolve(cwd);
 
 function updateBusy() {
   if (quitting || pendingOperations || updateStorageBusy || windows.size !== 1 || threadActions.locks.size) return true;
@@ -68,13 +92,14 @@ function updateBusy() {
     session.terminal || session.mcpRefreshing || session.pendingBoots || session.pendingMutations || session.requests.size || session.activeThreadTurns.size || session.compactingThreads.size));
 }
 function updateStatus(state) {
-  if (state === 'error' || (state === 'busy' && updateFrozen)) {
+  if (state === 'error' || (['busy', 'waiting', 'manual'].includes(state) && updateFrozen)) {
     updateGeneration++;
     updateFrozen = false;
     updatePreparation?.reject(new Error('Подготовка обновления прервана.')); updatePreparation = null;
     checkpointCleanup = checkpointCleanup.then(() => updateCheckpoint.clear()).catch(() => {});
   }
-  for (const { window } of windows.values()) if (!window.isDestroyed()) window.webContents.send('host:updateStatus', { state: state === 'busy' ? 'waiting' : state === 'ready' ? 'preparing' : state });
+  latestUpdateStatus = { state: state === 'busy' ? 'waiting' : state === 'ready' ? 'preparing' : state };
+  for (const { window } of windows.values()) if (!window.isDestroyed()) window.webContents.send('host:updateStatus', latestUpdateStatus);
 }
 async function prepareUpdate({ requestId }) {
   if (updateBusy()) return false;
@@ -95,7 +120,8 @@ async function prepareUpdate({ requestId }) {
       await checkpointCleanup;
       if (generation !== updateGeneration || quitting) return false;
       await updateCheckpoint.save(snapshot);
-      await Promise.all([settingsStore.flush(), workspaceStore.flush()]);
+      await workspaceState.save(snapshot);
+      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush()]);
       if (generation !== updateGeneration || quitting) { await updateCheckpoint.clear(); return false; }
     } finally { updateStorageBusy = false; }
     return true;
@@ -109,6 +135,12 @@ async function prepareUpdate({ requestId }) {
 
 async function traced(channel, event, context, fn) {
   if (updateFrozen && !updateAllowedChannels.has(channel)) throw new Error('Nightly перезапускается для применения обновления.');
+  const owner = windows.get(event.sender.id);
+  if (owner?.workspaceClosing) {
+    const reads = new Set(['host:completeWorkspaceSave', 'host:getWorkspace', 'host:getSettings', 'host:getBuildInfo', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:completeUpdateRestore', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
+    const rpcReads = new Set(['thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'model/list', 'account/read', 'config/read']);
+    if (!reads.has(channel) && !(channel === 'codex:request' && rpcReads.has(context.method))) throw new Error('Окно закрывается. Новые действия остановлены.');
+  }
   const started = performance.now();
   const data = { channel, windowId: event.sender.id, requestId: ++operationSequence, ...context };
   diagnostics.record('info', 'ipc.start', data);
@@ -126,12 +158,14 @@ async function traced(channel, event, context, fn) {
 function handle(channel, argumentCount, fn) {
   ipcMain.handle(channel, (event, ...args) => {
     windowForEvent(windows, event);
+    const count = typeof argumentCount === 'function' ? argumentCount(args) : argumentCount;
     let scoped;
-    try { scoped = sessionForEvent(windows, event, args[argumentCount]); }
+    try { scoped = sessionForEvent(windows, event, args[count]); }
     catch (error) { diagnostics.error('ipc.failed', error, { channel, windowId: event.sender.id }); throw error; }
+    if (scoped.closingProjects?.has(projectKey(scoped.session.currentCwd)) || (channel === 'codex:start' && scoped.closingProjects?.size)) throw new Error('Проект закрывается.');
     return traced(channel, event, { sessionId: diagnostics.id(scoped.sessionId), projectId: diagnostics.id(scoped.session.currentCwd),
       ...(channel === 'codex:request' ? { method: args[0] } : {}),
-    }, () => fn(scoped, ...args.slice(0, argumentCount)));
+    }, () => fn(scoped, ...args.slice(0, count)));
   });
 }
 
@@ -144,6 +178,7 @@ function workspaceHandle(channel, fn) {
 
 function addSession(record, settings) {
   if (record.window.isDestroyed() || quitting) throw new Error('Окно уже закрыто.');
+  if (settings.cwd && record.closingProjects?.has(projectKey(settings.cwd))) throw new Error('Проект закрывается.');
   const id = randomUUID();
   const session = new WindowSession({
     settings,
@@ -165,6 +200,24 @@ function addSession(record, settings) {
 }
 
 function installHandlers() {
+  workspaceHandle('host:getNotificationSettings', () => notifications.getSettings());
+  workspaceHandle('host:setNotificationSettings', (_record, _event, patch) => notifications.setSettings(patch));
+  workspaceHandle('host:setNotificationContext', (record, _event, context) => notifications.setContext(record, context));
+  workspaceHandle('host:notifySession', (record, _event, payload) => notifications.notify(record, payload));
+  workspaceHandle('host:getWindowFocus', record => notifications.focused(record));
+  workspaceHandle('host:saveWorkspaceState', (record, _event, snapshot) => {
+    // Once close begins, only its final handshake may write newer state.
+    if (record.workspaceClosing || record.rendererGone) throw new Error('Окно недоступно для автосохранения.');
+    if (record.restoration) throw new Error("Рабочее место ещё восстанавливается.");
+    return workspaceState.save(captureWorkspaceState(snapshot, record.sessions));
+  });
+  workspaceHandle('host:completeWorkspaceSave', (record, _event, response) => workspaceSave.complete(record, response));
+  workspaceHandle('host:getUpdateStatus', () => latestUpdateStatus);
+  workspaceHandle('host:decideUpdate', (_record, _event, decision) => {
+    if (!['close', 'later'].includes(decision) || !updater) throw new Error('Обновление сейчас недоступно.');
+    updater.decide(decision);
+    return latestUpdateStatus;
+  });
   workspaceHandle('host:completeUpdatePrepare', (record, _event, response) => {
     const current = updatePreparation;
     if (!updateFrozen || !current || current.record !== record || response?.requestId !== current.requestId) throw new Error('Сохранение окна уже завершено.');
@@ -173,7 +226,10 @@ function installHandlers() {
     catch (error) { current.reject(error); throw new Error('Не удалось сохранить вкладки перед обновлением.'); }
   });
   workspaceHandle('host:completeUpdateRestore', async record => {
-    if (record.restoration) { await updateCheckpoint.clear(); record.restoration = null; }
+    if (record.restoration) {
+      if (record.restoration.kind === 'update') await updateCheckpoint.clear();
+      record.restoration = null;
+    }
   });
   workspaceHandle('host:getBuildInfo', () => releaseInfo);
   workspaceHandle('host:getDiagnosticsStatus', async () => {
@@ -224,7 +280,11 @@ function installHandlers() {
   });
   handle('host:getSettings', 0, ({ session }) => session.getSettings());
   handle('host:setSettings', 1, ({ session }, patch) => session.setSettings(patch));
-  handle('host:openTerminal', 1, ({ session }, options) => session.openTerminal(options));
+  handle('host:openTerminal', 1, async ({ session, window, sessionId }, options) => {
+    const result = await session.openTerminal(options);
+    notifications.dismissSession(windows.get(window.webContents.id), sessionId);
+    return result;
+  });
   const mcpConfig = session => { session.mcpConfigService ??= new McpConfigService(session); return session.mcpConfigService.manager; };
   handle('host:getMcpConfig', 0, ({ session }) => mcpConfig(session).list());
   handle('host:previewMcpImport', 1, ({ session }, text) => mcpConfig(session).preview(text));
@@ -245,7 +305,11 @@ function installHandlers() {
       getSettings: () => settingsStore.snapshot(),
       createSession: settings => new WindowSession({ settings, diagnostics, diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(randomUUID()) } }),
       assertActive: () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); },
-      onRestore: async cwd => { await directoryPath(cwd); await workspaceStore.addProject(cwd); },
+      onRestore: async cwd => {
+        await directoryPath(cwd);
+        if (record.closingProjects.has(projectKey(cwd))) throw new Error('Проект закрывается.');
+        await workspaceStore.addProject(cwd);
+      },
     });
     return record.management;
   };
@@ -303,6 +367,7 @@ function installHandlers() {
     windowForEvent(windows, event);
     source?.assertActive();
     if (quitting) return null;
+    if (record.closingProjects?.has(projectKey(cwd))) throw new Error('Проект закрывается.');
     await workspaceStore.addProject(cwd);
     windowForEvent(windows, event);
     source?.assertActive();
@@ -314,7 +379,30 @@ function installHandlers() {
     session.assertLocalControl();
     session.dispose();
     record.sessions.delete(id);
+    notifications.closeSession(record, id);
     if (record.defaultSessionId === id) record.defaultSessionId = record.sessions.keys().next().value ?? null;
+  });
+  workspaceHandle('host:closeProject', async (record, event, cwd, options = {}) => {
+    if (typeof cwd !== 'string' || !cwd || cwd.length >= 4096 || cwd.includes('\0') || !path.isAbsolute(cwd)
+      || !options || typeof options !== 'object' || Array.isArray(options) || (options.force !== undefined && typeof options.force !== 'boolean')) throw new Error('Некорректная папка проекта.');
+    const key = projectKey(cwd);
+    if (record.closingProjects.has(key)) throw new Error('Проект уже закрывается.');
+    record.closingProjects.add(key);
+    try {
+      if (threadActions.locks.size || [...record.sessions.values()].some(session => session.pendingBoots)) throw new Error('Дождитесь завершения подключения или операции с диалогом.');
+      const sessions = [...record.sessions].filter(([, session]) => projectKey(session.currentCwd) === key);
+      for (const [, session] of sessions) {
+        session.assertLocalControl();
+        if (session.pendingBoots || session.mcpRefreshing || session.pendingMutations) throw new Error('Дождитесь завершения подключения или текущей операции проекта.');
+      }
+      if (sessions.length && options.force !== true) throw new Error('Подтвердите закрытие открытых вкладок проекта.');
+      await workspaceStore.removeProject(cwd);
+      windowForEvent(windows, event);
+      for (const [id, session] of sessions) { session.dispose(); record.sessions.delete(id); notifications.closeSession(record, id); }
+      if (!record.sessions.has(record.defaultSessionId)) record.defaultSessionId = record.sessions.keys().next().value ?? null;
+      if (record.historySession && projectKey(record.historySession.currentCwd) === key) { record.historySession.dispose(); record.historySession = null; }
+      return { ...(await workspaceStore.snapshot()), closedSessionIds: sessions.map(([id]) => id) };
+    } finally { record.closingProjects.delete(key); }
   });
   handle('host:chooseDirectory', 0, async ({ window, session }) => {
     const result = await dialog.showOpenDialog(window, { title: 'Выберите папку проекта', defaultPath: session.currentCwd, properties: ['openDirectory', 'createDirectory'] });
@@ -355,37 +443,62 @@ function installHandlers() {
       if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Обновите дерево файлов.');
     } });
   });
-  handle('host:showPathMenu', 1, ({ session, window }, target) => {
+  const gitContext = session => {
     const generation = session.generation;
     const cwd = session.currentCwd;
-    return showLocalPathMenu({ target, cwd, shell, Menu, window, assertActive: () => {
+    return { cwd, assertActive: () => {
+      session.assertActive(generation);
+      if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Обновите Git.');
+    } };
+  };
+  handle('host:getGitStatus', 0, ({ session }) => getGitStatus(gitContext(session)));
+  handle('host:getGitDiff', 1, ({ session }, options) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['path', 'area'].includes(key))) throw new Error('Некорректный запрос сравнения Git.');
+    return getGitDiff({ ...options, ...gitContext(session) });
+  });
+  // Older callers supply (target, sessionId); options occupy the new second slot.
+  handle('host:showPathMenu', args => args.length < 3 && typeof args[1] === 'string' ? 1 : 2, ({ session, window }, target, options) => {
+    const generation = session.generation;
+    const cwd = session.currentCwd;
+    return showLocalPathMenu({ target, cwd, shell, Menu, window, options, assertActive: () => {
       session.assertActive(generation);
       if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Откройте ссылку повторно.');
     } });
   });
 }
 
-async function createWindow(initialSettings, checkpoint = null) {
+async function createWindow(initialSettings, checkpoint = null, restoreKind = 'workspace') {
   const settings = initialSettings ?? await settingsStore.snapshot();
   let cwd = settings.cwd || process.cwd();
   try { cwd = await directoryPath(cwd); } catch { /* Keep a missing saved folder visible so it can be corrected. */ }
-  await workspaceStore.addProject(cwd);
+  await workspaceStore.initializeProjects(cwd);
+  const workspace = await workspaceStore.snapshot();
+  cwd = workspace.projects.find(project => projectKey(project) === projectKey(cwd)) || workspace.projects[0];
   if (quitting) return null;
   const win = new BrowserWindow({
     width: 1480, height: 960, minWidth: 940, minHeight: 640,
     title: `Codex Desk — ${channelLabel}`, icon: path.join(here, 'icon.ico'), backgroundColor: '#101311', autoHideMenuBar: true,
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
-  const record = { window: win, sessions: new Map(), defaultSessionId: null, historySession: null };
+  if (process.platform === 'win32') win.setAppDetails({
+    appId: identity.appId, appIconPath: app.getPath('exe'), appIconIndex: 0,
+    relaunchCommand: `"${app.getPath('exe')}"`, relaunchDisplayName: identity.name,
+  });
+  const record = { window: win, sessions: new Map(), defaultSessionId: null, historySession: null, closingProjects: new Set() };
   if (checkpoint) {
-    record.restoration = { activeIndex: checkpoint.activeIndex, tabs: checkpoint.tabs.map(tab => {
-      if (tab.archivedThread) return { id: `archive:${tab.archivedThread.id}`, cwd: tab.archivedThread.cwd || '', archivedThread: tab.archivedThread };
+    record.restoration = { kind: restoreKind, activeIndex: checkpoint.activeIndex, tabs: checkpoint.tabs.map(tab => {
+      if (tab.archivedThread) return { id: `archive:${tab.archivedThread.id}`, cwd: tab.archivedThread.cwd || '', archivedThread: tab.archivedThread, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor };
       const created = addSession(record, tab.settings);
-      return { ...created, thread: tab.thread, draft: tab.draft, attachments: tab.attachments, settings: tab.settings };
+      return { ...created, thread: tab.thread, draft: tab.draft, attachments: tab.attachments, settings: tab.settings, queue: tab.queue, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor, preservedDraft: tab.preservedDraft };
     }) };
-  } else addSession(record, { ...settings, cwd });
+  } else if (cwd) addSession(record, { ...settings, cwd });
   const contentsId = win.webContents.id;
   windows.set(contentsId, record);
+  notifications.registerWindow(record);
+  win.on('focus', () => notifications.focusChanged(record));
+  win.on('blur', () => notifications.focusChanged(record));
+  win.on('minimize', () => notifications.focusChanged(record));
+  win.on('restore', () => notifications.focusChanged(record));
   diagnostics.record('info', 'window.created', { windowId: contentsId });
   win.on('page-title-updated', event => event.preventDefault());
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https?:\/\//i.test(url)) shell.openExternal(url); return { action: 'deny' }; });
@@ -397,6 +510,9 @@ async function createWindow(initialSettings, checkpoint = null) {
   win.webContents.on('preload-error', (_event, _preloadPath, error) => diagnostics.error('window.preloadError', error, { windowId: contentsId }));
   win.on('unresponsive', () => diagnostics.record('warn', 'window.unresponsive', { windowId: contentsId }));
   win.webContents.on('render-process-gone', (_event, details) => {
+    record.rendererGone = true;
+    notifications.closeWindow(record);
+    workspaceSave.cancel(record);
     if (updatePreparation?.record === record) updatePreparation.reject(new Error('Окно закрыто во время обновления.'));
     diagnostics.record('error', 'window.rendererGone', { windowId: contentsId, reason: details.reason, exitCode: details.exitCode });
     for (const session of record.sessions.values()) session.stop();
@@ -404,7 +520,19 @@ async function createWindow(initialSettings, checkpoint = null) {
     record.management?.dispose();
     record.management = null;
   });
+  win.on('close', event => {
+    if (record.closeReady || settingsFlushed || updateFrozen) return;
+    event.preventDefault();
+    if (record.workspaceClosing) return;
+    record.workspaceClosing = true;
+    void workspaceSave.request(record).then(() => workspaceState.flush()).finally(() => {
+      record.closeReady = true;
+      if (!win.isDestroyed()) win.close();
+    });
+  });
   win.on('closed', () => {
+    notifications.closeWindow(record);
+    workspaceSave.cancel(record);
     if (updatePreparation?.record === record) updatePreparation.reject(new Error('Окно закрыто во время обновления.'));
     diagnostics.record('info', 'window.closed', { windowId: contentsId });
     windows.delete(contentsId);
@@ -440,10 +568,16 @@ else {
     diagnostics.record(initialized.status === 'failed' ? 'warn' : 'info', 'app.profile', { success: initialized.status !== 'failed', count: initialized.copied.length });
     diagnostics.record('info', 'app.ready'); installHandlers();
     let checkpoint = null;
+    let restoreKind = 'workspace';
     if (releaseInfo.channel === 'nightly') {
       try { checkpoint = await updateCheckpoint.read(); } catch (error) { diagnostics.error('update.failed', error); dialog.showErrorBox('Восстановление Nightly', error.message); }
     }
-    const win = await createWindow(undefined, checkpoint);
+    if (checkpoint) restoreKind = 'update';
+    else {
+      try { checkpoint = await workspaceState.read(); }
+      catch (error) { diagnostics.error('window.openFailed', error); dialog.showErrorBox("Восстановление рабочего места", error.message); }
+    }
+    const win = await createWindow(undefined, checkpoint, restoreKind);
     const executable = app.getPath('exe');
     const executableDirectory = path.dirname(executable);
     if (app.isPackaged && releaseInfo.channel === 'nightly' && path.basename(executableDirectory).toLowerCase() === 'nightly') {
@@ -461,14 +595,25 @@ else {
     if (quitting) return;
     quitting = true;
     const closeUpdater = updater?.close();
-    for (const record of windows.values()) {
-      for (const session of record.sessions.values()) session.dispose();
-      record.historySession?.dispose();
-      record.management?.dispose();
-    }
-    void Promise.all([settingsStore.flush(), workspaceStore.flush(), closeUpdater]).then(async () => {
+    void (async () => {
+      // Capture while sessions still exist; the final quit then skips window handshakes.
+      const records = [...windows.values()];
+      if (!updateFrozen) await Promise.all(records.map(record => {
+        record.workspaceClosing = true;
+        return record.closeReady ? undefined : workspaceSave.request(record);
+      }));
+      for (const record of records) {
+        notifications.closeWindow(record);
+        for (const session of record.sessions.values()) session.dispose();
+        record.historySession?.dispose();
+        record.management?.dispose();
+      }
+      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), closeUpdater]);
       diagnostics.record('info', 'app.quit');
       await diagnostics.flush();
+      settingsFlushed = true; app.quit();
+    })().catch(error => {
+      diagnostics.error('app.unhandled', error);
       settingsFlushed = true; app.quit();
     });
   });

@@ -8,12 +8,33 @@ import { assertNotRunning, checkedPath, checkedTree, createReleaseManifest, publ
 const PIPE = /^\\\\\.\\pipe\\codex-desk-nightly-\d+-[a-f0-9]{32}$/;
 const SHA = /^[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const ERROR_CODES = new Map(['ENOENT', 'EACCES', 'EPERM', 'EBUSY', 'ENOTEMPTY', 'EEXIST'].map(code => [code, code.toLowerCase()]));
+ERROR_CODES.set('EPROCESSCHECK', 'processcheck');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const pendingMessage = 'Обновление Nightly уже ожидает применения. Дождитесь перезапуска; после сбоя повторите node scripts/apply-nightly-update.mjs. Новая сборка не заменяет ожидающую.';
+const pendingMessage = 'Обновление Nightly уже ожидает применения. Закройте Nightly через предложение обновления или вручную; после сбоя повторите node scripts/apply-nightly-update.mjs. Новая сборка не заменяет ожидающую.';
 const queueDirectory = root => path.join(root, 'artifacts', 'nightly-update');
 const candidateDirectory = root => path.join(queueDirectory(root), 'app');
 const executable = root => path.join(root, 'release', 'nightly', 'Codex Desk.exe');
 const samePath = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+
+function failureLocation(root, error) {
+  const syscall = ['rename', 'copyfile', 'mkdir', 'open', 'unlink', 'rmdir', 'scandir', 'stat', 'lstat'].includes(error?.syscall) ? error.syscall : 'unknown';
+  const roles = [
+    [path.join(root, 'release/nightly'), 'nightly'],
+    [path.join(root, 'release/.nightly-incoming'), 'incoming'],
+    [path.join(root, 'release/.nightly-old'), 'old'],
+    [path.join(root, 'release/.transaction.json'), 'journal'],
+    [path.join(root, 'release/.transaction.json.tmp'), 'journal'],
+    [path.join(root, 'release/.release.lock'), 'lock'],
+    [candidateDirectory(root), 'candidate'],
+  ];
+  let role = 'unknown';
+  if (typeof error?.path === 'string') {
+    const target = path.resolve(error.path).toLowerCase();
+    role = roles.find(([prefix]) => target === path.resolve(prefix).toLowerCase() || target.startsWith(path.resolve(prefix).toLowerCase() + path.sep))?.[1] || role;
+  }
+  return `failure_io_${syscall}_${role}`;
+}
 
 export function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
@@ -28,13 +49,13 @@ async function jsonFile(root, file, limit = 16384) {
 }
 
 export function validateRegistration(root, value) {
-  if (!value || value.version !== 1 || !Number.isSafeInteger(value.pid) || value.pid <= 0 || value.pid > 0xffffffff || !PIPE.test(value.pipe) || !SHA.test(value.token) || !SHA.test(value.buildId)
+  if (!value || value.version !== 1 || (value.updateProtocol !== undefined && value.updateProtocol !== 2) || !Number.isSafeInteger(value.pid) || value.pid <= 0 || value.pid > 0xffffffff || !PIPE.test(value.pipe) || !SHA.test(value.token) || !SHA.test(value.buildId)
     || typeof value.executable !== 'string' || !path.isAbsolute(value.executable) || !samePath(value.executable, executable(root))
     || !['userData', 'cwd'].every(key => typeof value[key] === 'string' && path.isAbsolute(value[key]) && !value[key].includes('\0'))) {
     throw new Error('Неверная регистрация Nightly. Закройте Nightly и повторите сборку.');
   }
   if (!value.pipe.startsWith(`\\\\.\\pipe\\codex-desk-nightly-${value.pid}-`)) throw new Error('Процесс Nightly не совпадает с регистрацией.');
-  return { version: 1, pid: value.pid, pipe: value.pipe, token: value.token, buildId: value.buildId, executable: value.executable, userData: value.userData, cwd: value.cwd };
+  return { version: 1, ...(value.updateProtocol === 2 ? { updateProtocol: 2 } : {}), pid: value.pid, pipe: value.pipe, token: value.token, buildId: value.buildId, executable: value.executable, userData: value.userData, cwd: value.cwd };
 }
 
 export async function requestInstance(instance, action, request = {}, { timeoutMs = 5000, connect = createConnection } = {}) {
@@ -59,7 +80,7 @@ export async function requestInstance(instance, action, request = {}, { timeoutM
       if (newline < 0) return;
       try {
         const value = JSON.parse(response.slice(0, newline));
-        if (!value || !['busy', 'preparing', 'ready', 'error', ...(action === 'cancel' ? ['cancelled'] : [])].includes(value.state) || (request.requestId && value.requestId !== request.requestId)) throw new Error();
+        if (!value || !['busy', 'awaiting', 'waiting', 'manual', 'preparing', 'ready', 'error', ...(action === 'cancel' ? ['cancelled'] : [])].includes(value.state) || (request.requestId && value.requestId !== request.requestId)) throw new Error();
         finish(null, { state: value.state });
       } catch { finish(new Error('Неверный ответ Nightly.')); }
     });
@@ -213,9 +234,9 @@ export async function applyNightlyUpdate(root, options = {}) {
   let queue;
   let ownsWorker = false;
   let restart = false;
-  let prepared = false;
   let requested = false;
   let published = false;
+  let stage = 'acquiring_worker';
   async function locked(action) {
     const deadline = now() + 30000;
     for (;;) {
@@ -230,40 +251,68 @@ export async function applyNightlyUpdate(root, options = {}) {
   try {
     await locked(async () => { queue = await readQueue(root); await takeWorkerLock(root, alive); ownsWorker = true; });
     restart = queue.restartRequested === true;
+    stage = 'verifying_candidate';
     if ((await verifyRelease(root, candidate, 'nightly')).buildId !== queue.buildId) throw new Error('Сборка в очереди не совпадает с запросом обновления.');
     await log('candidate_verified');
+    stage = 'preparing_host';
+    if (!alive(queue.instance.pid)) {
+      // After a failed publication the user may reopen the old build. Prepare
+      // that instance too, preserving its current draft and tasks before retry.
+      const current = await findNightlyInstance(root, { alive, guard, request });
+      if (current) {
+        if (!samePath(current.executable, queue.instance.executable) || !samePath(current.userData, queue.instance.userData)) {
+          throw new Error('Nightly открыт с другим профилем. Закройте этот экземпляр перед повтором обновления.');
+        }
+        queue = { ...queue, instance: current, restartRequested: false };
+        restart = false;
+        await saveQueue(root, queue);
+        await log('host_rebound');
+      }
+    }
+    if (queue.instance.updateProtocol !== 2) {
+      // A legacy host interprets prepare as automatic permission to quit.
+      // Never send it that request, even when retrying an older queued update.
+      restart = false;
+      if (queue.restartRequested) { queue.restartRequested = false; await saveQueue(root, queue); }
+      await log('host_manual_legacy');
+    }
     const deadline = now() + (options.maxWaitMs ?? 7 * 24 * 60 * 60 * 1000);
     const params = { requestId: queue.requestId, buildId: queue.buildId };
     let prior;
     while (alive(queue.instance.pid)) {
       if (now() >= deadline) throw new Error('Истекло время ожидания завершения задач Nightly.');
+      if (queue.instance.updateProtocol !== 2) { await sleep(options.pollMs ?? 2000); continue; }
       let response;
       try { requested = true; response = await request(queue.instance, 'prepare', params); }
       catch (error) { if (!alive(queue.instance.pid)) break; throw error; }
       if (response.state !== prior) { await log(`host_${response.state}`); prior = response.state; }
       if (response.state === 'error') throw new Error('Nightly не смог подготовиться к перезапуску.');
-      prepared ||= response.state === 'preparing' || response.state === 'ready';
-      if (prepared && !queue.restartRequested) {
+      if (['awaiting', 'waiting', 'manual'].includes(response.state)) {
+        restart = false;
+        if (queue.restartRequested) { queue.restartRequested = false; await saveQueue(root, queue); }
+      }
+      if (response.state === 'ready' && !queue.restartRequested) {
         queue.restartRequested = true;
         await saveQueue(root, queue);
       }
       if (response.state === 'ready') { restart = true; break; }
       await sleep(options.pollMs ?? 2000);
     }
+    stage = 'waiting_exit';
     const exitDeadline = now() + (options.exitWaitMs ?? 120000);
     while (alive(queue.instance.pid)) {
       if (now() >= exitDeadline) throw new Error('Nightly не завершился после подготовки. Приложение не было принудительно закрыто.');
       await sleep(options.pollMs ?? 2000);
     }
-    // The ready response can be lost as the host closes its pipe. A preceding
-    // preparing response proves the app accepted this update request.
-    restart ||= prepared;
+    // Only acknowledged readiness authorizes relaunch. A manual close during
+    // awaiting/preparing/cancellation stays closed after installation.
     await log('host_exited');
     // Chromium subprocesses may briefly outlive the main PID on Windows.
     for (;;) {
       try { await guard(path.dirname(queue.instance.executable)); break; }
       catch (error) { if (now() >= exitDeadline) throw error; await sleep(options.pollMs ?? 2000); }
     }
+    stage = 'publishing';
     await locked(async () => {
       // Recheck immediately before publication, after an arbitrarily long task.
       if ((await verifyRelease(root, candidate, 'nightly')).buildId !== queue.buildId) throw new Error('Сборка изменилась во время ожидания.');
@@ -271,11 +320,15 @@ export async function applyNightlyUpdate(root, options = {}) {
       published = true;
     });
     await log('published');
+    stage = 'relaunching';
     if (restart) { await launch(queue.instance); await log('relaunched'); }
+    stage = 'cleaning_queue';
     await removeChecked(root, queueDirectory(root));
     await log('complete');
     return { restarted: restart, buildId: queue.buildId };
   } catch (error) {
+    await log(`failed_${stage}_${ERROR_CODES.get(error?.code) ?? 'unknown'}`);
+    await log(failureLocation(root, error));
     if (!ownsWorker) throw error;
     if (requested && queue && alive(queue.instance.pid)) {
       try {

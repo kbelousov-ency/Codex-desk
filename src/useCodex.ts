@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Access, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, Settings, Thread, TurnWork } from './types';
+import type { Access, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork } from './types';
 import { mergeHistoricalTurnWork, observeTurnWork } from './turn-work';
 import { historicalCacheActivity, responseTime } from './cache-history';
 
@@ -31,9 +31,19 @@ export function accessParams(access: Access, cwd: string, turn = false) {
   return { ...common, sandboxPolicy };
 }
 
-export function useCodex(bridge: CodexBridge = window.codex, options?: { restoreSettings?: Settings }) {
-  // Only the host's one-time Nightly restart checkpoint supplies this value.
-  // Ordinary launches and reconnects keep the full-access confirmation policy.
+export function useCodex(bridge: CodexBridge = window.codex, options?: { restoreSettings?: Settings; onAttention?(event: SessionAttentionEvent): void }) {
+  const attentionCallback = useRef(options?.onAttention);
+  attentionCallback.current = options?.onAttention;
+  const attentionSuppressed = useRef(false);
+  const attentionSeen = useRef(new Set<string>());
+  const reportAttention = useCallback((kind: SessionAttentionEvent['kind'], eventId: string) => {
+    const key = `${kind}:${eventId}`;
+    if (attentionSeen.current.has(key)) return;
+    attentionSeen.current.add(key);
+    if (attentionSeen.current.size > 300) attentionSeen.current.delete(attentionSeen.current.values().next().value!);
+    attentionCallback.current?.({ kind, eventId });
+  }, []);
+  // Restored workspace tabs keep their explicitly selected settings.
   const restoreSettingsRef = useRef(options?.restoreSettings);
   const [connection, setConnection] = useState<'connecting' | 'ready' | 'error'>('connecting');
   const [cwd, setCwd] = useState('');
@@ -61,11 +71,16 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [interruptedTurn, setInterruptedTurn] = useState<InterruptedTurn | null>(null);
   const [requests, setRequests] = useState<Request[]>([]);
   const [diff, setDiff] = useState('');
+  const [diffTurnId, setDiffTurnId] = useState<string | undefined>();
+  const [turnDiffs, setTurnDiffs] = useState<Record<string, string>>({});
   const [plan, setPlan] = useState<any[]>([]);
   const [tokens, setTokens] = useState<any>(null);
   const [cacheActivityAt, setCacheActivityAt] = useState<number | null>(null);
   const [cacheGeneration, setCacheGeneration] = useState(0);
   const [cacheTurnCompleted, setCacheTurnCompleted] = useState(0);
+  const [queueCompletion, setQueueCompletion] = useState(0);
+  const [queuePause, setQueuePause] = useState({ revision: 0, reason: '' });
+  const [steering, setSteering] = useState(false);
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const threadRef = useRef<Thread | null>(null);
   const interruptedRef = useRef<InterruptedTurn | null>(null);
@@ -85,6 +100,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const settingsRef = useRef<Settings>({});
   const lifecycleRef = useRef(0);
   const sendSequenceRef = useRef(0);
+  const steerPendingRef = useRef(false);
+  const queuePauseRevisionRef = useRef(0);
   const attachmentCacheRef = useRef(new Map<string, Promise<string | null>>());
   const turnHistoryRef = useRef<{ cursor: string | null; known: Set<string> }>({ cursor: null, known: new Set() });
   const compactionRef = useRef<CompactionOperation | null>(null);
@@ -92,6 +109,10 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const restoreTerminalRef = useRef<(data: { threadId: string; error?: string }) => Promise<void>>(async () => {});
   const updateInterrupted = useCallback((value: InterruptedTurn | null) => {
     interruptedRef.current = value; setInterruptedTurn(value);
+  }, []);
+  const pauseQueue = useCallback((reason: string) => {
+    const revision = ++queuePauseRevisionRef.current;
+    setQueuePause({ revision, reason });
   }, []);
 
   const observeTurn = useCallback((turn: any) => {
@@ -218,6 +239,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
 
   const clearThread = useCallback(() => {
     if (terminalRef.current) return;
+    attentionSuppressed.current = false;
+    pauseQueue('Диалог отключён. Откройте прежний диалог перед продолжением очереди.');
     updateInterrupted(null);
     historyLoadSequenceRef.current++;
     resumedThreadRef.current = null; setThreadReady(false);
@@ -228,8 +251,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     pendingRequestIdsRef.current.clear();
     turnHistoryRef.current = { cursor: null, known: new Set() };
     threadRef.current = null; turnRef.current = null; activeRef.current = false;
-    setThread(null); setItems([]); setTurnWork({}); setDiff(''); setPlan([]); setRequests([]); setItemCursor(null); setTokens(null); setBusy(false); setError('');
-  }, [invalidateCache, updateInterrupted]);
+    setThread(null); setItems([]); setTurnWork({}); setDiff(''); setDiffTurnId(undefined); setTurnDiffs({}); setPlan([]); setRequests([]); setItemCursor(null); setTokens(null); setBusy(false); setError('');
+  }, [invalidateCache, updateInterrupted, pauseQueue]);
 
   const connect = useCallback(async (directory?: string) => {
     if (connectingRef.current || terminalRef.current) return;
@@ -295,6 +318,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       if (event.type === 'status') {
         const status = typeof data === 'string' ? data : data.state ?? data.status;
         if (['disconnected', 'stopped', 'error', 'exited'].includes(status)) {
+          if (connectionRef.current === 'ready') reportAttention('error', `connection:${lifecycleRef.current}`);
+          pauseQueue('Соединение прервано. Проверьте историю перед продолжением очереди.');
           updateInterrupted(null);
           historyLoadSequenceRef.current++;
           resumedThreadRef.current = null; setThreadReady(false);
@@ -310,6 +335,9 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       }
       if (event.type === 'serverRequest') {
         if (data.params?.threadId && data.params.threadId !== threadRef.current?.id) return;
+        const kind = ['item/tool/requestUserInput', 'mcpServer/elicitation/request'].includes(data.method) ? 'question'
+          : ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'applyPatchApproval', 'execCommandApproval'].includes(data.method) ? 'approval' : null;
+        if (kind && !pendingRequestIdsRef.current.has(data.id)) reportAttention(kind, `${threadRef.current?.id || ''}:${data.params?.turnId || ''}:${data.id}`);
         pendingRequestIdsRef.current.add(data.id);
         setRequests(previous => previous.some(r => r.id === data.id) ? previous : [...previous, data]); return;
       }
@@ -319,6 +347,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         if (connectionRef.current !== 'ready' || !p.turn?.id) return;
         if (settledTurnsRef.current.has(p.turn.id)) return;
         if (activeRef.current && turnRef.current && turnRef.current !== p.turn.id) return;
+        if (!activeRef.current) attentionSuppressed.current = false;
         updateInterrupted(null);
         if (compactionRef.current) {
           const operation = matchCompactionTurn(p.turn.id);
@@ -330,7 +359,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         const suppressed = activeRef.current ? cacheTurnRef.current.suppressed : false;
         cacheTurnRef.current = { id: p.turn.id, observed, suppressed };
         lifecycleRef.current++;
-        turnRef.current = p.turn.id; activeRef.current = true; setBusy(true); setDiff(''); setPlan([]);
+        turnRef.current = p.turn.id; activeRef.current = true; setBusy(true); setDiff(''); setDiffTurnId(p.turn.id); setPlan([]);
       } else if (method === 'turn/completed') {
         const turnId = p.turn?.id;
         if (compactionRef.current) {
@@ -349,7 +378,12 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         observeTurn(p.turn);
         lifecycleRef.current++;
         settledTurnsRef.current.add(turnId);
+        if (!resumingRef.current && activeRef.current && connectionRef.current === 'ready' && !attentionSuppressed.current) {
+          if (p.turn.status === 'completed' && !p.turn.error) reportAttention('completed', `turn:${turnId}`);
+          else if (p.turn.error || p.turn.status === 'failed') reportAttention('error', `turn:${turnId}`);
+        }
         if (p.turn.status === 'completed' && !p.turn.error) {
+          if (!resumingRef.current && connectionRef.current === 'ready') setQueueCompletion(value => value + 1);
           if (!cacheTurnRef.current.suppressed && connectionRef.current === 'ready') {
             if (!cacheTurnRef.current.observed) {
               const at = resumingRef.current
@@ -362,6 +396,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
             setCacheTurnCompleted(value => value + 1);
           }
         } else {
+          pauseQueue(p.turn.status === 'interrupted' ? 'Выполнение остановлено.' : 'Задача завершилась с ошибкой.');
           invalidateCache();
         }
         cacheTurnRef.current.id = turnId;
@@ -397,7 +432,9 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         if (method === 'item/completed' && ['agentMessage', 'reasoning', 'plan'].includes(item.type)) observeModelResponse(p.turnId);
         if (item.type === 'userMessage') {
           setItems(previous => {
-            const optimistic = previous.find(i => i.optimistic && (!item.clientId || i.clientId === item.clientId));
+            const clientId = item.clientId || item.clientUserMessageId;
+            const contentKey = (content: any[]) => JSON.stringify(content.map(part => part.type === 'text' ? ['text', part.text] : [part.type, part.path || part.url]));
+            const optimistic = previous.find(i => i.optimistic && (clientId ? i.clientId === clientId : (!i.turnId || i.turnId === p.turnId) && contentKey(i.content || []) === contentKey(item.content || [])));
             const existing = previous.find(i => i.id === item.id);
             const next = { ...existing, ...item, previews: existing?.previews || optimistic?.previews, optimistic: false, turnId: p.turnId, complete: method === 'item/completed' };
             const remaining = previous.filter(i => i.id !== optimistic?.id);
@@ -419,7 +456,12 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         upsert(p.itemId, item => ({ ...item, aggregatedOutput: (item.aggregatedOutput || '') + p.delta, turnId: p.turnId || item.turnId }), 'commandExecution');
       } else if (method === 'item/fileChange/patchUpdated') {
         upsert(p.itemId, item => ({ ...item, changes: p.changes, turnId: p.turnId || item.turnId }), 'fileChange');
-      } else if (method === 'turn/diff/updated') setDiff(p.diff || '');
+      } else if (method === 'turn/diff/updated') {
+        const id = p.turnId || turnRef.current || cacheTurnRef.current.id;
+        if (id && typeof p.diff === 'string') setTurnDiffs(previous => ({ ...previous, [id]: p.diff }));
+        const latest = turnRef.current || cacheTurnRef.current.id;
+        if (!p.turnId || !latest || p.turnId === latest) { setDiff(p.diff || ''); setDiffTurnId(id || undefined); }
+      }
       else if (method === 'turn/plan/updated') setPlan(p.plan || []);
       else if (method === 'thread/tokenUsage/updated') {
         if (compactionRef.current) {
@@ -448,6 +490,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         const expected = turnRef.current || cacheTurnRef.current.id;
         if (p.turnId && ((expected && expected !== p.turnId) || settledTurnsRef.current.has(p.turnId))) return;
         if (p.willRetry !== true) invalidateCache();
+        if (p.willRetry !== true && !resumingRef.current && !attentionSuppressed.current) reportAttention('error', `turn:${p.turnId || expected || lifecycleRef.current}`);
+        pauseQueue('Codex сообщил об ошибке. Проверьте результат перед продолжением очереди.');
         if (compactionRef.current && p.willRetry !== true) {
           const operation = p.turnId ? matchCompactionTurn(p.turnId) : compactionRef.current;
           if (!operation) return;
@@ -461,7 +505,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     });
     void connect();
     return unsubscribe;
-  }, [bridge, connect, refreshHistory, restorePreviews, invalidateCache, observeModelResponse, updateConnection, updateLoading, observeTurn, matchCompactionTurn, finishCompaction, updateInterrupted]);
+  }, [bridge, connect, refreshHistory, restorePreviews, invalidateCache, observeModelResponse, updateConnection, updateLoading, observeTurn, matchCompactionTurn, finishCompaction, updateInterrupted, pauseQueue, reportAttention]);
 
   const selectDirectory = async () => {
     if (terminalRef.current || busy || loading) return;
@@ -637,7 +681,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     finally { updateLoading(false); }
   };
 
-  const send = async (text: string, attachments: Attachment[]) => {
+  const send = async (text: string, attachments: Attachment[], silentCompletion = false) => {
     if (terminalRef.current || activeRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size || (!text.trim() && !attachments.length)) return false;
     const selected = threadRef.current;
     if (selected && resumedThreadRef.current !== selected.id) {
@@ -647,6 +691,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       if (threadRef.current?.id !== selected.id || activeRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size) return false;
     }
     const previousInterrupted = interruptedRef.current;
+    attentionSuppressed.current = silentCompletion;
     const lifecycle = lifecycleRef.current;
     updateInterrupted(null);
     cacheTurnRef.current = { id: null, observed: false, suppressed: false };
@@ -684,7 +729,9 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       return true;
     } catch (e) {
       // A reply from a previous request must not tear down a newer live turn.
+      pauseQueue('Отправка завершилась с ошибкой. Проверьте историю перед продолжением очереди.');
       if (sendSequenceRef.current === sequence) {
+        if (!silentCompletion) reportAttention('error', `turn:${turnRef.current || `send-${sequence}`}`);
         if (turnRef.current) { settledTurnsRef.current.add(turnRef.current); observeTurn({ id: turnRef.current, status: 'failed' }); }
         if (/thread.*not found|already has an active writer/i.test(errorText(e))) { resumedThreadRef.current = null; setThreadReady(false); }
         invalidateCache(); setError(/already has an active writer/i.test(errorText(e)) ? resumeErrorText(e) : errorText(e)); activeRef.current = false; turnRef.current = null; setBusy(false);
@@ -701,8 +748,37 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     if (!threadRef.current || resumedThreadRef.current !== threadRef.current.id || activeRef.current || busy || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size || requests.length) return false;
     // send reserves activeRef synchronously before its first await. A timer and
     // the composer therefore cannot launch two turns, or create a ping thread.
-    return send(text, []);
+    return send(text, [], true);
   };
+
+  const steer = async (text: string, attachments: Attachment[]) => {
+    const current = threadRef.current;
+    const expectedTurnId = turnRef.current;
+    if (!current || !expectedTurnId || !activeRef.current || steerPendingRef.current || terminalRef.current || compactionRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size || (!text.trim() && !attachments.length)) return false;
+    steerPendingRef.current = true; setSteering(true); setError('');
+    let clientId: string | undefined;
+    try {
+      const saved = attachments.length ? await bridge.saveImages(attachments) : [];
+      // Images can take time to save. Never steer a later turn or fall back to start.
+      if (threadRef.current?.id !== current.id || turnRef.current !== expectedTurnId || !activeRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size) {
+        setError('Текущая задача уже завершилась или ожидает ответа. Уточнение осталось в поле ввода.'); return false;
+      }
+      const input: any[] = [];
+      if (text.trim()) input.push({ type: 'text', text: text.trim(), text_elements: [] });
+      saved.forEach(image => input.push({ type: 'localImage', path: image.path }));
+      clientId = crypto.randomUUID();
+      setItems(previous => [...previous, { id: clientId!, clientId, type: 'userMessage', content: input, previews: saved, optimistic: true, turnId: expectedTurnId }]);
+      await bridge.request('turn/steer', { threadId: current.id, expectedTurnId, clientUserMessageId: clientId, input });
+      return true;
+    } catch (e) {
+      if (clientId) setItems(previous => previous.filter(item => item.id !== clientId));
+      setError(`Уточнение не подтверждено: ${errorText(e)}. Текст сохранён. Проверьте историю перед повторной отправкой.`);
+      pauseQueue('Уточнение не подтверждено. Проверьте историю.');
+      return false;
+    } finally { steerPendingRef.current = false; setSteering(false); }
+  };
+
+  const canSendQueued = (pauseRevision = queuePause.revision) => pauseRevision === queuePauseRevisionRef.current && !terminalRef.current && !activeRef.current && !loadingRef.current && !steerPendingRef.current && connectionRef.current === 'ready' && !pendingRequestIdsRef.current.size && (!threadRef.current || resumedThreadRef.current === threadRef.current.id);
 
   const continueTurn = async () => {
     const stopped = interruptedRef.current;
@@ -741,6 +817,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const openTerminal = async () => {
     const current = threadRef.current;
     if (terminalRef.current || !current || resumedThreadRef.current !== current.id || activeRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size) return false;
+    pauseQueue('Диалог открыт в терминале. Проверьте историю перед продолжением очереди.');
     updateInterrupted(null);
     const operation = { threadId: current.id, state: 'opening' as 'opening' | 'open' | 'restoring' };
     terminalRef.current = operation; setTerminalOpen(true); setError('');
@@ -787,6 +864,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
 
   const stop = async () => {
     if (terminalRef.current) return;
+    pauseQueue('Выполнение остановлено пользователем.');
     invalidateCache();
     if (!threadRef.current) return;
     const threadId = threadRef.current.id;
@@ -818,9 +896,9 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   return {
     connection, cwd, models, model, effort, access, account, config, executable, history, historyCursor, historyLoading,
     thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, loading, error, notice,
-    canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, plan, tokens, diagnostics,
-    cacheActivityAt, cacheGeneration, cacheTurnCompleted,
+    canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
+    cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering,
     connect, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
-    resume, loadEarlier, send, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice,
+    resume, loadEarlier, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice,
   };
 }

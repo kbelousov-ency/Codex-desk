@@ -50,11 +50,18 @@ function send(pipe, value, { split = false } = {}) {
   });
 }
 
+async function permitClose(f, request) {
+  assert.equal((await f.send(request)).state, 'awaiting');
+  assert.equal(f.state.prepares, 0);
+  assert.deepEqual(f.host.decide('close'), { state: 'waiting' });
+}
+
 test('Nightly registration identifies one local instance and status never prepares or quits', async t => {
   const f = await fixture(t);
   const registration = JSON.parse(await readFile(path.join(f.releaseRoot, '.nightly-instance.json'), 'utf8'));
   assert.deepEqual(registration, f.host.registration);
   assert.equal(registration.version, 1);
+  assert.equal(registration.updateProtocol, 2);
   assert.equal(registration.pid, process.pid);
   assert.match(registration.token, /^[a-f0-9]{64}$/);
   if (process.platform === 'win32') assert.match(registration.pipe, /^\\\\\.\\pipe\\codex-desk-nightly-\d+-[a-f0-9]{32}$/);
@@ -65,12 +72,19 @@ test('Nightly registration identifies one local instance and status never prepar
   assert.equal(f.state.quits, 0);
 });
 
-test('busy app keeps working until exact update request can prepare and acknowledge readiness', async t => {
+test('offer never closes an idle or busy app; explicit close waits until checkpoint and readiness acknowledgment', async t => {
   const f = await fixture(t);
   const request = f.request();
   f.state.busy = true;
-  assert.deepEqual(await f.send(request), { requestId: request.requestId, state: 'busy' });
+  assert.deepEqual(await f.send(request), { requestId: request.requestId, state: 'awaiting' });
   assert.equal(f.state.prepares, 0);
+  f.state.busy = false;
+  assert.equal((await f.send(request)).state, 'awaiting');
+  assert.equal(f.state.prepares, 0);
+  assert.equal(f.state.quits, 0);
+  f.state.busy = true;
+  assert.deepEqual(f.host.decide('close'), { state: 'waiting' });
+  assert.equal((await f.send(request)).state, 'waiting');
   f.state.busy = false;
   assert.equal((await f.send(request)).state, 'preparing');
   await tick();
@@ -91,6 +105,7 @@ test('pending preparation is idempotent, cannot be stolen and cannot quit before
   let prepares = 0;
   const f = await fixture(t, { prepare: () => { prepares++; return new Promise(resolve => { resolvePrepare = resolve; }); } });
   const request = f.request();
+  await permitClose(f, request);
   assert.equal((await f.send(request)).state, 'preparing');
   assert.equal((await f.send(request)).state, 'preparing');
   assert.equal((await f.send(f.request())).state, 'busy');
@@ -130,9 +145,10 @@ test('temporary renderer refusal unfreezes and permits retrying the same request
   let attempts = 0;
   const f = await fixture(t, { prepare: async () => { attempts++; return ready; } });
   const request = f.request();
+  await permitClose(f, request);
   assert.equal((await f.send(request)).state, 'preparing');
   await tick();
-  assert.equal(f.state.notices.at(-1), 'busy');
+  assert.equal(f.state.notices.at(-1), 'waiting');
   assert.equal(f.state.quits, 0);
   ready = true;
   assert.equal((await f.send(request)).state, 'preparing');
@@ -147,31 +163,34 @@ test('checkpoint failure unfreezes and reports error without retrying the failed
   let attempts = 0;
   const f = await fixture(t, { prepare: async () => { attempts++; throw new Error('private details'); } });
   const request = f.request();
+  await permitClose(f, request);
   assert.equal((await f.send(request)).state, 'preparing');
   await tick();
   assert.deepEqual(await f.send(request), { requestId: request.requestId, state: 'error' });
   assert.equal(attempts, 1);
   assert.equal(f.state.quits, 0);
   assert.ok(f.state.notices.includes('error'));
-  assert.equal((await f.send(f.request())).state, 'preparing');
+  assert.equal((await f.send(f.request())).state, 'awaiting');
 });
 
 test('new host work racing with renderer preparation cancels restart', async t => {
   let resolvePrepare;
   const f = await fixture(t, { prepare: () => new Promise(resolve => { resolvePrepare = resolve; }) });
   const request = f.request();
+  await permitClose(f, request);
   assert.equal((await f.send(request)).state, 'preparing');
   f.state.busy = true;
   resolvePrepare(true);
   await tick();
-  assert.equal((await f.send(request)).state, 'busy');
+  assert.equal((await f.send(request)).state, 'waiting');
   assert.equal(f.state.quits, 0);
-  assert.ok(f.state.notices.includes('busy'));
+  assert.ok(f.state.notices.includes('waiting'));
 });
 
 test('new host work after checkpoint but before ready acknowledgment cancels restart', async t => {
   const f = await fixture(t);
   const request = f.request();
+  await permitClose(f, request);
   assert.equal((await f.send(request)).state, 'preparing');
   await tick();
   f.state.busy = true;
@@ -183,6 +202,7 @@ test('authenticated cancellation unfreezes pending checkpoint and ignores its la
   let resolvePrepare;
   const f = await fixture(t, { prepare: () => new Promise(resolve => { resolvePrepare = resolve; }) });
   const request = f.request();
+  await permitClose(f, request);
   assert.equal((await f.send(request)).state, 'preparing');
   assert.equal((await f.send(f.request('cancel'))).state, 'busy');
   assert.equal((await f.send({ ...request, action: 'cancel', token: '0'.repeat(64) })).state, 'error');
@@ -192,13 +212,47 @@ test('authenticated cancellation unfreezes pending checkpoint and ignores its la
   await tick();
   assert.equal(f.host.getState(), 'ready');
   assert.equal(f.state.quits, 0);
+  assert.equal((await f.send(request)).state, 'awaiting');
+});
+
+test('Later keeps the pending update manual across polls, idle changes and delayed checkpoint completion', async t => {
+  let resolvePrepare;
+  const f = await fixture(t, { prepare: () => new Promise(resolve => { resolvePrepare = resolve; }) });
+  const request = f.request();
+  await permitClose(f, request);
   assert.equal((await f.send(request)).state, 'preparing');
+  assert.deepEqual(f.host.decide('later'), { state: 'manual' });
+  assert.equal(f.state.notices.at(-1), 'manual');
+  resolvePrepare(true);
+  await tick();
+  for (const busy of [true, false, false]) {
+    f.state.busy = busy;
+    assert.equal((await f.send(request)).state, 'manual');
+    assert.equal((await f.send(f.request('status'))).state, 'manual');
+  }
+  assert.equal(f.state.quits, 0);
+  assert.throws(() => f.host.decide('close'), /unavailable/);
+});
+
+test('Later on an offer never prepares; local decisions and remote requests cannot grant implicit consent', async t => {
+  const f = await fixture(t);
+  assert.throws(() => f.host.decide('close'), /unavailable/);
+  const request = f.request();
+  assert.equal((await f.send(request)).state, 'awaiting');
+  assert.throws(() => f.host.decide('unknown'), /unavailable/);
+  assert.equal((await f.send({ ...request, action: 'close' })).state, 'error');
+  f.host.decide('later');
+  assert.equal((await f.send(request)).state, 'manual');
+  assert.equal(f.state.prepares, 0);
+  assert.equal(f.state.quits, 0);
 });
 
 test('closed host releases reservation and ignores late checkpoint completion', async t => {
   let resolvePrepare;
   const f = await fixture(t, { prepare: () => new Promise(resolve => { resolvePrepare = resolve; }) });
-  assert.equal((await f.send(f.request())).state, 'preparing');
+  const request = f.request();
+  await permitClose(f, request);
+  assert.equal((await f.send(request)).state, 'preparing');
   await f.host.close();
   assert.equal(f.state.notices.at(-1), 'error');
   resolvePrepare(true);
@@ -211,6 +265,7 @@ test('vanished helper releases a prepared renderer after bounded lease without q
   const f = await fixture(t);
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const request = f.request();
+  await permitClose(f, request);
   assert.equal((await f.send(request)).state, 'preparing');
   await tick();
   assert.equal(f.host.getState(), 'ready');

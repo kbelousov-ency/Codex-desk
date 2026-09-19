@@ -16,6 +16,7 @@ const EVENTS = new Set([
   'window.rendererGone', 'window.preloadError', 'window.openFailed',
   'session.created', 'session.disposed', 'ipc.start', 'ipc.complete', 'ipc.failed',
   'renderer.error', 'diagnostics.run', 'diagnostics.exported', 'diagnostics.exportFailed', 'update.failed',
+  'notification.failed',
   'transport.start', 'transport.ready', 'transport.end', 'transport.exit', 'transport.diagnostic',
   'rpc.start', 'rpc.complete', 'rpc.failed', 'rpc.respond', 'rpc.serverRequest', 'rpc.notification',
   'codex.notification', 'codex.serverRequest', 'codex.version',
@@ -25,12 +26,15 @@ const CHANNELS = new Set([
   'host:getSettings', 'host:setSettings', 'host:openTerminal', 'host:getMcpConfig',
   'host:previewMcpImport', 'host:saveMcpImport', 'host:reloadMcp', 'host:checkMcp',
   'host:getWorkspace', 'host:listArchivedThreads', 'host:searchThreads',
+  'host:saveWorkspaceState', 'host:completeWorkspaceSave',
+  'host:getNotificationSettings', 'host:setNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus',
   'host:readArchivedThread', 'host:manageThread', 'host:openArchivedPath',
-  'host:listProjectThreads', 'host:createSession', 'host:closeSession',
+  'host:listProjectThreads', 'host:createSession', 'host:closeSession', 'host:closeProject',
   'host:chooseDirectory', 'host:chooseExecutable', 'host:saveImages',
   'host:readAttachment', 'host:openPath', 'host:listFiles', 'host:showPathMenu',
+  'host:getGitStatus', 'host:getGitDiff',
   'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:reportRendererError',
-  'host:openDiagnosticsFolder', 'host:rendererError', 'host:getBuildInfo', 'host:completeUpdatePrepare', 'host:completeUpdateRestore',
+  'host:openDiagnosticsFolder', 'host:rendererError', 'host:getBuildInfo', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate',
   'codex:start', 'codex:request', 'codex:respond', 'unknown',
 ]);
 const METHODS = new Set([
@@ -86,6 +90,7 @@ const IDS = new Set(['sessionId', 'clientId', 'threadId', 'turnId', 'projectId',
 const VERSION_KEYS = new Set(['appVersion', 'electronVersion', 'chromeVersion', 'nodeVersion', 'codexVersion']);
 const APP_FILES = new Set([
   'main.mjs', 'preload.cjs', 'diagnostics.mjs', 'codex-client.mjs', 'window-session.mjs',
+  'notification-service.mjs', 'NotificationSettings.tsx',
   'host-utils.mjs', 'mcp-config.mjs', 'mcp-service.mjs', 'file-links.mjs', 'attachments.mjs',
   'project-files.mjs', 'project-history.mjs', 'thread-management.mjs', 'terminal-launcher.mjs',
   'App.tsx', 'Workspace.tsx', 'Conversation.tsx', 'useCodex.ts', 'main.tsx',

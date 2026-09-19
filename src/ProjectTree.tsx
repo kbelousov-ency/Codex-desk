@@ -2,6 +2,7 @@ import { ChevronRight, LoaderCircle, MessageSquare, Plus, RefreshCw } from 'luci
 import { folderName } from './useCodex';
 import type { Thread } from './types';
 import ThreadMenu, { type ThreadAction } from './ThreadMenu';
+import ProjectMenu from './ProjectMenu';
 
 export const projectKey = (cwd: string) => cwd.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
 export type ProjectHistory = { threads: Thread[]; cursor: string | null; loaded: boolean; loading: boolean; error: string };
@@ -26,6 +27,7 @@ export type ProjectTreeControls = {
   threadAction?(action: ThreadAction, cwd: string, thread: Thread): void;
   threadLocked?(threadId: string): boolean;
   addProject(): void;
+  closeProject?(cwd: string): void;
   newChat(cwd: string): void;
   toggleProject(cwd: string): void;
   refreshProject(cwd: string, cursor?: string): void;
@@ -41,11 +43,11 @@ export default function ProjectTree({ controls, active = true }: { controls: Pro
       const history = controls.histories[key];
       const activeFolder = projectKey(controls.activeCwd) === key;
       return <section className={`folder-tree-entry ${activeFolder ? 'active-folder' : ''}`} data-cwd={cwd} key={key}>
-        <div className="folder-tree-row">
+        <ProjectMenu name={name} active={active} disabled={controls.opening || Boolean(controls.actionBusy) || !controls.closeProject} onClose={() => controls.closeProject?.(cwd)}>
           <button className="folder-toggle" aria-label={`Диалоги папки ${name}`} aria-expanded={expanded} title={cwd} onClick={() => controls.toggleProject(cwd)}><span>{name}</span><ChevronRight size={12} className={expanded ? 'folder-chevron expanded' : 'folder-chevron'} /></button>
           {expanded && <button className="icon-button small folder-refresh" aria-label={`Обновить диалоги ${name}`} title="Обновить диалоги" disabled={history?.loading} onClick={() => controls.refreshProject(cwd)}><RefreshCw size={12} className={history?.loading ? 'spin' : ''} /></button>}
           <button className="icon-button small folder-add" aria-label={`Новый диалог в папке ${name}`} title={`Новый диалог в папке ${name}`} disabled={controls.opening} onClick={() => controls.newChat(cwd)}><Plus size={15} /></button>
-        </div>
+        </ProjectMenu>
         {expanded && <div className="folder-threads" aria-label={`Диалоги ${name}`}>
           {history?.threads.map(thread => {
             const title = thread.name || thread.preview || 'Новый диалог';

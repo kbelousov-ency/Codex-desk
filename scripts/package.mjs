@@ -56,7 +56,7 @@ try {
   });
   if (queuedBuildId) {
     await launchUpdateHelper(root);
-    console.log(`NIGHTLY собран. Обновление применится автоматически после завершения активных задач и перезапустит приложение.\nСборка: ${queuedBuildId.slice(0, 12)}. RELEASE не изменён.`);
+    console.log(`NIGHTLY собран. В новой версии закрытие для обновления подтверждается в чате; старое приложение нужно закрыть вручную. До закрытия сборка остаётся в очереди.\nСборка: ${queuedBuildId.slice(0, 12)}. RELEASE не изменён.`);
   }
 } catch (error) {
   console.error(`Сборка не опубликована: ${error.message}`);

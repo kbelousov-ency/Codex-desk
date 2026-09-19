@@ -33,6 +33,8 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
   await b.chooseDirectory();
   await a.openPath('src/first.ts:12');
   await b.showPathMenu('src/second.ts');
+  await a.showPathMenu('src/first.ts', { askCodex: true });
+  await bridge.showPathMenu('src', { askCodex: true });
   await a.listFiles('src', 500);
   await b.listFiles();
   await a.getMcpConfig();
@@ -50,6 +52,8 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
     ['host:chooseDirectory', 'b'],
     ['host:openPath', 'src/first.ts:12', 'a'],
     ['host:showPathMenu', 'src/second.ts', 'b'],
+    ['host:showPathMenu', 'src/first.ts', { askCodex: true }, 'a'],
+    ['host:showPathMenu', 'src', { askCodex: true }, undefined],
     ['host:listFiles', 'src', 500, 'a'],
     ['host:listFiles', undefined, undefined, 'b'],
     ['host:getMcpConfig', 'a'],
@@ -60,6 +64,16 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
     ['host:openTerminal', { threadId: 'thread-a', model: 'configured-model', effort: 'high', access: 'auto' }, 'a'],
   ]);
   assert.throws(() => bridge.forSession(null), /Некорректная/);
+});
+
+test('Git readers keep file selection and staged area scoped to their session', async () => {
+  const { bridge, calls } = await fixture();
+  await bridge.forSession('project-a').getGitStatus();
+  await bridge.forSession('project-b').getGitDiff({ path: 'src/пример.ts', area: 'staged' });
+  assert.deepEqual(calls, [
+    ['host:getGitStatus', 'project-a'],
+    ['host:getGitDiff', { path: 'src/пример.ts', area: 'staged' }, 'project-b'],
+  ]);
 });
 
 test('preload listeners receive only their tab, root follows the default and unsubscribe is local', async () => {
@@ -88,6 +102,20 @@ test('workspace history has its own fixed IPC and is not exposed through a sessi
     ['host:listProjectThreads', 'project-a', undefined],
   ]);
   assert.equal(bridge.forSession('a').listProjectThreads, undefined);
+});
+
+test('project close and update consent use fixed workspace IPC, never a model request', async () => {
+  const { bridge, calls } = await fixture();
+  await bridge.closeProject('C:/project', { force: true });
+  await bridge.getUpdateStatus();
+  await bridge.decideUpdate('later');
+  await bridge.decideUpdate('close');
+  assert.deepEqual(calls, [
+    ['host:closeProject', 'C:/project', { force: true }],
+    ['host:getUpdateStatus'], ['host:decideUpdate', 'later'], ['host:decideUpdate', 'close'],
+  ]);
+  assert.equal(bridge.forSession('a').closeProject, undefined);
+  assert.equal(bridge.forSession('a').decideUpdate, undefined);
 });
 
 test('dialog search has fixed readonly workspace IPC and preserves the archive scope', async () => {
@@ -157,4 +185,42 @@ test('renderer reports expose only known string fields and enforce UTF-8 byte li
   bridge.reportRendererError({ kind: 'error', message: '\0'.repeat(2000) });
   assert.equal(sends.length, before, 'Oversized multibyte and JSON-escaped payloads are rejected');
   for (const [, payload] of sends) assert.ok(Buffer.byteLength(JSON.stringify(payload), 'utf8') <= 8000);
+});
+
+test('workspace autosave and close handshake stay scoped to the window, not a model session', async () => {
+  const { bridge, calls, ipc } = await fixture();
+  const snapshot = { version: 1, activeIndex: 0, tabs: [] };
+  await bridge.saveWorkspaceState(snapshot);
+  await bridge.completeWorkspaceSave({ requestId: 'close-1', snapshot });
+  assert.deepEqual(calls, [['host:saveWorkspaceState', snapshot], ['host:completeWorkspaceSave', { requestId: 'close-1', snapshot }]]);
+  const messages = [];
+  const off = bridge.onWorkspaceSave(request => messages.push(request));
+  ipc.emit('host:workspaceSave', {}, { requestId: 'close-2' });
+  off(); ipc.emit('host:workspaceSave', {}, { requestId: 'close-3' });
+  assert.deepEqual(messages, [{ requestId: 'close-2' }]);
+  for (const key of ['saveWorkspaceState', 'completeWorkspaceSave', 'onWorkspaceSave']) assert.equal(bridge.forSession('a')[key], undefined);
+});
+
+test('notifications and focus use fixed workspace IPC with removable isolated listeners', async () => {
+  const { bridge, calls, ipc } = await fixture();
+  await bridge.getNotificationSettings();
+  await bridge.setNotificationSettings({ sound: true, error: false });
+  await bridge.setNotificationContext({ activeSessionId: 'tab-b' });
+  const notification = { sessionId: 'tab-b', kind: 'completed', eventId: 'turn-1', title: 'Project' };
+  await bridge.notifySession(notification); await bridge.getWindowFocus();
+  assert.deepEqual(calls, [
+    ['host:getNotificationSettings'], ['host:setNotificationSettings', { sound: true, error: false }],
+    ['host:setNotificationContext', { activeSessionId: 'tab-b' }], ['host:notifySession', notification], ['host:getWindowFocus'],
+  ]);
+  const activations = [], focus = [], secondFocus = [];
+  const offActivation = bridge.onNotificationActivated(value => activations.push(value));
+  const offFocus = bridge.onWindowFocus(value => focus.push(value));
+  bridge.onWindowFocus(value => secondFocus.push(value));
+  ipc.emit('host:notificationActivated', {}, { sessionId: 'tab-b' }); ipc.emit('host:windowFocus', {}, false);
+  offActivation(); offFocus();
+  ipc.emit('host:notificationActivated', {}, { sessionId: 'tab-a' }); ipc.emit('host:windowFocus', {}, true);
+  assert.deepEqual(activations, [{ sessionId: 'tab-b' }]); assert.deepEqual(focus, [false]); assert.deepEqual(secondFocus, [false, true]);
+  for (const key of ['getNotificationSettings', 'setNotificationSettings', 'setNotificationContext', 'notifySession', 'getWindowFocus', 'onWindowFocus', 'onNotificationActivated']) {
+    assert.equal(bridge.forSession('a')[key], undefined);
+  }
 });

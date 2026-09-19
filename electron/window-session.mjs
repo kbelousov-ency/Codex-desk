@@ -75,11 +75,16 @@ export class SettingsStore {
   }
 }
 
+function projectIdentity(cwd) {
+  const normalized = path.normalize(cwd).replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
 function uniqueProjects(projects) {
   const seen = new Set();
   return (Array.isArray(projects) ? projects : []).filter(cwd => {
     if (typeof cwd !== 'string' || !cwd || cwd.length >= 4096) return false;
-    const key = process.platform === 'win32' ? path.normalize(cwd).toLowerCase() : path.normalize(cwd);
+    const key = projectIdentity(cwd);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -96,6 +101,19 @@ export class WorkspaceStore extends SettingsStore {
   addProject(cwd) {
     if (typeof cwd !== 'string' || !cwd || cwd.length >= 4096) throw new Error('Некорректная папка проекта.');
     return this._update(previous => ({ ...previous, projects: uniqueProjects([...(Array.isArray(previous.projects) ? previous.projects : []), cwd]) }));
+  }
+
+  initializeProjects(fallbackCwd) {
+    if (typeof fallbackCwd !== 'string' || !fallbackCwd || fallbackCwd.length >= 4096) throw new Error('Некорректная папка проекта.');
+    // An existing empty list means the user explicitly closed every project.
+    // Only migrate settings.cwd when no project list has ever been stored.
+    return this._update(previous => ({ ...previous, projects: Array.isArray(previous.projects) ? uniqueProjects(previous.projects) : [fallbackCwd] }));
+  }
+
+  removeProject(cwd) {
+    if (typeof cwd !== 'string' || !cwd || cwd.length >= 4096) throw new Error('Некорректная папка проекта.');
+    const key = projectIdentity(cwd);
+    return this._update(previous => ({ ...previous, projects: uniqueProjects(previous.projects).filter(folder => projectIdentity(folder) !== key) }));
   }
 }
 

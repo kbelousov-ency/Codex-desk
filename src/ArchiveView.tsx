@@ -1,16 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Archive, LoaderCircle, RefreshCw, RotateCcw, Search, Terminal } from 'lucide-react';
-import type { Item, Thread, TurnWork } from './types';
+import type { Item, ScrollAnchor, Thread, TurnWork } from './types';
 import type { WorkspaceControls } from './App';
 import { BridgeContext } from './BridgeContext';
 import { BuildBadge } from './BuildInfo';
 import ProjectSidebar from './ProjectSidebar';
 import ChatSearch from './ChatSearch';
+import UpdateNotice from './UpdateNotice';
 import { mergeHistoricalTurnWork } from './turn-work';
 import { errorText, folderName } from './useCodex';
 import './archive-view.css';
+import { readScrollAnchor, restoreScrollAnchor } from './scroll-anchor';
 
-export default function ArchiveView({ thread, active, workspace }: { thread: Thread; active: boolean; workspace: WorkspaceControls }) {
+export default function ArchiveView({ thread, active, initialScrollTop, initialScrollAnchor, workspace }: { thread: Thread; active: boolean; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; workspace: WorkspaceControls }) {
   const [items, setItems] = useState<Item[]>([]);
   const [turnWork, setTurnWork] = useState<Record<string, TurnWork>>({});
   const [cursor, setCursor] = useState<string | null>(null);
@@ -18,6 +20,11 @@ export default function ArchiveView({ thread, active, workspace }: { thread: Thr
   const [error, setError] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
+  const savedScroll = useRef(initialScrollTop || 0);
+  const scrollAnchor = useRef(initialScrollAnchor);
+  const triedCursors = useRef(new Set<string>());
+  const restoredScroll = useRef(false);
+  const sessionId = `archive:${thread.id}`;
   const searchButtonRef = useRef<HTMLButtonElement>(null);
   const requestRef = useRef(0);
   const load = async (next?: string) => {
@@ -33,6 +40,20 @@ export default function ArchiveView({ thread, active, workspace }: { thread: Thr
     finally { if (request === requestRef.current) setLoading(false); }
   };
   useEffect(() => { void load(); return () => { requestRef.current++; }; }, [thread.id]);
+  useLayoutEffect(() => workspace.registerUpdateCapture?.(sessionId, () => ({
+    archivedThread: { id: thread.id, cwd: thread.cwd, name: thread.name }, draft: '', attachments: [], scrollTop: savedScroll.current, scrollAnchor: scrollAnchor.current,
+  })), [workspace.registerUpdateCapture, sessionId, thread.id, thread.cwd, thread.name]);
+  useLayoutEffect(() => {
+    if (!active || loading || !items.length || restoredScroll.current) return;
+    const el = chatRef.current;
+    if (el && scrollAnchor.current && !restoreScrollAnchor(el, scrollAnchor.current) && cursor && !error && !triedCursors.current.has(cursor)) {
+      triedCursors.current.add(cursor);
+      void load(cursor);
+      return;
+    }
+    if (el && (!scrollAnchor.current || !restoreScrollAnchor(el, scrollAnchor.current))) el.scrollTop = savedScroll.current;
+    restoredScroll.current = true;
+  }, [active, loading, items, cursor, error]);
   const openSearch = () => {
     setShowSearch(true);
     requestAnimationFrame(() => chatRef.current?.querySelector<HTMLInputElement>('[aria-label="Найти в чате"]')?.focus());
@@ -57,13 +78,19 @@ export default function ArchiveView({ thread, active, workspace }: { thread: Thr
     </aside>
     <main className="main-column">
       <header className="topbar"><Archive size={16} /><div className="breadcrumbs"><span>{folderName(thread.cwd || '') || 'Архив'}</span><strong>{thread.name || thread.preview || 'Диалог'}</strong></div><button ref={searchButtonRef} type="button" className="icon-button" aria-label="Поиск в чате" title="Поиск в чате (Ctrl+F)" aria-expanded={showSearch} onClick={openSearch}><Search size={17} /></button><span className="archive-readonly-badge">Только чтение</span></header>
-      <div ref={chatRef} className="chat-scroll"><div className="conversation">
+      <div ref={chatRef} className="chat-scroll" onScroll={event => {
+        if (!active || !restoredScroll.current) return;
+        savedScroll.current = event.currentTarget.scrollTop;
+        scrollAnchor.current = readScrollAnchor(event.currentTarget);
+        workspace.onSessionStateChange?.(sessionId);
+      }}><div className="conversation">
         {cursor && !showSearch && <button className="secondary-button load-earlier" disabled={loading} onClick={() => void load(cursor)}>Загрузить предыдущие сообщения</button>}
         {loading && <div className="loading-chat"><LoaderCircle size={16} className="spin" />Загружаем архивный диалог…</div>}
         {error && <div className="alert error-alert" role="alert"><span>{error}</span><button className="text-button" onClick={() => void load()}><RefreshCw size={13} />Повторить</button></div>}
         <ChatSearch items={items} turnWork={turnWork} open={showSearch} active={active} onClose={() => { setShowSearch(false); searchButtonRef.current?.focus({ preventScroll: true }); }} hasEarlier={Boolean(cursor)} loading={loading} onLoadEarlier={() => { if (cursor) void load(cursor); }} />
         {!loading && !error && !items.length && <p className="muted">В этом диалоге нет сообщений.</p>}
       </div></div>
+      <div className="composer-area"><UpdateNotice /></div>
       <div className="archive-readonly-footer"><Archive size={16} /><span>Диалог в архиве. Восстановите его, чтобы продолжить переписку.</span><button className="secondary-button" disabled={workspace.actionBusy} onClick={() => workspace.threadAction?.('restore', thread.cwd || '', thread)}><RotateCcw size={14} />Восстановить</button></div>
     </main>
   </div></BridgeContext.Provider>;

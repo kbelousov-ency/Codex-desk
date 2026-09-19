@@ -1,0 +1,39 @@
+.changes-filters{display:flex;flex-direction:column;gap:9px;margin-bottom:14px}
+.changes-filters label{display:flex;flex-direction:column;gap:6px;color:#95ac9d;font-size:10px}
+.changes-filters select,.changes-filters input{width:100%;min-width:0;padding:8px 9px;background:#131b16;border:1px solid #3b4d40;border-radius:6px;color:#c8d9cf;font-family:inherit;font-size:11px}
+.changes-filter-empty{font-size:12px;color:#92a99b;line-height:1.8}
+.change-file-toolbar{flex-wrap:wrap}
+.change-file-toolbar .expand-diff{margin-left:auto;display:flex;align-items:center;gap:5px}
+.review-diff{color:#bdcec3;background:#131a16;font:11px/1.75 'Cascadia Code',Consolas,monospace;min-width:0}
+.diff-number-note{padding:9px 12px;margin:0;font:10px/1.7 Inter,Segoe UI,sans-serif;color:#81988a;background:#18211b}
+.review-diff-lines{max-height:420px;overflow:auto;overflow-x:hidden;tab-size:2}
+.review-diff.expanded .review-diff-lines{max-height:none;overflow:visible}
+.review-code-text{font:inherit;white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;padding-right:10px}
+.review-meta{padding:6px 10px;white-space:pre-wrap;overflow-wrap:anywhere;color:#91a997;background:#1a231d;font-size:10px}
+.review-meta.diff-hunk{color:#aabcda;background:#29374780;border-block:1px solid #354459}
+.diff-unified-row{display:grid;grid-template-columns:3em 3em 1.5em minmax(0,1fr);min-height:22px}
+.diff-line-number{text-align:right;padding-right:.7em;color:#6d8476;font-size:10px;user-select:none;min-width:0;border-right:1px solid #30423555}
+.diff-sign{text-align:center;user-select:none}
+.diff-unified-row.add,.diff-side.add{background:#23452c70;color:#c0e2c5}
+.diff-unified-row.remove,.diff-side.remove{background:#50352e66;color:#e1b8a9}
+.diff-unified-row.add .diff-sign{color:#9ac7a1}.diff-unified-row.remove .diff-sign{color:#d29884}
+.diff-column-headings{display:grid;grid-template-columns:1fr 1fr;position:sticky;top:0;z-index:1;background:#1c2921;color:#a9c1b1;font:11px/1.5 Inter,Segoe UI,sans-serif;border-bottom:1px solid #35483c}
+.diff-column-headings>span{padding:8px 13px;border-right:1px solid #35483c}
+.diff-split-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.diff-side{display:grid;grid-template-columns:3.8em minmax(0,1fr);border-right:1px solid #35483c;min-height:23px}
+.diff-side .review-code-text{padding-left:9px}.diff-side.empty{background:#111814}
+.diff-review-backdrop{position:fixed;inset:0;z-index:35;background:#070c0bd9;backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;padding:28px}
+.diff-review-modal{display:flex;flex-direction:column;width:min(1320px,100%);height:min(860px,92vh);max-height:100%;border:1px solid #435d4b;border-radius:13px;background:#18201b;box-shadow:0 28px 90px #0008;overflow:hidden}
+.diff-review-header{display:flex;align-items:center;gap:12px;padding:18px 22px;border-bottom:1px solid #34473b;flex-shrink:0}
+.diff-review-header>svg{color:#b4cdbb}.diff-review-header>div{min-width:0;flex:1}.diff-review-header small{font-size:8px;letter-spacing:1.5px;color:#799b85}.diff-review-header h2{margin:6px 0 0;font-size:15px;font-weight:500;color:#d1e0d6;overflow-wrap:anywhere}
+.diff-review-toolbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:11px 20px;border-bottom:1px solid #34473b;flex-shrink:0}
+.diff-mode-buttons{display:flex;gap:3px;border:1px solid #3a4d40;border-radius:7px;padding:3px;background:#121a15}
+.diff-mode-buttons button{display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:4px;font-size:11px;color:#8fa898}
+.diff-mode-buttons button[aria-pressed=true]{background:#2d4133;color:#d1e8d8}
+.diff-fragment-nav{margin-left:auto;display:flex;align-items:center;gap:4px;color:#8ba494;font-size:10px}.diff-fragment-nav>span{margin-right:7px}
+.diff-review-body{overflow:auto;min-height:0;flex:1;scroll-behavior:auto;overscroll-behavior:contain}
+.diff-review-patch-title{display:flex;align-items:center;gap:12px;padding:9px 16px;color:#99b5a4;background:#202d24;font-size:10px;border-bottom:1px solid #34473b}.diff-review-patch-title strong{font-weight:500;color:#c7d9ce}
+.diff-review-footer{padding:11px 20px;color:#809c8a;font-size:10px;line-height:1.6;border-top:1px solid #34473b;flex-shrink:0}
+.diff-review-error{padding:10px 20px;color:#e8b5a5;background:#483128;font-size:11px}
+[data-diff-hunk]:focus{outline:1px solid #9db9d5;outline-offset:-1px}
+@media(max-width:700px){.diff-review-backdrop{padding:9px}.diff-review-modal{height:96vh}.diff-review-header{padding:12px}.diff-review-toolbar{padding:8px;gap:7px}.diff-review-footer{padding:8px 12px}.diff-side{grid-template-columns:2.7em minmax(0,1fr)}.diff-side .review-code-text{padding-left:5px}.diff-fragment-nav{margin-left:0}.review-diff{font-size:10px}}

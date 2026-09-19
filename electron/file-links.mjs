@@ -120,22 +120,25 @@ export async function openLink({ target, cwd, shell, assertActive = () => {} }) 
   if (error) throw new Error(`Не удалось открыть файл: ${error}`);
 }
 
-export async function showLocalPathMenu({ target, cwd, shell, Menu, window, assertActive = () => {} }) {
+export async function showLocalPathMenu({ target, cwd, shell, Menu, window, options, assertActive = () => {} }) {
   await resolveLocalLink(target, cwd);
   assertActive();
   return new Promise((resolve, reject) => {
     let selected = false;
-    const menu = Menu.buildFromTemplate([{
-      label: 'Открыть в проводнике',
-      click: () => {
-        selected = true;
-        // Check again after the user has chosen: the file or tab may have changed.
-        void resolveLocalLink(target, cwd).then(resolved => {
-          assertActive();
-          shell.showItemInFolder(resolved);
-        }).then(resolve, reject);
-      },
-    }]);
+    const choose = action => () => {
+      selected = true;
+      // Check again after the user has chosen: the file or tab may have changed.
+      void resolveLocalLink(target, cwd).then(resolved => {
+        assertActive();
+        return action(resolved);
+      }).then(resolve, reject);
+    };
+    const items = [];
+    if (options?.askCodex === true) {
+      items.push({ label: 'Спросить Codex', click: choose(resolved => ({ action: 'askCodex', path: resolved })) });
+    }
+    items.push({ label: 'Открыть в проводнике', click: choose(resolved => { shell.showItemInFolder(resolved); }) });
+    const menu = Menu.buildFromTemplate(items);
     menu.popup({ window, callback: () => setImmediate(() => { if (!selected) resolve(); }) });
   });
 }

@@ -1,0 +1,4 @@
+.folder-tree-row>.project-menu-trigger{flex:0 0 21px;width:21px;height:22px;margin-right:3px;padding:0;color:#82958a}
+.folder-tree-row>.project-menu-trigger:hover,.folder-tree-row>.project-menu-trigger.open{background:#35443b;color:#d6e5db}
+.folder-tree-row:has(>.project-menu-trigger)>.folder-add{margin-right:0}
+.close-project-path{overflow-wrap:anywhere}

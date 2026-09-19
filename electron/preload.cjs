@@ -19,8 +19,12 @@ function forSession(sessionId) {
     reloadMcp: () => ipcRenderer.invoke('host:reloadMcp', sessionId),
     checkMcp: () => ipcRenderer.invoke('host:checkMcp', sessionId),
     openPath: (path) => ipcRenderer.invoke('host:openPath', path, sessionId),
-    showPathMenu: (path) => ipcRenderer.invoke('host:showPathMenu', path, sessionId),
+    showPathMenu: (path, options) => options === undefined
+      ? ipcRenderer.invoke('host:showPathMenu', path, sessionId)
+      : ipcRenderer.invoke('host:showPathMenu', path, options, sessionId),
     listFiles: (path, cursor) => ipcRenderer.invoke('host:listFiles', path, cursor, sessionId),
+    getGitStatus: () => ipcRenderer.invoke('host:getGitStatus', sessionId),
+    getGitDiff: (options) => ipcRenderer.invoke('host:getGitDiff', options, sessionId),
     onEvent: (listener) => {
       const handler = (_event, data) => {
         if (sessionId === undefined ? data.defaultSession : data.sessionId === sessionId) listener(data);
@@ -34,6 +38,21 @@ function forSession(sessionId) {
 contextBridge.exposeInMainWorld('codex', {
   ...forSession(),
   getBuildInfo: () => ipcRenderer.invoke('host:getBuildInfo'),
+  getNotificationSettings: () => ipcRenderer.invoke('host:getNotificationSettings'),
+  setNotificationSettings: (patch) => ipcRenderer.invoke('host:setNotificationSettings', patch),
+  setNotificationContext: (context) => ipcRenderer.invoke('host:setNotificationContext', context),
+  notifySession: (notification) => ipcRenderer.invoke('host:notifySession', notification),
+  getWindowFocus: () => ipcRenderer.invoke('host:getWindowFocus'),
+  onWindowFocus: (listener) => {
+    const handler = (_event, focused) => listener(focused);
+    ipcRenderer.on('host:windowFocus', handler);
+    return () => ipcRenderer.removeListener('host:windowFocus', handler);
+  },
+  onNotificationActivated: (listener) => {
+    const handler = (_event, notification) => listener(notification);
+    ipcRenderer.on('host:notificationActivated', handler);
+    return () => ipcRenderer.removeListener('host:notificationActivated', handler);
+  },
   getDiagnosticsStatus: () => ipcRenderer.invoke('host:getDiagnosticsStatus'),
   exportDiagnostics: () => ipcRenderer.invoke('host:exportDiagnostics'),
   openDiagnosticsFolder: () => ipcRenderer.invoke('host:openDiagnosticsFolder'),
@@ -45,6 +64,13 @@ contextBridge.exposeInMainWorld('codex', {
     ipcRenderer.send('host:rendererError', payload);
   },
   getWorkspace: () => ipcRenderer.invoke('host:getWorkspace'),
+  saveWorkspaceState: (snapshot) => ipcRenderer.invoke('host:saveWorkspaceState', snapshot),
+  completeWorkspaceSave: (response) => ipcRenderer.invoke('host:completeWorkspaceSave', response),
+  onWorkspaceSave: (listener) => {
+    const handler = (_event, request) => listener(request);
+    ipcRenderer.on('host:workspaceSave', handler);
+    return () => ipcRenderer.removeListener('host:workspaceSave', handler);
+  },
   onUpdatePrepare: (listener) => {
     const handler = (_event, request) => listener(request);
     ipcRenderer.on('host:updatePrepare', handler);
@@ -57,6 +83,8 @@ contextBridge.exposeInMainWorld('codex', {
   },
   completeUpdatePrepare: (result) => ipcRenderer.invoke('host:completeUpdatePrepare', result),
   completeUpdateRestore: () => ipcRenderer.invoke('host:completeUpdateRestore'),
+  getUpdateStatus: () => ipcRenderer.invoke('host:getUpdateStatus'),
+  decideUpdate: (decision) => ipcRenderer.invoke('host:decideUpdate', decision),
   listProjectThreads: (cwd, cursor) => ipcRenderer.invoke('host:listProjectThreads', cwd, cursor),
   listArchivedThreads: (cursor) => ipcRenderer.invoke('host:listArchivedThreads', cursor),
   searchThreads: (options) => ipcRenderer.invoke('host:searchThreads', options),
@@ -65,5 +93,6 @@ contextBridge.exposeInMainWorld('codex', {
   openArchivedPath: (options) => ipcRenderer.invoke('host:openArchivedPath', options),
   createSession: (options) => ipcRenderer.invoke('host:createSession', options),
   closeSession: (id) => ipcRenderer.invoke('host:closeSession', id),
+  closeProject: (cwd, options) => ipcRenderer.invoke('host:closeProject', cwd, options),
   forSession,
 });

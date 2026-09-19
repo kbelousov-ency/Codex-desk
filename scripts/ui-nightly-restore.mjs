@@ -25,7 +25,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
     const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aLuoAAAAASUVORK5CYII=';
-    const fixture = window.__update = { results: [], restored: 0, requests: [], captures: new Set(), statuses: new Set(), holdImages: false, finishImages: [], settings: {}, failPrepare: false };
+    const fixture = window.__update = { results: [], decisions: [], restored: 0, requests: [], captures: new Set(), statuses: new Set(), holdImages: false, finishImages: [], settings: {}, failPrepare: false };
     const NativeReader = window.FileReader;
     window.FileReader = class {
       readAsDataURL(file) {
@@ -75,6 +75,13 @@ try {
       async getBuildInfo() { return { channel: 'nightly', version: '0.1.0' }; },
       onUpdatePrepare(listener) { fixture.captures.add(listener); return () => fixture.captures.delete(listener); },
       onUpdateStatus(listener) { fixture.statuses.add(listener); return () => fixture.statuses.delete(listener); },
+      async getUpdateStatus() { return { state: 'awaiting' }; },
+      async decideUpdate(decision) {
+        fixture.decisions.push(decision);
+        const status = { state: decision === 'close' ? 'waiting' : 'manual' };
+        for (const listener of fixture.statuses) listener(status);
+        return status;
+      },
       async completeUpdateRestore() { fixture.restored++; },
       async completeUpdatePrepare(result) { if (fixture.failPrepare) throw new Error('fixture checkpoint failure'); fixture.results.push(result); if (result.defer) for (const listener of fixture.statuses) listener({ state: 'waiting' }); },
     };
@@ -89,6 +96,21 @@ try {
   await page.waitForFunction(() => window.__update.restored === 1 && [...document.querySelectorAll('[role="combobox"][aria-label="Модель"]')].every(el => !el.disabled));
   assert.equal(await page.getByRole('tab', { selected: true }).evaluate(el => el.closest('[data-session-id]').dataset.sessionId), 'new-b');
   assert.equal(await input().inputValue(), 'Черновик B');
+  const notice = () => view().getByRole('status', { name: 'Обновление Nightly', exact: true });
+  await notice().getByRole('button', { name: 'Закрыть', exact: true }).waitFor();
+  assert.equal(await input().isEnabled(), true, 'An offer never freezes the composer');
+  assert.equal(await page.evaluate(() => window.__update.results.length), 0, 'An offer never requests a checkpoint');
+  await page.screenshot({ path: 'artifacts/nightly-update-offer.png' });
+  await notice().getByRole('button', { name: 'Отмена', exact: true }).click();
+  await notice().getByText('Обновление будет применено, когда вы сами закроете приложение.', { exact: true }).waitFor();
+  assert.equal(await input().inputValue(), 'Черновик B');
+  assert.deepEqual(await page.evaluate(() => window.__update.decisions), ['later']);
+  await notice().getByRole('button', { name: 'Скрыть сообщение об обновлении', exact: true }).click();
+  await status('awaiting');
+  await notice().getByRole('button', { name: 'Закрыть', exact: true }).click();
+  await notice().getByRole('button', { name: 'Отмена', exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__update.decisions), ['later', 'close']);
+  assert.equal(await input().isEnabled(), true, 'Waiting for tasks after explicit consent keeps the composer usable');
   assert.equal(await view().getByRole('combobox', { name: 'Глубина размышлений', exact: true }).getAttribute('data-value'), '');
   await activate('new-a');
   await view().getByText('Ответ из истории.', { exact: true }).waitFor();
@@ -128,13 +150,13 @@ try {
   assert.equal(await page.locator('.workspace-views').evaluate(el => el.inert), true);
   await page.screenshot({ path: 'artifacts/nightly-update-prepare.png' });
   await status('error');
-  await page.getByText('Не удалось применить обновление. Приложение продолжает работать.', { exact: true }).waitFor();
+  await view().getByText('Не удалось применить обновление. Приложение продолжает работать.', { exact: true }).waitFor();
   assert.equal(await page.locator('.workspace-views').evaluate(el => el.inert), false);
   await activate('new-a');
   assert.equal(await input().inputValue(), 'Изменённый черновик A');
   await page.evaluate(() => { window.__update.failPrepare = true; });
   await prepare('failed');
-  await page.getByText('Не удалось сохранить вкладки для обновления. Приложение продолжает работать.', { exact: true }).waitFor();
+  await view().getByText('Не удалось сохранить вкладки для обновления. Приложение продолжает работать.', { exact: true }).waitFor();
   assert.equal(await page.locator('.workspace-views').evaluate(el => el.inert), false);
   assert.equal((await page.evaluate(() => window.__update.requests)).some(request => request.method === 'turn/start'), false);
   assert.deepEqual(errors, []);

@@ -44,7 +44,7 @@ const alive = pid => {
   catch (error) { if (error.code === 'ESRCH') return false; throw error; }
 };
 const actions = () => app.evaluate(() => globalThis.__linkActions);
-const invoke = (id, method, target) => page.evaluate(({ id, method, target }) => window.codex.forSession(id)[method](target), { id, method, target });
+const invoke = (id, method, target, options) => page.evaluate(({ id, method, target, options }) => window.codex.forSession(id)[method](target, options), { id, method, target, options });
 
 try {
   app = await electron.launch({
@@ -54,14 +54,14 @@ try {
   await app.evaluate(({ shell, Menu }) => {
     globalThis.__linkActions = [];
     globalThis.__linkMenus = [];
-    globalThis.__linkMenuSelection = true;
+    globalThis.__linkMenuSelection = 'Открыть в проводнике';
     shell.openPath = async target => { globalThis.__linkActions.push({ kind: 'open', target }); return ''; };
     shell.openExternal = async target => { globalThis.__linkActions.push({ kind: 'external', target }); };
     shell.showItemInFolder = target => { globalThis.__linkActions.push({ kind: 'reveal', target }); };
     Menu.buildFromTemplate = template => ({
       popup({ window, callback }) {
         globalThis.__linkMenus.push({ owner: window.id, labels: template.map(item => item.label) });
-        if (globalThis.__linkMenuSelection) template[0].click();
+        template.find(item => item.label === globalThis.__linkMenuSelection)?.click();
         callback();
       },
     });
@@ -107,7 +107,44 @@ try {
   await app.evaluate(() => { globalThis.__linkMenuSelection = false; });
   await invoke(id, 'showPathMenu', encodedTarget);
   assert.deepEqual(await actions(), beforeCancel, 'Cancelling the context menu must not reveal the file');
-  await app.evaluate(() => { globalThis.__linkMenuSelection = true; });
+  await app.evaluate(() => { globalThis.__linkMenuSelection = 'Спросить Codex'; });
+  const beforeAsk = await actions();
+  assert.deepEqual(await invoke(id, 'showPathMenu', encodedTarget, { askCodex: true }), { action: 'askCodex', path: resolvedFile });
+  const resolvedDirectory = await realpath(path.join(project, 'src'));
+  assert.deepEqual(await invoke(id, 'showPathMenu', 'src', { askCodex: true }), { action: 'askCodex', path: resolvedDirectory });
+  assert.deepEqual(await actions(), beforeAsk, 'Asking Codex returns the path without opening it or showing Explorer');
+  const askMenus = await app.evaluate(() => globalThis.__linkMenus.slice(-2));
+  for (const menu of askMenus) {
+    assert.equal(menu.owner, owner);
+    assert.ok(menu.labels.includes('Спросить Codex'));
+    assert.ok(menu.labels.includes('Открыть в проводнике'));
+  }
+  await app.evaluate(() => { globalThis.__linkMenuSelection = false; });
+  assert.equal(await invoke(id, 'showPathMenu', encodedTarget, { askCodex: true }), undefined, 'Cancelling an Ask-enabled menu returns no composer action');
+  await app.evaluate(() => { globalThis.__linkMenuSelection = 'Открыть в проводнике'; });
+  assert.equal(await invoke(id, 'showPathMenu', encodedTarget, { askCodex: true }), undefined, 'Explorer choice returns no composer action');
+  assert.deepEqual((await actions()).at(-1), { kind: 'reveal', target: resolvedFile });
+
+  // Exercise the whole renderer -> scoped preload -> native Menu -> composer path.
+  const fileTree = page.locator('.session-view:visible .file-browser');
+  const composer = page.locator('.session-view:visible').getByRole('textbox', { name: 'Сообщение Codex', exact: true });
+  const sourceDirectory = fileTree.getByRole('button', { name: 'Раскрыть папку src', exact: true });
+  await sourceDirectory.click();
+  const selectedFile = fileTree.getByRole('button', { name: 'Открыть файл пример файла.txt', exact: true });
+  await selectedFile.waitFor();
+  await composer.fill('Расскажи о выбранном файле:');
+  await app.evaluate(() => { globalThis.__linkMenuSelection = 'Спросить Codex'; });
+  await selectedFile.click({ button: 'right' });
+  const expectedDraft = `Расскажи о выбранном файле:\n${resolvedFile}\n`;
+  await page.waitForFunction(expected => document.querySelector('.session-view:not([hidden]) textarea[aria-label="Сообщение Codex"]')?.value === expected, expectedDraft);
+  assert.deepEqual(await composer.evaluate(node => ({ focused: node === document.activeElement, start: node.selectionStart, end: node.selectionEnd })), { focused: true, start: expectedDraft.length, end: expectedDraft.length });
+  await sourceDirectory.focus();
+  await page.keyboard.press('Shift+F10');
+  const expectedWithFolder = `${expectedDraft}${resolvedDirectory}\n`;
+  await page.waitForFunction(expected => document.querySelector('.session-view:not([hidden]) textarea[aria-label="Сообщение Codex"]')?.value === expected, expectedWithFolder);
+  assert.deepEqual(await actions(), [...beforeAsk, { kind: 'reveal', target: resolvedFile }]);
+  await page.screenshot({ path: path.join(runDir, 'ask-codex.png') });
+  await app.evaluate(() => { globalThis.__linkMenuSelection = 'Открыть в проводнике'; });
 
   // Reproduce the screenshot's exact href in this checkout. Creating these
   // sessions through IPC does not start their App Servers or any model turn.
@@ -126,6 +163,8 @@ try {
     await assert.rejects(invoke(otherSession.id, method, reportedTarget), /за пределами выбранного проекта/);
     await assert.rejects(invoke(id, method, 'javascript:alert(1)'), /только локальные файлы/);
   }
+  await assert.rejects(invoke(otherSession.id, 'showPathMenu', encodedTarget, { askCodex: true }), /за пределами выбранного проекта/);
+  await assert.rejects(invoke(id, 'showPathMenu', 'javascript:alert(1)', { askCodex: true }), /только локальные файлы/);
   assert.deepEqual(await actions(), beforeRejected, 'Rejected paths must not reach native file actions');
   await page.evaluate(id => window.codex.closeSession(id), otherSession.id);
   await assert.rejects(invoke(otherSession.id, 'openPath', encodedTarget), /закрытая сессия/);
@@ -137,8 +176,8 @@ try {
   assert.equal(log.filter(entry => entry.method === 'turn/start').length, 0, 'No model turns are sent, even to the fixture');
   assert.equal(app.windows().length, 1);
   assert.deepEqual(errors, []);
-  await writeFile(path.join(runDir, 'result.json'), JSON.stringify({ reportedTarget, encodedTarget, actions: await actions(), menus }, null, 2));
-  console.log(`PASS: real Electron preload/IPC resolves encoded ancestors, Unicode, source suffixes and file URLs; open/reveal/cancel and lazy directory listings, session isolation and closed-session checks. Native shell/Menu substituted; no model requests. Exact reported href: ${reportedTarget}. Artifacts: ${runDir}`);
+  await writeFile(path.join(runDir, 'result.json'), JSON.stringify({ reportedTarget, encodedTarget, actions: await actions(), menus: await app.evaluate(() => globalThis.__linkMenus) }, null, 2));
+  console.log(`PASS: real Electron preload/IPC resolves encoded ancestors, Unicode, source suffixes and file URLs; Ask Codex file/folder menu choices append paths to the focused draft via renderer and scoped IPC, cancel/reveal produce no composer action; lazy directory listings, session isolation and closed-session checks. Native shell/Menu substituted; no model requests. Exact reported href: ${reportedTarget}. Artifacts: ${runDir}`);
 } catch (error) {
   if (page && !page.isClosed()) await page.screenshot({ path: path.join(runDir, 'failure.png') }).catch(() => {});
   console.error(`File link IPC test artifacts: ${runDir}`);

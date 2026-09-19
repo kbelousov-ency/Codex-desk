@@ -58,6 +58,8 @@ function processIsAlive(pid) {
 
 /**
  * Called only by the packaged Nightly host in its fixed release/nightly folder.
+ * prepare requests first offer an update; only a local decide('close') grants
+ * permission to start preparation once idle. decide('later') waits for manual exit.
  * The caller reserves the host and freezes the renderer synchronously in
  * prepare(), then saves its checkpoint before resolving true. notify('error')
  * must release that reservation; a helper that vanishes must not freeze the UI.
@@ -75,7 +77,7 @@ export async function createNightlyUpdate({ releaseRoot, executable, userData, c
   const endpoint = pipePath(`codex-desk-nightly-${process.pid}-${randomBytes(16).toString('hex')}`);
   const rootHash = createHash('sha256').update(process.platform === 'win32' ? root.toLowerCase() : root).digest('hex').slice(0, 24);
   const ownerEndpoint = pipePath(`codex-desk-nightly-owner-${rootHash}`);
-  const registration = Object.freeze({ version: 1, pid: process.pid, pipe: endpoint, token, buildId, executable, userData, cwd });
+  const registration = Object.freeze({ version: 1, updateProtocol: 2, pid: process.pid, pipe: endpoint, token, buildId, executable, userData, cwd });
   const sockets = new Set();
   const owner = net.createServer(socket => socket.destroy());
   const server = net.createServer(socket => accept(socket));
@@ -113,9 +115,25 @@ export async function createNightlyUpdate({ releaseRoot, executable, userData, c
     clearTimeout(lease);
     lease = null;
     generation += 1;
-    pending = null;
+    if (pending) pending.state = 'waiting';
     failed = null;
-    publish('busy');
+    publish('waiting');
+  }
+
+  function decide(decision) {
+    if (closed || !pending || quitScheduled || !['close', 'later'].includes(decision)) throw fail();
+    if (decision === 'later') {
+      clearTimeout(lease);
+      lease = null;
+      generation += 1;
+      pending.state = 'manual';
+      publish('manual');
+    } else {
+      if (!['awaiting', 'waiting'].includes(pending.state)) throw fail();
+      pending.state = 'waiting';
+      publish('waiting');
+    }
+    return { state: pending.state };
   }
 
   function armLease() {
@@ -174,7 +192,7 @@ export async function createNightlyUpdate({ releaseRoot, executable, userData, c
     }
     const requestId = typeof request.requestId === 'string' && UUID.test(request.requestId) ? request.requestId : undefined;
     if (request.action === 'status') {
-      reply(socket, { ...(requestId ? { requestId } : {}), state: pending?.state === 'preparing' ? 'preparing' : busy() ? 'busy' : 'ready' });
+      reply(socket, { ...(requestId ? { requestId } : {}), state: pending?.state ?? (busy() ? 'busy' : 'ready') });
       return;
     }
     if (!['prepare', 'cancel'].includes(request.action) || !requestId || typeof request.buildId !== 'string' || !BUILD_ID.test(request.buildId)) {
@@ -194,7 +212,8 @@ export async function createNightlyUpdate({ releaseRoot, executable, userData, c
         reply(socket, { requestId, state: 'busy' }); return;
       }
       if (pending.state === 'ready' && busy()) { resetPreparation(); reply(socket, { requestId, state: 'error' }); return; }
-      const state = pending.state;
+      if (pending.state === 'waiting' && !busy()) beginPreparation(request);
+      const state = pending?.state ?? 'error';
       reply(socket, { requestId, state }, state === 'ready');
       return;
     }
@@ -202,9 +221,9 @@ export async function createNightlyUpdate({ releaseRoot, executable, userData, c
       reply(socket, { requestId, state: 'error' }); return;
     }
     failed = null;
-    if (busy()) { publish('busy'); reply(socket, { requestId, state: 'busy' }); return; }
-    beginPreparation(request);
-    reply(socket, { requestId, state: 'preparing' });
+    pending = { requestId: request.requestId, buildId: request.buildId, state: 'awaiting' };
+    publish('awaiting');
+    reply(socket, { requestId, state: 'awaiting' });
   }
 
   function accept(socket) {
@@ -238,7 +257,7 @@ export async function createNightlyUpdate({ releaseRoot, executable, userData, c
     closed = true;
     generation += 1;
     clearTimeout(lease);
-    if (pending && !quitScheduled) publish('error');
+    if (pending && ['preparing', 'ready'].includes(pending.state) && !quitScheduled) publish('error');
     for (const socket of sockets) socket.destroy();
     closing = (async () => {
       await stop(server);
@@ -273,5 +292,5 @@ export async function createNightlyUpdate({ releaseRoot, executable, userData, c
     await close();
     throw fail();
   }
-  return { registration, close, getState: () => pending?.state ?? (busy() ? 'busy' : 'ready') };
+  return { registration, close, decide, getState: () => pending?.state ?? (busy() ? 'busy' : 'ready') };
 }

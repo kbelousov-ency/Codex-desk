@@ -5,6 +5,7 @@ export type FileEdit = {
   path: string;
   diff: string;
   status?: string;
+  turnId?: string;
   kind?: { type?: string; move_path?: string | null; movePath?: string | null };
 };
 
@@ -42,7 +43,7 @@ export function groupFileChanges(items: Item[], cwd = ''): FileEdits[] {
       const path = changePath(change.path, cwd);
       const key = path.toLowerCase();
       if (!groups.has(key)) groups.set(key, { key, path, label: relativeChangePath(path, cwd), edits: [] });
-      groups.get(key)!.edits.push({ ...change, path, diff: typeof change.diff === 'string' ? change.diff : '', key: `${item.id}-${index}`, status: item.status });
+      groups.get(key)!.edits.push({ ...change, path, diff: typeof change.diff === 'string' ? change.diff : '', key: `${item.id}-${index}`, status: item.status, turnId: item.turnId });
     }
   }
   return [...groups.values()];

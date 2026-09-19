@@ -270,6 +270,52 @@ test('workspace stores additive folder order separately from settings and dedupl
   assert.deepEqual((await readdir(dir)).sort(), ['settings.json', 'workspace.json']);
 });
 
+test('closing projects persists their removal, preserves files and history, and allows adding them again', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'codex-desk-close-project-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filename = path.join(dir, 'workspace.json');
+  const workspace = new WorkspaceStore(filename);
+  const first = path.join(dir, 'first-project');
+  const second = path.join(dir, 'second-project');
+  const projectFile = path.join(dir, 'project-content.txt');
+  const historyFile = path.join(dir, 'history.jsonl');
+  await writeFile(projectFile, 'user files stay untouched');
+  await writeFile(historyFile, 'history owned by Codex');
+  await writeFile(filename, JSON.stringify({ projects: [first, second], futureProperty: 42 }));
+  await workspace.removeProject(`${first}${path.sep}`);
+  assert.deepEqual(await new WorkspaceStore(filename).snapshot(), { projects: [second] });
+  assert.equal(JSON.parse(await readFile(filename, 'utf8')).futureProperty, 42);
+  assert.equal(await readFile(projectFile, 'utf8'), 'user files stay untouched');
+  assert.equal(await readFile(historyFile, 'utf8'), 'history owned by Codex');
+  await workspace.addProject(first);
+  assert.deepEqual(await workspace.snapshot(), { projects: [second, first] });
+  await Promise.all([workspace.removeProject(first), workspace.addProject('third-project'), workspace.removeProject(second)]);
+  assert.deepEqual(await workspace.snapshot(), { projects: ['third-project'] });
+  if (process.platform === 'win32') {
+    await workspace.removeProject('THIRD-PROJECT');
+    assert.deepEqual(await workspace.snapshot(), { projects: [] });
+  }
+  assert.throws(() => workspace.removeProject(null), /Некорректная/);
+});
+
+test('workspace migrates legacy defaults only once and never revives a closed project during boot', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'codex-desk-workspace-boot-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const filename = path.join(dir, 'workspace.json');
+  const workspace = new WorkspaceStore(filename);
+  await workspace.initializeProjects('legacy-project');
+  assert.deepEqual(await workspace.snapshot(), { projects: ['legacy-project'] });
+  await workspace.addProject('another-project');
+  await workspace.removeProject('legacy-project');
+  await new WorkspaceStore(filename).initializeProjects('legacy-project');
+  assert.deepEqual(await workspace.snapshot(), { projects: ['another-project'] });
+  await workspace.removeProject('another-project');
+  await new WorkspaceStore(filename).initializeProjects('legacy-project');
+  assert.deepEqual(await workspace.snapshot(), { projects: [] });
+  await workspace.addProject('legacy-project');
+  assert.deepEqual(await workspace.snapshot(), { projects: ['legacy-project'] });
+});
+
 test('config responses remain filtered and methods outside the bridge remain rejected', async () => {
   const a = fixture();
   const boot = await a.session.start();

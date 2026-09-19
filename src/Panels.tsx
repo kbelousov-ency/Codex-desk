@@ -1,11 +1,14 @@
-import { useState } from 'react';
-import { Brain, Check, ChevronRight, Code2, FileCode2, GitBranch, Globe, Layers, LoaderCircle, Terminal } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Brain, Check, ChevronRight, Code2, FileCode2, GitBranch, Globe, Layers, LoaderCircle, Maximize2, Terminal } from 'lucide-react';
 import type { Item } from './types';
 import Markdown from './Markdown';
 import { folderName } from './useCodex';
 import { useBridge } from './BridgeContext';
 import { changeStatus, diffLines, diffLineStats, groupFileChanges, relativeChangePath } from './change-utils';
 import './changes.css';
+import { DiffReview, ReviewDiff } from './DiffReview';
+import type { ReviewSelection } from './DiffReview';
+import GitPanel from './GitPanel';
 
 export function Diff({ text }: { text: string }) {
   return <pre className="diff-code" tabIndex={0} aria-label="Добавленные и удалённые строки">{diffLines(text).map(({ line, kind, label }, index) => <span key={index} className={`diff-line diff-${kind}`} title={label ? line : undefined}>{label || line || ' '}{'\n'}</span>)}</pre>;
@@ -80,10 +83,40 @@ function LineCounts({ text }: { text: string }) {
   return <span className="change-line-counts" title={`Строк в этой правке: добавлено ${added}, удалено ${removed}`}><b className="text-green">+{added}</b><b className="text-red">−{removed}</b></span>;
 }
 
-export function ChangesPanel({ items, diff, cwd = '' }: { items: Item[]; diff: string; cwd?: string }) {
+export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}, active = true, hasEarlier = false, loading = false, onLoadEarlier, onReviewChange, busy = false }: {
+  items: Item[]; diff: string; cwd?: string; diffTurnId?: string; turnDiffs?: Record<string, string>; active?: boolean; hasEarlier?: boolean; loading?: boolean; onLoadEarlier?(): void; onReviewChange?(open: boolean): void; busy?: boolean;
+}) {
   const bridge = useBridge();
   const [error, setError] = useState('');
-  const files = groupFileChanges(items, cwd);
+  const [turn, setTurn] = useState('all');
+  const [query, setQuery] = useState('');
+  const [review, setReview] = useState<ReviewSelection | null>(null);
+  const [source, setSource] = useState<'conversation' | 'git'>('conversation');
+  const turns = useMemo(() => {
+    const ordered = new Map<string, string>();
+    for (const item of items) {
+      if (!item.turnId) continue;
+      if (!ordered.has(item.turnId)) ordered.set(item.turnId, '');
+      if (item.type === 'userMessage' && !ordered.get(item.turnId)) {
+        const text = (item.content || []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join(' ').trim();
+        ordered.set(item.turnId, text.replace(/\s+/g, ' ').slice(0, 90));
+      }
+    }
+    for (const id of Object.keys(turnDiffs)) if (!ordered.has(id)) ordered.set(id, '');
+    if (diffTurnId && !ordered.has(diffTurnId)) ordered.set(diffTurnId, '');
+    return [...ordered].map(([id, text], index) => ({ id, label: `Запрос ${index + 1}${text ? ` · ${text}` : ''}` }));
+  }, [items, turnDiffs, diffTurnId]);
+  const unknown = items.some(item => item.type === 'fileChange' && !item.turnId);
+  const selectedItems = turn === 'all' ? items : items.filter(item => turn === 'unknown' ? !item.turnId : item.turnId === turn);
+  const allFiles = groupFileChanges(items, cwd);
+  const selectedFiles = groupFileChanges(selectedItems, cwd);
+  const files = selectedFiles.filter(file => !query.trim() || file.label.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const selectedDiff = turn === 'all' ? diff : turn === diffTurnId ? diff : turnDiffs[turn] || '';
+  const showDiff = Boolean(selectedDiff && !query.trim());
+  useEffect(() => { if (!active) setReview(null); }, [active]);
+  useEffect(() => { if (source === 'conversation') onReviewChange?.(Boolean(review && active)); return () => { if (source === 'conversation') onReviewChange?.(false); }; }, [review, active, source, onReviewChange]);
+  useEffect(() => { setReview(null); setTurn('all'); setQuery(''); }, [cwd, bridge]);
+  useEffect(() => { if (turn !== 'all' && turn !== 'unknown' && !turns.some(value => value.id === turn)) setTurn('all'); }, [turn, turns]);
   const openFile = async (path: string, menu = false) => {
     setError('');
     try {
@@ -92,8 +125,16 @@ export function ChangesPanel({ items, diff, cwd = '' }: { items: Item[]; diff: s
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   };
   return <div className="panel-content changes-panel">
+    <div className="changes-source-tabs" role="group" aria-label="Источник изменений"><button type="button" aria-pressed={source === 'conversation'} onClick={() => { setSource('conversation'); setReview(null); }}>Из диалога</button><button type="button" aria-pressed={source === 'git'} onClick={() => { setSource('git'); setReview(null); }}><GitBranch size={13} />Git</button></div>
+    {source === 'git' ? <GitPanel cwd={cwd} active={active} refreshKey={`${busy}:${items.filter(item => item.type === 'fileChange').map(item => `${item.id}:${item.status}:${item.complete}`).join('|')}`} onReviewChange={onReviewChange} /> : <>
     {error && <div className="link-error" role="alert"><span>{error}</span><button aria-label="Скрыть ошибку открытия файла" onClick={() => setError('')}>×</button></div>}
-    {!files.length && !diff ? <div className="panel-empty"><div className="empty-icon"><Code2 size={25} /></div><h3>Изменения появятся здесь</h3><p>Следите за файлами и смотрите, какие строки добавил или удалил Codex.</p><div className="diff-sample"><span /><span /><span /></div></div> : <>
+    {(allFiles.length > 0 || diff || Object.keys(turnDiffs).length > 0) && <div className="changes-filters">
+      <label>Показать изменения<select aria-label="Изменения по запросу" value={turn} onChange={event => { setTurn(event.target.value); setReview(null); }}><option value="all">Вся загруженная беседа</option>{turns.map(value => <option key={value.id} value={value.id}>{value.label}</option>)}{unknown && <option value="unknown">Без привязки к запросу</option>}</select></label>
+      <input aria-label="Найти изменённый файл" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />
+    </div>}
+    {hasEarlier && <button type="button" className="text-button" disabled={loading} onClick={onLoadEarlier}>{loading ? 'Загружаем…' : 'Загрузить более ранние правки'}</button>}
+    {!allFiles.length && !diff && !Object.keys(turnDiffs).length ? <div className="panel-empty"><div className="empty-icon"><Code2 size={25} /></div><h3>Изменения появятся здесь</h3><p>Следите за файлами и смотрите, какие строки добавил или удалил Codex.</p><div className="diff-sample"><span /><span /><span /></div></div> : <>
+      {!files.length && !showDiff && <p className="changes-filter-empty">{query ? 'Файлы не найдены.' : 'Для этого запроса нет полученных правок.'}</p>}
       <div className="changes-summary"><span>{files.length ? `Файлов: ${files.length}` : 'Изменения текущего запроса'}</span>{files.length > 0 && <small>Раскройте файл, чтобы увидеть правки по порядку.</small>}</div>
       {files.map(file => {
         const last = file.edits[file.edits.length - 1];
@@ -101,16 +142,18 @@ export function ChangesPanel({ items, diff, cwd = '' }: { items: Item[]; diff: s
         const pathToOpen = last.kind?.move_path || last.kind?.movePath || file.path;
         return <details className="file-diff change-file" key={file.key}>
           <summary><FileCode2 size={15} /><span className="change-file-heading"><span className="change-path" title={file.path}>{file.label}</span><span className="change-file-meta"><span className={`change-status ${last.status || ''}`} title={repeated ? 'Статус последней правки этого файла' : undefined}>{changeStatus(last)}</span>{repeated ? <span>Правок: {file.edits.length}</span> : last.diff && <LineCounts text={last.diff} />}</span></span><ChevronRight size={14} className="disclosure-arrow" /></summary>
-          <div className="change-file-toolbar"><button className="text-button" title={pathToOpen} onClick={() => void openFile(pathToOpen)} onContextMenu={event => { event.preventDefault(); void openFile(pathToOpen, true); }}>Открыть файл</button><button className="text-button" onClick={() => void openFile(pathToOpen, true)}>В проводнике</button></div>
+          <div className="change-file-toolbar"><button className="text-button" title={pathToOpen} onClick={() => void openFile(pathToOpen)} onContextMenu={event => { event.preventDefault(); void openFile(pathToOpen, true); }}>Открыть файл</button><button className="text-button" onClick={() => void openFile(pathToOpen, true)}>В проводнике</button><button type="button" className="text-button expand-diff" aria-label={`Развернуть сравнение ${file.label}`} onClick={() => setReview({ title: file.label, path: pathToOpen, edits: file.edits })}><Maximize2 size={12} />Развернуть</button></div>
           {file.edits.map((edit, index) => <section className="change-patch" key={edit.key}>
             {repeated && <div className="change-patch-label"><strong>Правка {index + 1}</strong><span className={`change-status ${edit.status || ''}`}>{changeStatus(edit)}</span>{edit.diff && <LineCounts text={edit.diff} />}</div>}
             {(edit.kind?.move_path || edit.kind?.movePath) && <div className="change-move-path">Новое имя: {relativeChangePath((edit.kind.move_path || edit.kind.movePath)!, cwd)}</div>}
-            {edit.diff ? <Diff text={edit.diff} /> : <p className="muted file-full-path">Diff не предоставлен Codex.</p>}
+            {edit.diff ? <ReviewDiff text={edit.diff} /> : <p className="muted file-full-path">Diff не предоставлен Codex.</p>}
           </section>)}
         </details>;
       })}
-      {diff && <details className="file-diff change-turn-diff" open={!files.length || undefined}><summary><GitBranch size={14} /><span className="change-turn-heading">Сводный diff текущего запроса<LineCounts text={diff} /></span><ChevronRight size={14} className="disclosure-arrow" /></summary><Diff text={diff} /></details>}
+      {showDiff && <details className="file-diff change-turn-diff" open={!files.length || undefined}><summary><GitBranch size={14} /><span className="change-turn-heading">{turn === 'all' ? 'Сводный diff текущего запроса' : 'Сводный diff выбранного запроса'}<LineCounts text={selectedDiff} /></span><ChevronRight size={14} className="disclosure-arrow" /></summary><button type="button" className="text-button" aria-label="Развернуть сводное сравнение" onClick={() => setReview({ title: 'Сводный diff запроса', edits: [{ key: 'summary', path: '', diff: selectedDiff }] })}><Maximize2 size={12} />Развернуть</button><ReviewDiff text={selectedDiff} /></details>}
     </>}
     <div className="panel-footnote"><GitBranch size={13} /><span>Правки из этого диалога. Счётчики +/− относятся к отдельным правкам; повторные изменения сохранены в истории файла.</span></div>
+    {review && active && <DiffReview selection={review} onClose={() => setReview(null)} onOpen={path => bridge.openPath(path)} />}
+    </>}
   </div>;
 }

@@ -2,6 +2,14 @@ export type Access = 'inherited' | 'auto' | 'read-only' | 'workspace-write' | 'd
 export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string };
 export type BridgeEvent = { type: 'notification' | 'serverRequest' | 'status' | 'diagnostic' | 'terminal' | 'mcp'; data: any };
 export type Attachment = { name: string; dataUrl: string; path?: string };
+export type QueuedMessage = { id: string; text: string; attachments: Attachment[]; state?: 'waiting' | 'uncertain' };
+export type MessageQueueState = { items: QueuedMessage[]; paused: boolean; reason?: string; threadId?: string; cwd?: string };
+export type PreservedDraft = { text: string; attachments: Attachment[] };
+export type ScrollAnchor = { itemId: string; offset: number };
+export type NotificationKind = 'completed' | 'question' | 'approval' | 'error';
+export type NotificationPreferences = { enabled: boolean; sound: boolean; completed: boolean; question: boolean; approval: boolean; error: boolean };
+export type NotificationSettingsInfo = { settings: NotificationPreferences; supported: boolean };
+export type SessionAttentionEvent = { kind: NotificationKind; eventId: string };
 export type Item = { id: string; type: string; turnId?: string; complete?: boolean; [key: string]: any };
 // Internal timestamps are milliseconds; App Server turn timestamps are seconds.
 export type TurnWork = { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; answerStartedAt?: number };
@@ -12,16 +20,20 @@ export type Request = { id: number | string; method: string; params: any };
 export type Model = { id: string; model: string; displayName: string; hidden?: boolean; isDefault?: boolean; defaultReasoningEffort: string; supportedReasoningEfforts: { reasoningEffort: string; description: string }[]; inputModalities?: string[] };
 
 export type SessionInfo = { id: string; cwd: string };
-export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[] };
+export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
 export type UpdateSnapshot = { version: 1; activeIndex: number; tabs: UpdateTabSnapshot[] };
-export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[] };
-export type UpdateStatus = { state: 'waiting' | 'preparing' | 'error'; message?: string };
-export type WorkspaceInfo = { projects: string[]; sessions: SessionInfo[]; restore?: { activeIndex: number; tabs: RestoredTab[] } };
+export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
+export type UpdateStatus = { state: 'awaiting' | 'waiting' | 'manual' | 'preparing' | 'error'; message?: string };
+export type WorkspaceInfo = { projects: string[]; sessions: SessionInfo[]; restore?: { activeIndex: number; tabs: RestoredTab[]; kind?: 'workspace' | 'update' } };
 export type BuildInfo = { channel: 'stable' | 'nightly' | 'development'; version: string; buildId?: string; builtAt?: string };
 export type DiagnosticsStatus = { enabled: boolean; directory: string | null; error?: string };
 export type RendererErrorReport = { kind: 'error' | 'unhandledrejection' | 'react'; name?: string; message?: string; stack?: string; componentStack?: string };
 export type ProjectFile = { name: string; path: string; type: 'directory' | 'file' | 'link' };
 export type ProjectFilePage = { path: string; entries: ProjectFile[]; nextCursor: number | null };
+export type GitArea = 'staged' | 'unstaged' | 'untracked';
+export type GitEntry = { path: string; originalPath?: string; status: string; indexStatus: string; worktreeStatus: string; staged: boolean; unstaged: boolean; untracked: boolean; conflicted: boolean; submodule?: boolean };
+export type GitStatus = { available: boolean; reason?: 'not-repository' | 'git-unavailable' | 'bare'; root?: string; branch?: string; detached?: boolean; unborn?: boolean; head?: string; entries: GitEntry[]; truncated?: boolean; message?: string };
+export type GitDiff = { path: string; area: GitArea; diff: string; binary?: boolean; truncated?: boolean; message?: string };
 export type McpServerSummary = { name: string; transport: 'http' | 'stdio'; address: string; enabled: boolean; headerNames: string[]; envNames: string[] };
 export type McpConfigInfo = { configPath: string; servers: McpServerSummary[] };
 export type McpImportPreview = { previewId: string; configPath: string; servers: (McpServerSummary & { exists: boolean })[]; conflicts: string[] };
@@ -38,8 +50,10 @@ export interface CodexBridge {
   getSettings(): Promise<Settings>;
   setSettings(settings: Partial<Settings>): Promise<void>;
   openPath(path: string): Promise<void>;
-  showPathMenu(path: string): Promise<void>;
+  showPathMenu(path: string, options?: { askCodex?: boolean }): Promise<void | { action: 'askCodex'; path: string }>;
   listFiles(relativePath?: string, cursor?: number): Promise<ProjectFilePage>;
+  getGitStatus(): Promise<GitStatus>;
+  getGitDiff(options: { path: string; area: GitArea }): Promise<GitDiff>;
   chooseExecutable(): Promise<string | null>;
   openTerminal(options: { threadId: string; model: string; effort: string; access: Access }): Promise<{ threadId: string }>;
   getMcpConfig(): Promise<McpConfigInfo>;
@@ -49,14 +63,26 @@ export interface CodexBridge {
   checkMcp(): Promise<McpConnectionReport>;
 }
 export interface WorkspaceBridge extends CodexBridge {
+  getNotificationSettings(): Promise<NotificationSettingsInfo>;
+  setNotificationSettings(settings: Partial<NotificationPreferences>): Promise<NotificationSettingsInfo>;
+  setNotificationContext(context: { activeSessionId?: string }): Promise<void>;
+  notifySession(event: SessionAttentionEvent & { sessionId: string; title: string }): Promise<void>;
+  onNotificationActivated(listener: (event: { sessionId: string }) => void): () => void;
+  getWindowFocus(): Promise<boolean>;
+  onWindowFocus(listener: (focused: boolean) => void): () => void;
   getBuildInfo(): Promise<BuildInfo>;
   getDiagnosticsStatus(): Promise<DiagnosticsStatus>;
   exportDiagnostics(): Promise<{ canceled: boolean; path?: string }>;
   openDiagnosticsFolder(): Promise<void>;
   reportRendererError(report: RendererErrorReport): void;
   getWorkspace(): Promise<WorkspaceInfo>;
+  saveWorkspaceState(snapshot: UpdateSnapshot): Promise<void>;
+  onWorkspaceSave(listener: (request: { requestId: string }) => void): () => void;
+  completeWorkspaceSave(result: { requestId: string; snapshot?: UpdateSnapshot }): Promise<void>;
   onUpdatePrepare(listener: (request: { requestId: string }) => void): () => void;
   onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
+  getUpdateStatus(): Promise<UpdateStatus | null>;
+  decideUpdate(decision: 'close' | 'later'): Promise<UpdateStatus>;
   completeUpdatePrepare(result: { requestId: string; snapshot?: UpdateSnapshot; defer?: boolean }): Promise<void>;
   completeUpdateRestore(): Promise<void>;
   listProjectThreads(cwd: string, cursor?: string): Promise<{ data: Thread[]; nextCursor: string | null }>;
@@ -67,6 +93,7 @@ export interface WorkspaceBridge extends CodexBridge {
   manageThread(options: { action: ThreadAction; threadId: string; cwd: string; name?: string }): Promise<{ thread?: Thread; affectedThreadIds?: string[] }>;
   createSession(options?: { cwd?: string; fromSessionId?: string; settings?: Settings }): Promise<SessionInfo | null>;
   closeSession(id: string): Promise<void>;
+  closeProject(cwd: string, options?: { force?: boolean }): Promise<{ projects: string[]; closedSessionIds: string[] }>;
   forSession(id: string): CodexBridge;
 }
 declare global {

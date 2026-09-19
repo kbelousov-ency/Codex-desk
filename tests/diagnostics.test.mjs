@@ -62,6 +62,18 @@ test('records only technical allowlisted data; secrets, paths, dynamic payloads 
   assert.equal(report.privacy.contentIncluded, false);
 });
 
+test('notification IPC and native failures preserve metadata only without titles or message content', async t => {
+  const { diagnostics, directory } = fixture(t);
+  const marker = 'PRIVATE_NOTIFICATION_TITLE_2138';
+  diagnostics.record('info', 'ipc.start', { channel: 'host:notifySession', title: marker, eventId: marker, sessionId: diagnostics.id(marker) });
+  diagnostics.error('notification.failed', new Error(marker), { title: marker, body: marker, command: marker });
+  await diagnostics.flush();
+  const entries = readEntries(directory);
+  assert.equal(JSON.stringify(entries).includes(marker), false);
+  assert.equal(entries.find(entry => entry.event === 'ipc.start').data.channel, 'host:notifySession');
+  assert.equal(entries.some(entry => entry.event === 'notification.failed'), true);
+});
+
 test('classifies supported local and upstream failures without keeping their messages', t => {
   const { diagnostics, directory } = fixture(t);
   const cases = [

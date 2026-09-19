@@ -87,6 +87,121 @@ test('running target prevents replacement, but a running Nightly need not stop p
   assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'a'.repeat(64));
 });
 
+test('transient Windows directory locks retry then publish the verified candidate', async t => {
+  const root = await fixture(t);
+  await build(root, 'a');
+  await promoteRelease(root, { guard });
+  const candidate = await binary(root, 'b');
+  const failures = ['EPERM', 'EACCES', 'EBUSY'];
+  const waits = [];
+  let time = 0;
+  let guarded;
+  let moves = 0;
+  await publishNightly(root, candidate, {
+    guard: async directory => { guarded = directory; },
+    moveRetry: {
+      platform: 'win32', now: () => time,
+      sleep: async ms => { waits.push(ms); time += ms; },
+      rename: async (from, to) => {
+        assert.equal(guarded, from);
+        guarded = undefined;
+        moves++;
+        if (failures.length) throw Object.assign(new Error('temporary lock'), { code: failures.shift() });
+        await rename(from, to);
+      },
+    },
+  });
+  assert.equal(moves, 5);
+  assert.deepEqual(waits, [250, 250, 250]);
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'b'.repeat(64));
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable'))).buildId, 'a'.repeat(64));
+  assert.deepEqual(await readdir(path.join(root, 'release')), ['nightly', 'stable']);
+});
+
+test('persistent Windows lock has bounded retries and rolls back the previous Nightly', async t => {
+  const root = await fixture(t);
+  await build(root, 'a');
+  await promoteRelease(root, { guard });
+  const candidate = await binary(root, 'b');
+  const originalCandidate = await fileChecksums(root, candidate);
+  const denied = Object.assign(new Error('persistent lock'), { code: 'EPERM' });
+  let time = 0;
+  let failures = 0;
+  await assert.rejects(publishNightly(root, candidate, {
+    guard,
+    moveRetry: {
+      platform: 'win32', now: () => time, sleep: async ms => { time += ms; },
+      rename: async (from, to) => {
+        if (path.basename(from) === '.nightly-incoming') { failures++; throw denied; }
+        await rename(from, to);
+      },
+    },
+  }), error => error === denied);
+  assert.equal(failures, 20);
+  assert.ok(time <= 5000);
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'a'.repeat(64));
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable'))).buildId, 'a'.repeat(64));
+  assert.deepEqual(await fileChecksums(root, candidate), originalCandidate);
+  assert.deepEqual(await readdir(path.join(root, 'release')), ['nightly', 'stable']);
+});
+
+test('nontransient rename errors and non-Windows platforms fail without retry', async t => {
+  for (const [platform, code] of [['win32', 'EIO'], ['linux', 'EPERM']]) {
+    const root = await fixture(t);
+    await build(root, 'a');
+    let calls = 0;
+    const failure = Object.assign(new Error('rename failed'), { code });
+    await assert.rejects(publishNightly(root, await binary(root, 'b'), {
+      guard,
+      moveRetry: {
+        platform,
+        sleep: async () => assert.fail('unexpected retry'),
+        rename: async () => { calls++; throw failure; },
+      },
+    }), error => error === failure);
+    assert.equal(calls, 1);
+    assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'a'.repeat(64));
+    assert.deepEqual(await readdir(path.join(root, 'release')), ['nightly']);
+  }
+});
+
+test('application reopened during retry prevents the next directory move', async t => {
+  const root = await fixture(t);
+  await build(root, 'a');
+  let running = false;
+  let calls = 0;
+  await assert.rejects(publishNightly(root, await binary(root, 'b'), {
+    guard: async directory => {
+      if (running && path.basename(directory) === 'nightly') throw new Error('running nightly');
+    },
+    moveRetry: {
+      platform: 'win32', now: () => 0,
+      sleep: async () => { running = true; },
+      rename: async () => { calls++; throw Object.assign(new Error('temporary lock'), { code: 'EPERM' }); },
+    },
+  }), /running nightly/);
+  assert.equal(calls, 1);
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'a'.repeat(64));
+  assert.deepEqual(await readdir(path.join(root, 'release')), ['nightly']);
+});
+
+test('destination is rechecked when it appears during a Windows rename retry', async t => {
+  const root = await fixture(t);
+  await build(root, 'a');
+  let calls = 0;
+  await assert.rejects(publishNightly(root, await binary(root, 'b'), {
+    guard,
+    moveRetry: {
+      platform: 'win32', now: () => 0,
+      sleep: async () => { await mkdir(path.join(root, 'release', '.nightly-old')); },
+      rename: async () => { calls++; throw Object.assign(new Error('temporary lock'), { code: 'EPERM' }); },
+    },
+  }), /Каталог назначения уже существует/);
+  assert.equal(calls, 1);
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'a'.repeat(64));
+  assert.deepEqual(await readdir(path.join(root, 'release')), ['nightly']);
+});
+
 test('promotion failure at every rename restores both stable versions and cleans staging', async t => {
   for (const move of [1, 2, 3]) {
     const root = await fixture(t);

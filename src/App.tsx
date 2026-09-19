@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowRight, ArrowUp, Brain, Check, ChevronDown, ChevronRight, Code2, Cpu, Folder, FolderOpen, FolderPlus, GitBranch, ImagePlus, LoaderCircle, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, RefreshCw, Search, Settings2, Shield, Square, Terminal, X } from 'lucide-react';
-import type { Access, Attachment, CodexBridge, Settings, Thread, UpdateTabSnapshot } from './types';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ArrowDown, ArrowRight, ArrowUp, Brain, Check, ChevronDown, ChevronRight, Code2, CornerDownRight, Cpu, Folder, FolderOpen, FolderPlus, GitBranch, ImagePlus, ListPlus, LoaderCircle, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, RefreshCw, Search, Settings2, Shield, Square, Terminal, X } from 'lucide-react';
+import type { Access, Attachment, CodexBridge, Item, MessageQueueState, ScrollAnchor, SessionAttentionEvent, Settings, Thread, UpdateTabSnapshot } from './types';
 import { BridgeContext } from './BridgeContext';
 import { BuildBadge } from './BuildInfo';
 import { errorText, folderName, useCodex } from './useCodex';
@@ -19,6 +19,10 @@ import ProjectSidebar from './ProjectSidebar';
 import { ActivityPanel, ChangesPanel, reasoningText, activityLabel } from './Panels';
 import './terminal.css';
 import McpSettings from './McpSettings';
+import UpdateNotice from './UpdateNotice';
+import MessageQueue from './MessageQueue';
+import { useMessageQueue } from './useMessageQueue';
+import { readScrollAnchor, restoreScrollAnchor } from './scroll-anchor';
 
 const effortLabels: Record<string, string> = { none: 'Без размышлений', minimal: 'Минимум', low: 'Низкий', medium: 'Средний', high: 'Высокий', xhigh: 'Очень высокий', max: 'Максимум', ultra: 'Ультра' };
 
@@ -28,14 +32,24 @@ export type WorkspaceControls = ProjectTreeControls & {
   newChat(cwd: string): void;
   openThread(cwd: string, thread: Thread): void;
   report(id: string, summary: SessionSummary): void;
-  registerUpdateCapture?(id: string, capture: () => UpdateTabSnapshot | null): () => void;
+  registerUpdateCapture?(id: string, capture: (persistent?: boolean) => UpdateTabSnapshot | null): () => void;
+  onSessionStateChange?(id: string): void;
+  flushSessionState?(): Promise<void>;
+  onSessionAttention?(id: string, event: SessionAttentionEvent, title: string): void;
 };
-export default function App({ bridge = window.codex, sessionId = 'default', active = true, initialThread, initialDraft = '', initialAttachments = [], restoreSettings, workspace }: {
-  bridge?: CodexBridge; sessionId?: string; active?: boolean; initialThread?: Thread; initialDraft?: string; initialAttachments?: Attachment[]; restoreSettings?: Settings; workspace?: WorkspaceControls;
+export default function App({ bridge = window.codex, sessionId = 'default', active = true, initialThread, initialDraft = '', initialAttachments = [], initialQueue, initialScrollTop, initialScrollAnchor, initialPreservedDraft, restoreSettings, workspace }: {
+  bridge?: CodexBridge; sessionId?: string; active?: boolean; initialThread?: Thread; initialDraft?: string; initialAttachments?: Attachment[]; initialQueue?: MessageQueueState; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; initialPreservedDraft?: { text: string; attachments: Attachment[] }; restoreSettings?: Settings; workspace?: WorkspaceControls;
 }) {
-  const codex = useCodex(bridge, { restoreSettings });
+  const attentionRef = useRef<(event: SessionAttentionEvent) => void>(() => {});
+  const codex = useCodex(bridge, { restoreSettings, onAttention: event => attentionRef.current(event) });
   const [text, setText] = useState(initialDraft);
   const [attachments, setAttachments] = useState<Attachment[]>(initialAttachments);
+  const [editingMessage, setEditingMessage] = useState(Boolean(initialPreservedDraft));
+  const [loadingEdit, setLoadingEdit] = useState(false);
+  const savedDraft = useRef<{ text: string; attachments: Attachment[] } | null>(initialPreservedDraft || null);
+  const editThread = useRef(initialThread?.id);
+  const editGeneration = useRef(0);
+  const editPending = useRef(false);
   const [tab, setTab] = useState<'files' | 'activity' | 'changes'>('files');
   const [showSidebar, setShowSidebar] = useState(true);
   const [showPanel, setShowPanel] = useState(() => window.innerWidth > 1000);
@@ -47,6 +61,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   }, []);
   const [showSettings, setShowSettings] = useState(false);
   const [showChatSearch, setShowChatSearch] = useState(false);
+  const [showChangesReview, setShowChangesReview] = useState(false);
   const [confirmFull, setConfirmFull] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [readingImages, setReadingImages] = useState(false);
@@ -60,15 +75,46 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const [accessSignal, setAccessSignal] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
   const resumeAttempted = useRef(false);
-  const savedScrollTop = useRef(0);
-  const [scrolledUp, setScrolledUp] = useState(false);
+  const savedScrollTop = useRef(initialScrollTop ?? 0);
+  const pendingScroll = useRef(initialScrollTop ?? (initialScrollAnchor ? 0 : undefined));
+  const savedAnchor = useRef(initialScrollAnchor);
+  const anchorCursors = useRef(new Set<string>());
+  const [scrolledUp, setScrolledUp] = useState(initialScrollTop !== undefined);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const focusDraftEnd = useRef(false);
   const composerRef = useRef<HTMLDivElement>(null);
   const filesRef = useRef<HTMLInputElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
   const locked = workspace?.actionBusy || codex.terminalOpen || codex.busy || codex.loading || codex.connection === 'connecting';
   const ready = codex.connection === 'ready';
-  const commands = active && !commandDismissed ? matchingCommands(text, commandMenuOpen) : [];
+  const queueOwner = useRef<{ threadId?: string; cwd?: string } | null>(initialQueue?.items.length ? { threadId: initialQueue.threadId || initialThread?.id, cwd: initialQueue.cwd || initialThread?.cwd } : null);
+  const queueOwnerMismatch = Boolean(queueOwner.current && ((queueOwner.current.threadId && queueOwner.current.threadId !== codex.thread?.id) || (queueOwner.current.cwd && codex.cwd && queueOwner.current.cwd !== codex.cwd)));
+  const queueBlocked = Boolean(queueOwnerMismatch || workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || sending || readingImages || editingMessage || loadingEdit || showSettings || confirmFull || (codex.thread && !codex.threadReady) || (initialThread && !resumeAttempted.current));
+  const queue = useMessageQueue(initialQueue, {
+    busy: codex.busy, blocked: queueBlocked, completion: codex.queueCompletion, pause: codex.queuePause,
+    canSend: codex.canSendQueued, send: codex.send, flush: workspace?.flushSessionState,
+  });
+  useEffect(() => {
+    if (!queue.state.items.length) { queueOwner.current = null; return; }
+    if (queueOwnerMismatch && ready && !codex.loading && (!initialThread || resumeAttempted.current) && queue.state.reason !== 'Очередь относится к прежнему диалогу. Откройте его перед продолжением.') queue.pause('Очередь относится к прежнему диалогу. Откройте его перед продолжением.');
+  }, [queueOwnerMismatch, queue.state.items.length, queue.state.reason, ready, codex.loading, initialThread]);
+  const commands = active && !editingMessage && !loadingEdit && !commandDismissed ? matchingCommands(text, commandMenuOpen) : [];
+  const editContext = useRef({ text, attachments, active, sending, readingImages, loading: codex.loading, terminalOpen: codex.terminalOpen, actionBusy: workspace?.actionBusy });
+  editContext.current = { text, attachments, active, sending, readingImages, loading: codex.loading, terminalOpen: codex.terminalOpen, actionBusy: workspace?.actionBusy };
+  useLayoutEffect(() => {
+    editGeneration.current += 1;
+    editPending.current = false;
+    setLoadingEdit(false);
+    return () => { editGeneration.current += 1; editPending.current = false; };
+  }, [bridge, codex.cwd, codex.thread?.id, active]);
+  useEffect(() => {
+    if (!codex.thread) return;
+    if (savedDraft.current && editThread.current !== codex.thread.id) {
+      setText(savedDraft.current.text); setAttachments(savedDraft.current.attachments);
+      savedDraft.current = null; setEditingMessage(false);
+    }
+    editThread.current = codex.thread.id;
+  }, [bridge, codex.cwd, codex.thread?.id]);
   const canCompact = !workspace?.actionBusy && ready && codex.threadReady && Boolean(codex.thread) && !codex.terminalOpen && !codex.busy && !codex.loading && !codex.requests.length;
   useEffect(() => { setCommandDismissed(false); setCommandIndex(0); setCommandKeyboardSelected(false); }, [text]);
   useEffect(() => { if (!active) { setCommandMenuOpen(false); setCommandDismissed(true); setShowHistory(false); } }, [active]);
@@ -101,18 +147,32 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const historyThread = codex.history.find(thread => thread.id === codex.thread?.id);
   const firstPrompt = codex.items.find(item => item.type === 'userMessage')?.content?.filter((part: any) => part.type === 'text').map((part: any) => part.text).join(' ');
   const dialogueTitle = workspace?.threadNames?.[codex.thread?.id || ''] || codex.thread?.name || historyThread?.name || codex.thread?.preview || historyThread?.preview || firstPrompt?.slice(0, 100) || 'Новый диалог';
+  attentionRef.current = event => workspace?.onSessionAttention?.(sessionId, event, dialogueTitle);
 
   useEffect(() => {
     const el = chatRef.current;
-    if (active && el && !scrolledUp && !showChatSearch) el.scrollTop = el.scrollHeight;
+    if (active && el && pendingScroll.current === undefined && !scrolledUp && !showChatSearch) el.scrollTop = el.scrollHeight;
     // Follow new content, not a scroll-position change caused by collapsing work.
     // The "latest message" button already scrolls explicitly.
   }, [active, codex.items, codex.requests, codex.busy]);
-  useEffect(() => { setScrolledUp(false); setShowChatSearch(false); }, [codex.thread?.id]);
+  useEffect(() => { if (pendingScroll.current === undefined) setScrolledUp(false); setShowChatSearch(false); }, [codex.thread?.id]);
+  useLayoutEffect(() => {
+    const el = chatRef.current;
+    if (!active || !el || pendingScroll.current === undefined || !ready || codex.loading || (initialThread && (!resumeAttempted.current || !codex.thread))) return;
+    if (savedAnchor.current && !restoreScrollAnchor(el, savedAnchor.current) && codex.itemCursor && !codex.error && !anchorCursors.current.has(codex.itemCursor)) {
+      anchorCursors.current.add(codex.itemCursor);
+      void codex.loadEarlier();
+      return;
+    }
+    if (!savedAnchor.current || !restoreScrollAnchor(el, savedAnchor.current)) el.scrollTop = pendingScroll.current;
+    savedScrollTop.current = el.scrollTop;
+    pendingScroll.current = undefined;
+    setScrolledUp(el.scrollHeight - el.scrollTop - el.clientHeight > 100);
+  }, [active, ready, codex.loading, codex.items, codex.thread?.id, codex.itemCursor, codex.error, initialThread]);
   useEffect(() => {
     if (!active) return;
     const el = chatRef.current;
-    if (el && !showChatSearch) el.scrollTop = scrolledUp ? savedScrollTop.current : el.scrollHeight;
+    if (el && !showChatSearch && pendingScroll.current === undefined) el.scrollTop = scrolledUp ? savedScrollTop.current : el.scrollHeight;
     if (ready) void codex.refreshHistory();
   }, [active]);
   const openChatSearch = () => {
@@ -144,23 +204,88 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       settings: { model: codex.model, effort: codex.effort, access: codex.access },
     });
   }, [workspace?.report, sessionId, codex.cwd, codex.thread?.id, dialogueTitle, initialThread, codex.terminalOpen, codex.busy, codex.loading, codex.connection, codex.requests.length, codex.model, codex.effort, codex.access]);
-  const captureUpdateRef = useRef<() => UpdateTabSnapshot | null>(() => null);
-  captureUpdateRef.current = () => {
-    if (sending || readingImages || showSettings || confirmFull || codex.loading || codex.busy || codex.terminalOpen || codex.requests.length || codex.connection === 'connecting') return null;
+  const captureUpdateRef = useRef<(persistent?: boolean) => UpdateTabSnapshot | null>(() => null);
+  captureUpdateRef.current = persistent => {
+    if (!persistent && (sending || queue.inFlight || readingImages || editingMessage || loadingEdit || showSettings || showChangesReview || confirmFull || codex.loading || codex.busy || codex.terminalOpen || codex.requests.length || codex.connection === 'connecting')) return null;
     const selected = codex.thread || (!resumeAttempted.current ? initialThread : undefined);
     return {
-      sessionId, draft: text, attachments,
-      settings: { model: codex.model, effort: codex.effort, access: codex.access },
+      sessionId, draft: text, attachments, queue: { ...queue.snapshot(), ...queueOwner.current },
+      scrollTop: pendingScroll.current ?? (active && chatRef.current ? chatRef.current.scrollTop : savedScrollTop.current),
+      scrollAnchor: pendingScroll.current !== undefined || !active || !chatRef.current ? savedAnchor.current : readScrollAnchor(chatRef.current),
+      ...(savedDraft.current ? { preservedDraft: savedDraft.current } : {}),
+      settings: !codex.cwd && restoreSettings ? restoreSettings : { model: codex.model, effort: codex.effort, access: codex.access },
       ...(selected ? { thread: { id: selected.id, cwd: codex.cwd || selected.cwd, name: dialogueTitle, ...(selected.historyMode ? { historyMode: selected.historyMode } : {}) } } : {}),
     };
   };
-  useLayoutEffect(() => workspace?.registerUpdateCapture?.(sessionId, () => captureUpdateRef.current()), [workspace?.registerUpdateCapture, sessionId]);
+  useLayoutEffect(() => workspace?.registerUpdateCapture?.(sessionId, persistent => captureUpdateRef.current(persistent)), [workspace?.registerUpdateCapture, sessionId]);
+  useEffect(() => { workspace?.onSessionStateChange?.(sessionId); }, [workspace?.onSessionStateChange, sessionId, text, attachments, queue.state, editingMessage]);
   useEffect(() => {
     const el = inputRef.current;
     if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 180)}px`; }
-  }, [text, active]);
+  }, [text, attachments, active, editingMessage, loadingEdit]);
+
+  useLayoutEffect(() => {
+    if (!focusDraftEnd.current) return;
+    focusDraftEnd.current = false;
+    const input = inputRef.current;
+    if (!active || !input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.scrollTop = input.scrollHeight;
+  }, [text, attachments, active, editingMessage, loadingEdit]);
+
+  const askAboutPath = (path: string) => {
+    if (editPending.current || sending) return;
+    focusDraftEnd.current = true;
+    setCommandMenuOpen(false);
+    setText(current => `${current}${current && !current.endsWith('\n') ? '\n' : ''}${path}\n`);
+    if (window.innerWidth <= 1000) setShowPanel(false);
+  };
+
+  const editMessage = useCallback(async (item: Item) => {
+    const current = editContext.current;
+    if (!current.active || current.sending || current.readingImages || current.loading || current.terminalOpen || current.actionBusy || editPending.current) return;
+    const version = ++editGeneration.current;
+    editPending.current = true; setLoadingEdit(true);
+    try {
+      const content = item.content || [];
+      if (content.some((part: any) => !['text', 'image', 'localImage'].includes(part.type))) throw new Error('Это сообщение содержит вложения, которые пока нельзя перенести в редактор. Текущий черновик сохранён.');
+      const imageParts = content.filter((part: any) => ['image', 'localImage'].includes(part.type));
+      const sources = imageParts.length ? imageParts : item.previews || [];
+      if (sources.length > 10) throw new Error('В сообщении больше 10 изображений. Текущий черновик сохранён.');
+      const images: Attachment[] = await Promise.all(sources.map(async (part: any, index: number) => {
+        const preview = imageParts.length ? item.previews?.[index] : part;
+        const sourcePath = part.path || preview?.path;
+        const name = preview?.name || (sourcePath ? folderName(sourcePath) : `Изображение ${index + 1}`);
+        let dataUrl = preview?.dataUrl || part.dataUrl || part.url;
+        if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(dataUrl || '') && sourcePath) dataUrl = await bridge.readAttachment(sourcePath);
+        if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(dataUrl || '')) throw new Error(`Не удалось восстановить изображение «${name}». Текущий черновик сохранён.`);
+        return { name, dataUrl, ...(sourcePath ? { path: sourcePath } : {}) };
+      }));
+      if (editGeneration.current !== version) return;
+      const latest = editContext.current;
+      savedDraft.current ||= { text: latest.text, attachments: latest.attachments };
+      focusDraftEnd.current = true;
+      setText(content.filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n'));
+      setAttachments(images); setEditingMessage(true); setCommandMenuOpen(false); setShowChatSearch(false);
+      if (window.innerWidth <= 1000) setShowPanel(false);
+    } catch (error) {
+      if (editGeneration.current === version) codex.setError(errorText(error));
+    } finally {
+      if (editGeneration.current === version) { editPending.current = false; setLoadingEdit(false); }
+    }
+  }, [bridge, codex.setError]);
+
+  const cancelEdit = () => {
+    if (sending || readingImages) return;
+    editGeneration.current += 1; editPending.current = false; setLoadingEdit(false);
+    const draft = savedDraft.current;
+    savedDraft.current = null; setEditingMessage(false);
+    if (draft) { focusDraftEnd.current = true; setText(draft.text); setAttachments(draft.attachments); }
+  };
 
   const addImages = async (files: File[]) => {
+    if (sending || editPending.current) return;
     const accepted = files.filter(file => /^image\/(png|jpe?g|webp|gif)$/.test(file.type));
     if (!accepted.length) { codex.setError('Поддерживаются изображения PNG, JPEG, WebP и GIF.'); return; }
     if (accepted.some(file => file.size > 20 * 1024 * 1024)) { codex.setError('Размер одного изображения не должен превышать 20 МБ.'); return; }
@@ -176,9 +301,31 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       setAttachments(previous => [...previous, ...images].slice(0, 10)); codex.setError('');
     } catch (e) { codex.setError(errorText(e)); } finally { setReadingImages(false); }
   };
+  const clearSentDraft = (draft: string, images: Attachment[]) => {
+    if (savedDraft.current) { const saved = savedDraft.current; savedDraft.current = null; setEditingMessage(false); setText(saved.text); setAttachments(saved.attachments); }
+    else { setText(current => current === draft ? '' : current); setAttachments(current => current.filter(image => !images.includes(image))); }
+  };
+  const steerCurrent = async () => {
+    if (workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || !codex.busy || codex.compacting || codex.steering || sending || readingImages || editPending.current) return;
+    if (!editingMessage && parseSlashCommand(text)) { codex.setError('Команды выполняются отдельно. Для уточнения напишите обычное сообщение.'); return; }
+    const draft = text, images = attachments;
+    setSending(true);
+    try { if (await codex.steer(draft, images)) clearSentDraft(draft, images); }
+    finally { setSending(false); inputRef.current?.focus(); }
+  };
+  const enqueueMessage = () => {
+    if (sending || readingImages || editPending.current || (!text.trim() && !attachments.length)) return;
+    if (queue.state.items.length >= 50) { codex.setError('В очереди уже 50 сообщений. Удалите или отправьте часть из них.'); return; }
+    if (!editingMessage && parseSlashCommand(text)) { codex.setError('Команды выполняются отдельно и не добавляются в очередь сообщений.'); return; }
+    if (queueOwnerMismatch) { codex.setError('Сначала удалите очередь прежнего диалога или вернитесь в него.'); return; }
+    queueOwner.current ||= { threadId: codex.thread?.id, cwd: codex.cwd };
+    queue.enqueue(text, attachments);
+    clearSentDraft(text, attachments);
+    inputRef.current?.focus();
+  };
   const send = async () => {
-    if (sending || readingImages) return;
-    const command = parseSlashCommand(text);
+    if (sending || readingImages || editPending.current) return;
+    const command = editingMessage ? null : parseSlashCommand(text);
     if (command) {
       if (attachments.length) { codex.setError('Команды не отправляют вложения. Уберите изображения или отправьте обычное сообщение.'); return; }
       if (!command.known) { codex.setError(`Команда /${command.name} пока не поддерживается. Доступные команды: /help.`); return; }
@@ -191,7 +338,10 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     if (attachments.length && !imagesSupported) { codex.setError('Выбранная модель не поддерживает изображения. Выберите другую модель.'); return; }
     setSending(true);
     const draft = text; const images = attachments;
-    if (await codex.send(draft, images)) { setText(current => current === draft ? '' : current); setAttachments(current => current.filter(image => !images.includes(image))); setScrolledUp(false); }
+    if (await codex.send(draft, images)) {
+      clearSentDraft(draft, images);
+      setScrolledUp(false);
+    }
     setSending(false); inputRef.current?.focus();
   };
   const newChat = () => {
@@ -264,7 +414,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     <main className="main-column">
       <header className="topbar"><button className="icon-button" title={showSidebar ? 'Скрыть проекты' : 'Показать проекты'} aria-label="Переключить панель проектов" onClick={() => setShowSidebar(!showSidebar)}>{showSidebar ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button><div className="breadcrumbs"><span>{codex.cwd ? folderName(codex.cwd) : 'Рабочее пространство'}</span><ChevronRight size={13} /><strong>{dialogueTitle || 'Новый диалог'}</strong></div><div className="topbar-actions">{chatSearchButton}<span className={`connection-pill ${codex.busy ? 'is-working' : ''}`}><span className={`status-dot ${ready ? codex.busy ? 'working' : 'online' : ''}`} />{status}</span><button className="icon-button" title="Настройки" aria-label="Настройки" onClick={() => setShowSettings(true)}><MoreHorizontal size={19} /></button><button className="icon-button" title={showPanel ? 'Скрыть действия' : 'Показать действия'} aria-label="Переключить панель действий" onClick={() => setShowPanel(!showPanel)}>{showPanel ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button></div></header>
 
-      <div className="chat-scroll" ref={chatRef} onScroll={e => { const el = e.currentTarget; if (!active) return; savedScrollTop.current = el.scrollTop; setScrolledUp(el.scrollHeight - el.scrollTop - el.clientHeight > 100); }}>
+      <div className="chat-scroll" ref={chatRef} onScroll={e => { const el = e.currentTarget; if (!active || pendingScroll.current !== undefined) return; savedScrollTop.current = el.scrollTop; savedAnchor.current = readScrollAnchor(el); setScrolledUp(el.scrollHeight - el.scrollTop - el.clientHeight > 100); workspace?.onSessionStateChange?.(sessionId); }}>
         {!showChatSearch && !chatItems.length && !codex.loading && !codex.busy && !codex.items.some(item => activityLabel(item)) ? <section className="welcome">
           <div className="welcome-symbol"><Terminal size={33} strokeWidth={1.7} /><span /></div>
           <div className="eyebrow welcome-eyebrow">ВАШ ПРОЕКТ. ВАШ CODEX.</div>
@@ -274,7 +424,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
           <button className="welcome-folder" disabled={workspace?.opening || (!workspace && locked)} onClick={addProject}><FolderOpen size={14} /><span>{codex.cwd ? codex.cwd : 'Выбрать рабочую папку'}</span><ChevronDown size={12} /></button>
         </section> : <div className="conversation">
           {codex.itemCursor && !showChatSearch && <button className="text-button load-earlier" disabled={codex.loading} onClick={() => void codex.loadEarlier()}>Показать предыдущие сообщения</button>}
-          <ChatSearch key={codex.thread?.id || 'new'} items={codex.items} turnWork={codex.turnWork} open={showChatSearch} active={active} onClose={() => { setShowChatSearch(false); inputRef.current?.focus({ preventScroll: true }); }} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} />
+          <ChatSearch key={codex.thread?.id || 'new'} items={codex.items} turnWork={codex.turnWork} open={showChatSearch} active={active} onClose={() => { setShowChatSearch(false); inputRef.current?.focus({ preventScroll: true }); }} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} onEditMessage={editMessage} editDisabled={sending || readingImages || loadingEdit || codex.loading || codex.terminalOpen || Boolean(workspace?.actionBusy)} />
           {codex.busy && <div className="working-indicator"><span className="working-orb" /><span>{codex.requests.length ? 'Codex ждёт вашего ответа' : currentAction || 'Codex работает'}<span className="working-dots">...</span></span></div>}
         </div>}
         {codex.loading && <div className="loading-chat"><LoaderCircle className="spin" size={22} /><span>Открываем диалог…</span></div>}
@@ -282,22 +432,32 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       </div>
 
       <div className="composer-area">
+        <UpdateNotice />
+        <MessageQueue queue={queue} blocked={queueBlocked} />
         {scrolledUp && <button className="scroll-bottom" onClick={() => { setScrolledUp(false); if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight; }}><ArrowDown size={14} />К последнему сообщению</button>}
         {codex.error && <div className="alert error-alert" role="alert"><span>{codex.error}</span>{codex.connection === 'error' && <button onClick={() => void codex.connect()}><RefreshCw size={14} />Подключить</button>}<button className="icon-button small" title="Скрыть ошибку" aria-label="Скрыть ошибку" onClick={() => codex.setError('')}><X size={14} /></button></div>}
         {codex.notice && <div className="alert notice-alert"><span>{codex.notice}</span>{codex.canContinue && <button type="button" className="continue-button" aria-label="Продолжить выполнение" title="Отправить «Продолжай» в этот диалог" disabled={locked || !ready || !codex.threadReady || sending || readingImages || Boolean(codex.requests.length)} onClick={() => void continueStopped()}><ArrowRight size={14} />Продолжить</button>}<button className="icon-button small" title="Скрыть уведомление" aria-label="Скрыть уведомление" onClick={() => codex.setNotice('')}><X size={14} /></button></div>}
         {ready && codex.thread && !codex.threadReady && !codex.loading && <div className="alert notice-alert"><span>Для продолжения нужно подключить диалог.</span><button disabled={locked || sending} onClick={() => void codex.resume(codex.thread!, true)}><RefreshCw size={14} />Повторить подключение</button></div>}
+        {(editingMessage || loadingEdit) && <div className="composer-edit-banner" role="status"><span><strong>{loadingEdit ? 'Восстанавливаем сообщение…' : 'Редактирование сообщения'}</strong>{loadingEdit ? 'Загружаем исходные изображения.' : 'Исправленный текст отправится новым сообщением. Ваш черновик сохранён.'}</span><button type="button" className="text-button" aria-label="Отменить редактирование" disabled={sending || readingImages} onClick={cancelEdit}>Отмена</button></div>}
         <div ref={composerRef} className={`composer ${dragOver ? 'drag-over' : ''}`} onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }} onDrop={e => { e.preventDefault(); setDragOver(false); void addImages([...e.dataTransfer.files]); }}>
           {commands.length > 0 && <CommandMenu commands={commands} selected={Math.min(commandIndex, commands.length - 1)} onHighlight={setCommandIndex} onSelect={name => void chooseCommand(name)} />}
           {dragOver && <div className="drop-overlay"><ImagePlus size={24} />Добавить изображения к сообщению</div>}
-          {attachments.length > 0 && <div className="attachments">{attachments.map((attachment, i) => <div className="attachment" key={`${attachment.name}-${i}`}><img src={attachment.dataUrl} alt={attachment.name} /><button title="Удалить изображение" aria-label={`Удалить ${attachment.name}`} onClick={() => setAttachments(previous => previous.filter((_, index) => index !== i))}><X size={12} /></button><span>{attachment.name}</span></div>)}</div>}
-          <textarea ref={inputRef} value={text} rows={2} placeholder="Что будем делать? Можно вставить изображение…" aria-label="Сообщение Codex" onChange={e => { setCommandMenuOpen(false); setText(e.target.value); }} onPaste={e => { const files = [...e.clipboardData.items].filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => !!file); if (files.length) { e.preventDefault(); void addImages(files); } }} onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (commands.length && e.key === 'Escape') { e.preventDefault(); setCommandMenuOpen(false); setCommandDismissed(true); } else if (commands.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setCommandKeyboardSelected(true); setCommandIndex(index => (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length); } else if (commands.length && (matchingCommands(text).length > 0 || commandKeyboardSelected) && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { e.preventDefault(); void chooseCommand(commands[Math.min(commandIndex, commands.length - 1)].name); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
-          <div className="composer-toolbar"><div className="composer-tools"><button className="icon-button attach-button" title="Прикрепить изображения (или Ctrl+V)" aria-label="Прикрепить изображения" disabled={readingImages || !imagesSupported} onClick={() => filesRef.current?.click()}>{readingImages ? <LoaderCircle size={18} className="spin" /> : <Plus size={20} />}</button><span className="toolbar-divider" />
-            <button type="button" className="icon-button" aria-label="Команды Codex" title="Команды Codex (/)" onClick={() => { setCommandMenuOpen(value => !value); setCommandDismissed(false); setCommandKeyboardSelected(false); inputRef.current?.focus(); }}><Terminal size={16} /></button>
+          {attachments.length > 0 && <div className="attachments">{attachments.map((attachment, i) => <div className="attachment" key={`${attachment.name}-${i}`}><img src={attachment.dataUrl} alt={attachment.name} /><button title="Удалить изображение" aria-label={`Удалить ${attachment.name}`} disabled={loadingEdit || sending} onClick={() => setAttachments(previous => previous.filter((_, index) => index !== i))}><X size={12} /></button><span>{attachment.name}</span></div>)}</div>}
+          <textarea ref={inputRef} value={text} readOnly={loadingEdit || (editingMessage && sending)} rows={2} placeholder="Что будем делать? Можно вставить изображение…" aria-label="Сообщение Codex" onChange={e => { setCommandMenuOpen(false); setText(e.target.value); }} onPaste={e => { const files = [...e.clipboardData.items].filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => !!file); if (files.length) { e.preventDefault(); void addImages(files); } }} onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === 'Escape' && (editingMessage || loadingEdit)) { e.preventDefault(); cancelEdit(); } else if (commands.length && e.key === 'Escape') { e.preventDefault(); setCommandMenuOpen(false); setCommandDismissed(true); } else if (commands.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setCommandKeyboardSelected(true); setCommandIndex(index => (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length); } else if (commands.length && (matchingCommands(text).length > 0 || commandKeyboardSelected) && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { e.preventDefault(); void chooseCommand(commands[Math.min(commandIndex, commands.length - 1)].name); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+          <div className="composer-toolbar"><div className="composer-tools"><button className="icon-button attach-button" title="Прикрепить изображения (или Ctrl+V)" aria-label="Прикрепить изображения" disabled={readingImages || loadingEdit || sending || !imagesSupported} onClick={() => filesRef.current?.click()}>{readingImages ? <LoaderCircle size={18} className="spin" /> : <Plus size={20} />}</button><span className="toolbar-divider" />
+            <button type="button" className="icon-button" aria-label="Команды Codex" title="Команды Codex (/)" disabled={editingMessage || loadingEdit || sending} onClick={() => { setCommandMenuOpen(value => !value); setCommandDismissed(false); setCommandKeyboardSelected(false); inputRef.current?.focus(); }}><Terminal size={16} /></button>
             <ComposerSelect kind="model" label="Модель" value={codex.model} options={modelOptions} icon={<Cpu size={14} />} disabled={locked || !ready} active={active} openSignal={modelSignal} onChange={codex.selectModel} />
             <ComposerSelect kind="effort" label="Глубина размышлений" value={codex.effort} options={effortOptions} icon={<Brain size={14} />} disabled={locked || !ready || !efforts.length} active={active} onChange={codex.selectEffort} />
-          </div>{codex.busy ? <button className="stop-button" onClick={() => void codex.stop()} title="Остановить выполнение" aria-label="Остановить выполнение"><Square size={14} fill="currentColor" /></button> : <button className="send-button" title="Отправить (Enter)" aria-label="Отправить сообщение" disabled={!ready || locked || sending || readingImages || (!text.trim() && !attachments.length)} onClick={() => void send()}><ArrowUp size={20} /></button>}</div>
+          </div><div className="composer-actions">
+            {(codex.busy || queue.state.items.length > 0) && <>
+              {codex.busy && <button type="button" className="composer-action composer-steer" aria-label="Уточнить текущую задачу" title="Уточнить текущую задачу — передать сообщение Codex во время выполнения" disabled={(!text.trim() && !attachments.length) || Boolean(workspace?.actionBusy) || codex.terminalOpen || codex.loading || !ready || Boolean(codex.requests.length) || sending || readingImages || loadingEdit || codex.compacting || codex.steering || (attachments.length > 0 && !imagesSupported)} onClick={() => void steerCurrent()}><CornerDownRight size={14} /><span>Уточнить</span></button>}
+              <button type="button" className="composer-action composer-enqueue" aria-label="Отправить после завершения" title="В очередь — отправить сообщение после завершения текущей задачи" disabled={(!text.trim() && !attachments.length) || queueOwnerMismatch || sending || readingImages || loadingEdit || (attachments.length > 0 && !imagesSupported)} onClick={enqueueMessage}><ListPlus size={15} /><span>В очередь</span></button>
+              {codex.busy && <span className="composer-action-divider" aria-hidden="true" />}
+            </>}
+            {codex.busy ? <button className="stop-button" onClick={() => void codex.stop()} title="Остановить выполнение" aria-label="Остановить выполнение"><Square size={14} fill="currentColor" /></button> : <button className="send-button" title="Отправить (Enter)" aria-label="Отправить сообщение" disabled={!ready || locked || sending || readingImages || loadingEdit || (!text.trim() && !attachments.length)} onClick={() => void send()}><ArrowUp size={20} /></button>}
+          </div></div>
         </div>
-        <div className="composer-footer"><AccessSelect value={codex.access} disabled={locked || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span><CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || showSettings || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
+        <div className="composer-footer"><AccessSelect value={codex.access} disabled={locked || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span><CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || editingMessage || loadingEdit || showSettings || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
       </div>
     </main>
 
@@ -306,9 +466,9 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><Terminal size={14} />Действия{codex.busy && <span className="tab-live-dot" />}</button>
       <button className={tab === 'changes' ? 'active' : ''} onClick={() => setTab('changes')}><GitBranch size={14} />Изменения{changedFiles > 0 && <span className="count-badge">{changedFiles}</span>}</button>
     </div><div className="panel-scroll">
-      <div hidden={tab !== 'files'}><FileBrowser cwd={codex.cwd} active={active && showPanel && tab === 'files'} refreshKey={changedFiles} /></div>
+      <div hidden={tab !== 'files'}><FileBrowser cwd={codex.cwd} active={active && showPanel && tab === 'files'} refreshKey={changedFiles} onAskCodex={askAboutPath} /></div>
       {tab === 'activity' && <ActivityPanel items={codex.items} plan={codex.plan} busy={codex.busy} />}
-      {tab === 'changes' && <ChangesPanel items={codex.items} diff={codex.diff} cwd={codex.cwd} />}
+      {tab === 'changes' && <ChangesPanel key={codex.thread?.id || 'new'} items={codex.items} diff={codex.diff} cwd={codex.cwd} diffTurnId={codex.diffTurnId} turnDiffs={codex.turnDiffs} active={active && !workspace?.actionBusy} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} busy={codex.busy} onLoadEarlier={() => void codex.loadEarlier()} onReviewChange={setShowChangesReview} />}
     </div><div className="panel-bottom"><span className="status-dot online" /><span>{tab === 'files' ? 'Файлы текущей рабочей папки' : 'Изменения сохраняются в проекте'}</span></div></aside>
     <input ref={filesRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => { void addImages([...(e.target.files || [])]); e.currentTarget.value = ''; }} />
 
@@ -318,4 +478,3 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     {confirmFull && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="full-access-title"><div className="permission-symbol"><Shield size={26} /></div><h2 id="full-access-title">Включить полный доступ?</h2><p>Codex сможет выполнять команды, обращаться к сети и изменять файлы за пределами проекта без запросов подтверждения.</p><p className="muted">Режим применяется со следующего сообщения в этой вкладке.</p><div className="confirm-actions"><button className="secondary-button" autoFocus onClick={() => setConfirmFull(false)}>Отмена</button><button className="danger-button" onClick={() => { codex.selectAccess('danger-full-access'); setConfirmFull(false); }}>Включить полный доступ</button></div></section></div>}
   </div></BridgeContext.Provider>;
 }
-

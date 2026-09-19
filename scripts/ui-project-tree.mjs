@@ -28,7 +28,7 @@ try {
     let serial = 0;
     const projects = ['C:/Fixtures/PROJECT_A', 'C:/Fixtures/PROJECT_B', 'C:/Fixtures/EMPTY'];
     const sessions = {};
-    const fixture = { projects, sessions, creates: [], lists: [], nextFolder: 'C:/Fixtures/PROJECT_C', holdB: true, failB: false, releaseB: null };
+    const fixture = { projects, sessions, creates: [], lists: [], closes: [], failClose: false, nextFolder: 'C:/Fixtures/PROJECT_C', holdB: true, failB: false, releaseB: null };
     const history = (cwd, second = false) => ({ id: second ? 'second-history' : 'shared-history', name: `${second ? 'Ещё' : 'История'} ${cwd.split('/').at(-1)}`, cwd, historyMode: 'legacy' });
     const listing = (cwd, cursor) => ({ data: /\/(EMPTY|PROJECT_C)$/.test(cwd) ? [] : [history(cwd, !!cursor)], nextCursor: cwd.endsWith('PROJECT_B') && !cursor ? 'page-2' : null });
     const models = [{ id: 'fixture-alpha', model: 'fixture-alpha', displayName: 'fixture-alpha', inputModalities: ['text'], defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }];
@@ -79,6 +79,18 @@ try {
         return create(cwd, { ...sessions[options.fromSessionId]?.settings, ...options.settings });
       },
       async closeSession(id) { sessions[id].closed = true; sessions[id].listeners.clear(); },
+      async closeProject(cwd, options = {}) {
+        fixture.closes.push({ cwd, options });
+        if (fixture.failClose) { fixture.failClose = false; throw new Error('Ошибка закрытия проекта'); }
+        const matching = Object.values(sessions).filter(state => !state.closed && state.cwd === cwd);
+        if (matching.length && !options.force) throw new Error('Нужно подтвердить закрытие вкладок');
+        matching.forEach(state => { state.closed = true; state.listeners.clear(); });
+        const index = projects.indexOf(cwd);
+        if (index >= 0) projects.splice(index, 1);
+        return { projects: [...projects], closedSessionIds: matching.map(state => state.id) };
+      },
+      async listArchivedThreads() { return { data: [{ id: 'archived-a', name: 'Архив PROJECT_A', cwd: 'C:/Fixtures/PROJECT_A' }], nextCursor: null }; },
+      async readArchivedThread() { return { items: [{ id: 'archived-message', type: 'agentMessage', text: 'Сохранённый архив' }], turns: [], nextCursor: null }; },
       forSession(id) { return sessions[id].bridge; },
     };
   });
@@ -231,8 +243,75 @@ try {
   assert.equal(fromEmptyWorkspace.create.fromSessionId, undefined);
   assert.equal(fromEmptyWorkspace.state.cwd, 'C:/Fixtures/EMPTY');
   assert.deepEqual(fromEmptyWorkspace.state.requests.filter(call => ['thread/start', 'thread/resume', 'turn/start'].includes(call.method)), []);
+
+  // Closing removes registration and local tabs, never history or project files.
+  const projectMenu = name => folder(name).getByRole('button', { name: `Действия проекта ${name}`, exact: true });
+  const closeProjectMenu = async name => {
+    await projectMenu(name).click();
+    await page.getByRole('menuitem', { name: 'Закрыть проект', exact: true }).click();
+  };
+  await projectMenu('PROJECT_C').click();
+  await page.getByRole('menuitem', { name: 'Закрыть проект', exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  assert.equal(await projectMenu('PROJECT_C').getAttribute('aria-expanded'), 'false');
+  await toggle('PROJECT_C').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Закрыть проект', exact: true }).click();
+  await folder('PROJECT_C').waitFor({ state: 'detached' });
+  assert.equal(await page.getByRole('alertdialog').count(), 0, 'Project without open tabs closes immediately');
+  assert.deepEqual(await page.evaluate(() => window.__tree.closes.at(-1)), { cwd: 'C:/Fixtures/PROJECT_C', options: { force: false } });
+  assert.equal(await activeId(), 'session-5', 'Closing an unused project preserves the active tab');
+
+  await newChat('PROJECT_A').click(); await tabs(2); await ready();
+  await view().getByRole('textbox', { name: 'Сообщение Codex', exact: true }).fill('Важный черновик PROJECT_A');
+  await closeProjectMenu('PROJECT_A');
+  await page.getByRole('alertdialog').waitFor();
+  assert.match(await page.getByRole('alertdialog').innerText(), /Неотправленные сообщения и вложения/);
+  await page.getByRole('button', { name: 'Отмена', exact: true }).click();
+  assert.equal(await view().getByRole('textbox', { name: 'Сообщение Codex', exact: true }).inputValue(), 'Важный черновик PROJECT_A');
+  assert.equal(await page.evaluate(() => window.__tree.closes.length), 1, 'Cancelling preserves drafts and never contacts closeProject');
+  await page.evaluate(() => { window.__tree.failClose = true; });
+  await closeProjectMenu('PROJECT_A');
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Закрыть проект', exact: true }).click();
+  await page.getByRole('alertdialog').getByText('Ошибка закрытия проекта', { exact: true }).waitFor();
+  assert.equal(await folder('PROJECT_A').count(), 1);
+  assert.equal(await page.getByRole('tab').count(), 2);
+  assert.equal(await page.evaluate(() => window.__tree.sessions['session-6'].closed), false, 'Host failure retains all local views');
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Закрыть проект', exact: true }).click();
+  await folder('PROJECT_A').waitFor({ state: 'detached' }); await tabs(1);
+  assert.equal(await activeId(), 'session-5');
+  assert.deepEqual(await page.evaluate(() => window.__tree.closes.at(-1)), { cwd: 'C:/Fixtures/PROJECT_A', options: { force: true } });
+  assert.equal(await page.evaluate(() => window.__tree.sessions['session-5'].closed), false, 'Unrelated session remains connected');
+
+  await page.evaluate(() => { window.__tree.nextFolder = 'C:/Fixtures/PROJECT_A'; });
+  await newProject().click(); await tabs(2); await ready();
+  await historyButton('PROJECT_A').waitFor();
+  assert.equal(await historyButton('PROJECT_A').innerText(), 'История PROJECT_A', 'Adding a closed project returns its previous history');
+  await view().getByRole('button', { name: 'Архив', exact: true }).click();
+  await view().getByRole('button', { name: 'Архив PROJECT_A', exact: true }).click();
+  await tabs(3); await view().getByText('Сохранённый архив', { exact: true }).waitFor();
+  await view().getByRole('button', { name: 'К проектам', exact: true }).click();
+  await closeProjectMenu('PROJECT_A');
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Закрыть проект', exact: true }).click();
+  await tabs(1); await folder('PROJECT_A').waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.archive-view').count(), 0, 'Closing a project also closes its archived read-only views');
+
+  await view().getByRole('textbox', { name: 'Сообщение Codex', exact: true }).fill('Работай в EMPTY');
+  await view().getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+  await view().getByRole('button', { name: 'Остановить выполнение', exact: true }).waitFor();
+  await closeProjectMenu('EMPTY');
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Отмена', exact: true }).click();
+  assert.equal(await view().getByRole('button', { name: 'Остановить выполнение', exact: true }).isVisible(), true, 'Cancelling leaves a running project untouched');
+  await closeProjectMenu('EMPTY');
+  await page.screenshot({ path: 'artifacts/close-project-confirm.png' });
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Закрыть проект', exact: true }).click();
+  await tabs(0); await folder('EMPTY').waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => window.__tree.sessions['session-5'].closed), true);
+  await closeProjectMenu('PROJECT_B');
+  await page.waitForFunction(() => window.__tree.projects.length === 0);
+  await tree().getByText('Добавьте проект, чтобы открыть диалог.', { exact: true }).waitFor();
+  await newProject().waitFor();
   assert.deepEqual(errors, []);
-  console.log('PASS: compact folder tree, isolated history/loading/errors/pagination, history reuse, New project under logo/picker/cancel, empty-folder + starts selected chat in exact cwd while source busy and with no tabs, no thread/turn before send, existing history preserved, inline cache at 1440/940px. Fake bridges and token events only; no real model request.');
+  console.log('PASS: compact folder tree, isolated history/loading/errors/pagination, history reuse, new project and empty-folder chat, inline cache at 1440/940px; project menu/keyboard/context menu, immediate and confirmed close, cancel with draft/running task, close failure recovery, archived views close, other project isolation, history returns after adding, empty workspace. Fake bridges and token events only; no real model request.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/project-tree-failure.png' }); console.error(await page.locator('body').innerText()); }
   throw error;
