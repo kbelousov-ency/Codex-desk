@@ -109,23 +109,90 @@ async function indexVersion(ctx, relative) {
 }
 
 const sameIndex = (a, b) => ['oid', 'mode', 'attrs', 'head', 'hash'].every(key => a[key] === b[key]);
-function diffPreview(relative, before, after) {
-  let oldText; let newText;
-  try {
-    if (before.bytes.includes(0) || after.bytes.includes(0)) throw new Error('binary');
-    oldText = new TextDecoder('utf-8', { fatal: true }).decode(before.bytes);
-    newText = new TextDecoder('utf-8', { fatal: true }).decode(after.bytes);
-  } catch { return { diff: '', binary: true, message: 'Двоичный файл или другая кодировка. Будет восстановлено содержимое целиком; резервная копия сохранится.' }; }
-  if (before.bytes.length + after.bytes.length > ROLLBACK_DIFF_LIMIT) return { diff: '', truncated: true, message: 'Текст больше 2 МиБ. Сравнение недоступно; будет восстановлен весь файл с резервной копией.' };
-  const lines = text => text ? text.match(/[^\n]*\n|[^\n]+$/g) : [];
-  const oldLines = lines(oldText); const newLines = lines(newText);
+const HUNK_CONTEXT = 3;
+// Line-level LCS is exact but quadratic; beyond this many changed lines the
+// preview falls back to a single hunk, which is always available.
+const LCS_CELL_LIMIT = 16_000_000;
+const splitLines = text => text ? text.match(/[^\n]*\n|[^\n]+$/g) : [];
+
+/** Edit script between two line arrays: [{ kind: 'equal'|'remove'|'add', line }]. */
+function lineEdits(oldLines, newLines) {
   let prefix = 0;
   while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix++;
   let suffix = 0;
   while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix && oldLines.at(-suffix - 1) === newLines.at(-suffix - 1)) suffix++;
-  const start = Math.max(0, prefix - 3);
-  const oldEnd = Math.min(oldLines.length, oldLines.length - suffix + 3);
-  const newEnd = Math.min(newLines.length, newLines.length - suffix + 3);
+  const a = oldLines.slice(prefix, oldLines.length - suffix), b = newLines.slice(prefix, newLines.length - suffix);
+  const edits = oldLines.slice(0, prefix).map(line => ({ kind: 'equal', line }));
+  if ((a.length + 1) * (b.length + 1) > LCS_CELL_LIMIT) {
+    edits.push(...a.map(line => ({ kind: 'remove', line })), ...b.map(line => ({ kind: 'add', line })));
+  } else {
+    const width = b.length + 1;
+    const table = new Uint32Array((a.length + 1) * width);
+    for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) {
+      table[i * width + j] = a[i] === b[j] ? table[(i + 1) * width + j + 1] + 1 : Math.max(table[(i + 1) * width + j], table[i * width + j + 1]);
+    }
+    let i = 0, j = 0;
+    while (i < a.length && j < b.length) {
+      if (a[i] === b[j]) { edits.push({ kind: 'equal', line: a[i] }); i++; j++; }
+      else if (table[(i + 1) * width + j] >= table[i * width + j + 1]) edits.push({ kind: 'remove', line: a[i++] });
+      else edits.push({ kind: 'add', line: b[j++] });
+    }
+    while (i < a.length) edits.push({ kind: 'remove', line: a[i++] });
+    while (j < b.length) edits.push({ kind: 'add', line: b[j++] });
+  }
+  edits.push(...oldLines.slice(oldLines.length - suffix).map(line => ({ kind: 'equal', line })));
+  return edits;
+}
+
+/** Groups an edit script into unified-diff hunks with standard context merging. */
+function buildHunks(edits, context = HUNK_CONTEXT) {
+  const hunks = [];
+  let oldLine = 1, newLine = 1, index = 0;
+  while (index < edits.length) {
+    if (edits[index].kind === 'equal') { oldLine++; newLine++; index++; continue; }
+    const start = Math.max(0, index - context);
+    let end = index;
+    // Extend while the gap of equal lines between changes is short enough to merge.
+    for (let cursor = index; cursor < edits.length; cursor++) {
+      if (edits[cursor].kind !== 'equal') { end = cursor + 1; continue; }
+      let gap = 0;
+      while (cursor + gap < edits.length && edits[cursor + gap].kind === 'equal') gap++;
+      if (cursor + gap >= edits.length || gap > 2 * context) break;
+      cursor += gap - 1;
+    }
+    const stop = Math.min(edits.length, end + context);
+    const lines = edits.slice(start, stop);
+    const oldStart = oldLine - (index - start), newStart = newLine - (index - start);
+    const oldCount = lines.filter(e => e.kind !== 'add').length, newCount = lines.filter(e => e.kind !== 'remove').length;
+    hunks.push({ oldStart, oldCount, newStart, newCount, lines });
+    for (let cursor = index; cursor < stop; cursor++) { if (edits[cursor].kind !== 'add') oldLine++; if (edits[cursor].kind !== 'remove') newLine++; }
+    index = stop;
+  }
+  return hunks;
+}
+
+const hunkHeader = hunk => `@@ -${hunk.oldCount ? hunk.oldStart : Math.max(0, hunk.oldStart - 1)},${hunk.oldCount} +${hunk.newCount ? hunk.newStart : Math.max(0, hunk.newStart - 1)},${hunk.newCount} @@`;
+const hunkSummary = hunk => {
+  const changed = hunk.lines.find(e => e.kind !== 'equal');
+  return { removed: hunk.lines.filter(e => e.kind === 'remove').length, added: hunk.lines.filter(e => e.kind === 'add').length, excerpt: (changed?.line || '').replace(/\r?\n$/, '').trim().slice(0, 120) };
+};
+const publicHunks = hunks => hunks.map((hunk, index) => ({ index, header: hunkHeader(hunk), oldStart: hunk.oldStart, oldCount: hunk.oldCount, newStart: hunk.newStart, newCount: hunk.newCount, ...hunkSummary(hunk) }));
+
+function decodeText(before, after) {
+  if (before.bytes.includes(0) || after.bytes.includes(0)) return null;
+  try {
+    const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+    return { oldText: decoder.decode(before.bytes), newText: decoder.decode(after.bytes) };
+  } catch { return null; }
+}
+
+/** Unified diff from `before` (current file) to `after` (target). Returns hunks for partial restore when text. */
+function diffPreview(relative, before, after) {
+  const text = decodeText(before, after);
+  if (!text) return { diff: '', binary: true, message: 'Двоичный файл или другая кодировка. Будет восстановлено содержимое целиком; резервная копия сохранится.' };
+  if (before.bytes.length + after.bytes.length > ROLLBACK_DIFF_LIMIT) return { diff: '', truncated: true, message: 'Текст больше 2 МиБ. Сравнение недоступно; будет восстановлен весь файл с резервной копией.' };
+  const oldLines = splitLines(text.oldText), newLines = splitLines(text.newText);
+  const hunks = text.oldText === text.newText ? [] : buildHunks(lineEdits(oldLines, newLines));
   const oldName = before.missing ? '/dev/null' : quote('a', relative);
   const newName = after.missing ? '/dev/null' : quote('b', relative);
   let diff = `diff --git ${quote('a', relative)} ${quote('b', relative)}\n`;
@@ -133,16 +200,29 @@ function diffPreview(relative, before, after) {
   else if (after.missing) diff += 'deleted file mode 100644\n';
   else if (before.mode !== after.mode) diff += `old mode ${before.mode & 0o111 ? '100755' : '100644'}\nnew mode ${after.mode & 0o111 ? '100755' : '100644'}\n`;
   diff += `--- ${oldName}\n+++ ${newName}\n`;
-  if (oldText !== newText) {
-    diff += `@@ -${oldEnd === start ? 0 : start + 1},${oldEnd - start} +${newEnd === start ? 0 : start + 1},${newEnd - start} @@\n`;
-    const emit = (mark, line) => `${mark}${line}${line.endsWith('\n') ? '' : '\n\\ No newline at end of file\n'}`;
-    for (let i = start; i < prefix; i++) diff += emit(' ', oldLines[i]);
-    for (let i = prefix; i < oldLines.length - suffix; i++) diff += emit('-', oldLines[i]);
-    for (let i = prefix; i < newLines.length - suffix; i++) diff += emit('+', newLines[i]);
-    for (let i = oldLines.length - suffix; i < oldEnd; i++) diff += emit(' ', oldLines[i]);
+  const emit = (mark, line) => `${mark}${line}${line.endsWith('\n') ? '' : '\n\\ No newline at end of file\n'}`;
+  for (const hunk of hunks) {
+    diff += `${hunkHeader(hunk)}\n`;
+    for (const edit of hunk.lines) diff += emit(edit.kind === 'add' ? '+' : edit.kind === 'remove' ? '-' : ' ', edit.line);
   }
   if (Buffer.byteLength(diff) > ROLLBACK_DIFF_LIMIT) return { diff: '', truncated: true, message: 'Сравнение больше 2 МиБ. Будет восстановлен весь файл с резервной копией.' };
-  return { diff };
+  return { diff, hunks, oldLines };
+}
+
+/** Applies only the selected hunks of a preview to the current text; other changes stay. */
+function partialBytes(preview, selection) {
+  const { hunks, oldLines } = preview;
+  if (!Array.isArray(hunks) || hunks.length < 2 || !oldLines) throw new Error('Откат отдельных фрагментов недоступен для этого файла: используйте откат целиком.');
+  if (!Array.isArray(selection) || !selection.length || selection.length > hunks.length) throw new Error('Выберите хотя бы один фрагмент для отката.');
+  const chosen = [...new Set(selection)];
+  if (chosen.length !== selection.length || chosen.some(index => !Number.isSafeInteger(index) || index < 0 || index >= hunks.length)) throw new Error('Некорректный выбор фрагментов. Откройте предпросмотр заново.');
+  if (chosen.length === hunks.length) return null; // Every hunk: identical to the exact index bytes.
+  const lines = [...oldLines];
+  for (const index of chosen.sort((a, b) => b - a)) {
+    const hunk = hunks[index];
+    lines.splice(hunk.oldStart - 1, hunk.oldCount, ...hunk.lines.filter(e => e.kind !== 'remove').map(e => e.line));
+  }
+  return Buffer.from(lines.join(''), 'utf8');
 }
 
 async function durableWrite(filePath, bytes) {
@@ -169,8 +249,11 @@ export class GitRollbackService {
     for (const [id, item] of this.previews) if (item.expires <= this.now()) this.previews.delete(id);
     while (this.previews.size >= 8) this.previews.delete(this.previews.keys().next().value);
     const previewId = randomUUID(); const expires = this.now() + ROLLBACK_PREVIEW_MS;
-    this.previews.set(previewId, { cwd: ctx.selected, root: ctx.cwd, path: relative, operation, source, destination, index, undo, expires });
-    return { previewId, path: relative, operation, expiresAt: new Date(expires).toISOString(), ...diffPreview(relative, source, destination) };
+    const { hunks, oldLines, ...visible } = diffPreview(relative, source, destination);
+    // Partial restore is offered only for a present text file returning to the index.
+    const selectable = operation === 'restore' && !source.missing && Array.isArray(hunks) && hunks.length > 1;
+    this.previews.set(previewId, { cwd: ctx.selected, root: ctx.cwd, path: relative, operation, source, destination, index, undo, expires, ...(selectable ? { hunks, oldLines } : {}) });
+    return { previewId, path: relative, operation, expiresAt: new Date(expires).toISOString(), ...visible, ...(selectable ? { hunks: publicHunks(hunks) } : {}) };
   }
 
   preview({ cwd, path: relative, assertActive = () => {} }) {
@@ -329,17 +412,22 @@ export class GitRollbackService {
     } finally { if (prepared) await unlink(temp).catch(() => {}); }
   }
 
-  apply({ cwd, previewId, assertActive = () => {} }) {
+  apply({ cwd, previewId, hunks, assertActive = () => {} }) {
     return this.serial(async () => {
       const ctx = await context(cwd, assertActive);
       const preview = await this.consume(ctx, previewId, 'restore');
+      if (hunks !== undefined) {
+        const bytes = partialBytes(preview, hunks);
+        if (bytes) preview.destination = { ...preview.destination, bytes };
+        preview.selectedHunks = [...new Set(hunks)].sort((a, b) => a - b);
+      }
       const id = randomUUID();
       await this.ensureDirectory();
       // Back up both sides durably before touching the worktree. These files
       // remain available for manual recovery after interruption or restart.
       await durableWrite(path.join(this.directory, `${id}.before`), preview.source.bytes);
       await durableWrite(path.join(this.directory, `${id}.after`), preview.destination.bytes);
-      const record = { version: 1, id, cwd: ctx.selected, root: ctx.cwd, path: preview.path, createdAt: new Date(this.now()).toISOString(), before: metadata(preview.source), index: metadata(preview.index), state: 'prepared' };
+      const record = { version: 1, id, cwd: ctx.selected, root: ctx.cwd, path: preview.path, createdAt: new Date(this.now()).toISOString(), before: metadata(preview.source), index: metadata(preview.index), state: 'prepared', ...(preview.selectedHunks ? { hunks: preview.selectedHunks } : {}) };
       await this.replace(ctx, preview, record);
       return publicRecord(record);
     });

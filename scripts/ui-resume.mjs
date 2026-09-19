@@ -41,16 +41,17 @@ try {
       const settings = { cwd, model: 'fixture-model', effort: 'high', access: 'inherited' };
       const listeners = new Set();
       let resumeCount = 0;
-      const state = { requests: [], resumeCount: 0, pendingResume: null };
+      const state = { requests: [], resumeCount: 0, pendingResume: null, starts: 0 };
       state.emit = (type, data) => { for (const listener of listeners) listener({ type, data }); };
-      state.finishResume = () => {
+      state.finishResume = (fresh = false) => {
         const pending = state.pendingResume;
         state.pendingResume = null;
+        if (fresh) { pending?.({ thread: savedThread, model: 'fixture-model', reasoningEffort: 'high' }); return; }
         pending?.({ thread: { ...savedThread, turns: [{ ...savedTurn, items: [{ id: 'stale-answer', type: 'agentMessage', text: 'STALE RESUME MUST NOT APPEAR' }] }] }, model: 'stale-model', reasoningEffort: 'low' });
       };
       window.__resume = state;
       window.codex = {
-        async start() { return { initialize: {}, models: [{ id: 'fixture-model', model: 'fixture-model', displayName: 'Fixture model', defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }], cwd, executable: 'C:/Fixtures/codex.exe', account: { account: null, requiresOpenaiAuth: false }, config: { model: 'fixture-model', model_reasoning_effort: 'high' } }; },
+        async start() { state.starts++; return { initialize: {}, models: [{ id: 'fixture-model', model: 'fixture-model', displayName: 'Fixture model', defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }], cwd, executable: 'C:/Fixtures/codex.exe', account: { account: null, requiresOpenaiAuth: false }, config: { model: 'fixture-model', model_reasoning_effort: 'high' } }; },
         async getSettings() { return { ...settings }; },
         async setSettings(patch) { Object.assign(settings, patch); },
         async request(method, params = {}) {
@@ -167,6 +168,20 @@ try {
   assert.equal(await page.getByText('STALE RESUME MUST NOT APPEAR', { exact: true }).count(), 0, 'A disconnected generation cannot hydrate a late resume result');
   assert.equal(await page.getByRole('combobox', { name: 'Модель', exact: true }).getAttribute('data-value'), 'fixture-model', 'A late response cannot overwrite the current model selection');
   assert.equal(await send().isDisabled(), true, 'Disconnected composer stays blocked');
+
+  // One-click reconnect keeps the transcript and draft on screen and resumes the same dialog.
+  const startsBefore = await page.evaluate(() => window.__resume.starts);
+  await page.getByRole('button', { name: 'Переподключить диалог', exact: true }).click();
+  await page.waitForFunction(count => window.__resume.starts === count + 1, startsBefore);
+  await page.waitForFunction(() => Boolean(window.__resume.pendingResume), null, { timeout: 10000 });
+  assert.equal(await input().inputValue(), 'Черновик на время восстановления', 'Draft survives the reconnect');
+  await page.evaluate(() => window.__resume.finishResume(true));
+  await page.waitForFunction(() => !document.querySelector('[aria-label="Отправить сообщение"]')?.disabled);
+  const reconnectCalls = await requests();
+  assert.equal(reconnectCalls.filter(call => call.method === 'thread/resume').at(-1).params.threadId, '01a0ae2f-319d-7991-8cc4-64c522c1b1b3', 'Reconnect resumes the same dialog');
+  assert.equal(reconnectCalls.filter(call => call.method === 'turn/start').length, 0, 'Reconnect never sends a turn');
+  await page.getByText('Переписка восстановлена из истории.', { exact: true }).waitFor();
+  assert.equal(await page.getByText('STALE RESUME MUST NOT APPEAR', { exact: true }).count(), 0);
   assert.deepEqual(pageErrors, []);
   console.log('PASS: failed resume preserves readable history, send safely retries resume before turn/start, active writer keeps the draft and blocks turns, optional turn metadata failure keeps paginated messages, item paging failure reads the stored transcript without a duplicate resume, disconnected resume response is ignored. Controlled bridge only; no real Codex/provider/history mutations.');
 } catch (error) {

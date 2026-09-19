@@ -22,6 +22,11 @@ export function GitRollback({ target, mutationsAllowed, onClose, onComplete }: {
   const [expired, setExpired] = useState(false);
   const [revision, setRevision] = useState(0);
   const [mode, setMode] = useState<'split' | 'unified'>('split');
+  const [selected, setSelected] = useState<number[]>([]);
+  const hunks = !undo && preview?.hunks && preview.hunks.length > 1 ? preview.hunks : [];
+  const partial = hunks.length > 0 && selected.length < hunks.length;
+  const toggleHunk = (index: number) => setSelected(previous => previous.includes(index) ? previous.filter(value => value !== index) : [...previous, index].sort((a, b) => a - b));
+  const hunkRange = (hunk: { oldStart: number; oldCount: number }) => `строки ${hunk.oldStart}–${Math.max(hunk.oldStart, hunk.oldStart + hunk.oldCount - 1)}`;
   const dialog = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef(false);
@@ -55,6 +60,7 @@ export function GitRollback({ target, mutationsAllowed, onClose, onComplete }: {
         if (cancelled) return;
         if (!result?.previewId || result.path !== target.path || result.operation !== (undo ? 'undo' : 'restore') || !Number.isFinite(new Date(result.expiresAt).getTime())) throw new Error('Не удалось проверить предпросмотр. Обновите его перед продолжением.');
         setPreview(result);
+        setSelected(result.hunks?.map(hunk => hunk.index) || []);
       } catch (cause) { if (!cancelled) setError(errorText(cause)); }
       finally { if (!cancelled) setLoading(false); }
     })();
@@ -68,13 +74,13 @@ export function GitRollback({ target, mutationsAllowed, onClose, onComplete }: {
     return () => clearTimeout(timer);
   }, [preview]);
   const apply = async () => {
-    if (!preview || loading || pendingRef.current || !allowed.current || expired) return;
+    if (!preview || loading || pendingRef.current || !allowed.current || expired || (hunks.length > 0 && !selected.length)) return;
     if (new Date(preview.expiresAt).getTime() <= Date.now()) { setExpired(true); return; }
     pendingRef.current = true; setPending(true); setError('');
     try {
       if (undo) await bridge.undoGitRollback({ previewId: preview.previewId });
-      else await bridge.applyGitRollback({ previewId: preview.previewId });
-      if (mounted.current) onComplete(undo ? `Изменения ${target.path} возвращены.` : `Файл ${target.path} восстановлен из индекса. Откат можно отменить ниже.`);
+      else await bridge.applyGitRollback({ previewId: preview.previewId, ...(partial ? { hunks: selected } : {}) });
+      if (mounted.current) onComplete(undo ? `Изменения ${target.path} возвращены.` : partial ? `В файле ${target.path} отменены выбранные фрагменты (${selected.length} из ${hunks.length}). Откат можно отменить ниже.` : `Файл ${target.path} восстановлен из индекса. Откат можно отменить ниже.`);
     } catch (cause) {
       if (mounted.current) { setError(errorText(cause)); setPreview(null); }
     } finally { pendingRef.current = false; if (mounted.current) setPending(false); }
@@ -85,7 +91,9 @@ export function GitRollback({ target, mutationsAllowed, onClose, onComplete }: {
       <header className="diff-review-header"><RotateCcw size={19} /><div><small>{undo ? 'ОТМЕНА ОТКАТА' : 'ОТКАТ ФАЙЛА'}</small><h2>{target.path}</h2></div><button ref={closeButton} type="button" className="icon-button" aria-label="Закрыть предпросмотр отката" disabled={pending} onClick={closeDialog}><X size={19} /></button></header>
       <div className="git-rollback-explanation">{undo
         ? <p>В рабочий файл вернутся изменения, сохранённые перед этим откатом. Подготовленная к коммиту версия останется прежней.</p>
-        : <><p>Рабочий файл будет заменён версией из индекса Git — той, которая подготовлена к коммиту. При отсутствии подготовленных изменений это последняя сохранённая в Git версия.</p><p>Будут отменены <strong>все неподготовленные изменения этого файла</strong>, включая ваши собственные. Перед заменой сохраняется резервная копия; откат можно отменить в «Недавних откатах».</p></>}
+        : <><p>Рабочий файл будет заменён версией из индекса Git — той, которая подготовлена к коммиту. При отсутствии подготовленных изменений это последняя сохранённая в Git версия.</p>{hunks.length > 0
+          ? <p>Ниже можно снять отметку с фрагментов, которые нужно <strong>оставить</strong>. Отмеченные фрагменты вернутся к версии из индекса, остальные неподготовленные изменения файла сохранятся. Перед заменой сохраняется резервная копия всего файла; откат можно отменить в «Недавних откатах».</p>
+          : <p>Будут отменены <strong>все неподготовленные изменения этого файла</strong>, включая ваши собственные. Перед заменой сохраняется резервная копия; откат можно отменить в «Недавних откатах».</p>}</>}
       </div>
       {loading && <p className="git-rollback-notice" role="status"><LoaderCircle size={15} className="spin" />Готовим предпросмотр…</p>}
       {error && <div className="diff-review-error" role="alert">{error}</div>}
@@ -93,12 +101,16 @@ export function GitRollback({ target, mutationsAllowed, onClose, onComplete }: {
       {!mutationsAllowed && <p className="git-rollback-notice" role="status">Дождитесь завершения задач и закройте терминал перед изменением файлов.</p>}
       {preview && <>
         {preview.message && <div className="diff-review-message" role="status">{preview.message}</div>}
+        {hunks.length > 0 && <fieldset className="git-rollback-hunks" disabled={pending}><legend>Фрагменты для отката · выбрано {selected.length} из {hunks.length}</legend>
+          <div className="git-rollback-hunk-actions"><button type="button" className="text-button" onClick={() => setSelected(hunks.map(hunk => hunk.index))}>Выбрать все</button><button type="button" className="text-button" onClick={() => setSelected([])}>Снять все</button></div>
+          {hunks.map(hunk => <label key={hunk.index} className="git-rollback-hunk"><input type="checkbox" checked={selected.includes(hunk.index)} onChange={() => toggleHunk(hunk.index)} aria-label={`Фрагмент ${hunk.index + 1}: ${hunkRange(hunk)}`} /><span><strong>Фрагмент {hunk.index + 1}</strong> · {hunkRange(hunk)} · −{hunk.removed} +{hunk.added}{hunk.excerpt && <code>{hunk.excerpt}</code>}</span></label>)}
+        </fieldset>}
         {!preview.binary && preview.diff && <div className="diff-review-toolbar"><div className="diff-mode-buttons" role="group" aria-label="Вид сравнения"><button type="button" aria-pressed={mode === 'split'} disabled={pending} onClick={() => setMode('split')}><Columns2 size={14} />До / после</button><button type="button" aria-pressed={mode === 'unified'} disabled={pending} onClick={() => setMode('unified')}><Rows3 size={14} />Единый diff</button></div></div>}
       </>}
       <div className="diff-review-body">{preview && (preview.binary ? <p className="diff-number-note">Бинарный файл. Текстовое сравнение недоступно.</p> : preview.diff ? <ReviewDiff text={preview.diff} mode={mode} expanded beforeLabel="Сейчас · рабочий файл" afterLabel={undo ? 'После · сохранённые изменения' : 'После · версия из индекса'} /> : <p className="diff-number-note">Текстовых изменений нет.</p>)}</div>
       <footer className="git-rollback-footer"><p>Перед записью приложение повторно проверит файл и индекс. Если они изменились, потребуется новый предпросмотр.</p><div>
         <button type="button" className="git-rollback-secondary" disabled={pending} onClick={closeDialog}>Отмена</button>
-        {(!preview || expired) && !loading ? <button type="button" className="git-rollback-secondary" disabled={pending} onClick={() => setRevision(value => value + 1)}>Обновить предпросмотр</button> : <button type="button" className={`git-rollback-confirm ${undo ? 'undo' : ''}`} disabled={!preview || loading || pending || expired || !mutationsAllowed} onClick={() => void apply()}>{pending && <LoaderCircle size={14} className="spin" />}{pending ? 'Применяем…' : undo ? 'Вернуть изменения' : 'Отменить изменения файла'}</button>}
+        {(!preview || expired) && !loading ? <button type="button" className="git-rollback-secondary" disabled={pending} onClick={() => setRevision(value => value + 1)}>Обновить предпросмотр</button> : <button type="button" className={`git-rollback-confirm ${undo ? 'undo' : ''}`} disabled={!preview || loading || pending || expired || !mutationsAllowed || (hunks.length > 0 && !selected.length)} onClick={() => void apply()}>{pending && <LoaderCircle size={14} className="spin" />}{pending ? 'Применяем…' : undo ? 'Вернуть изменения' : partial ? `Отменить выбранные фрагменты (${selected.length} из ${hunks.length})` : 'Отменить изменения файла'}</button>}
       </div></footer>
     </section>
   </div>, document.body);

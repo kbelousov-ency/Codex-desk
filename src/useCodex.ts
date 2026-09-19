@@ -261,7 +261,23 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     setThread(null); setItems([]); setTurnWork({}); setDiff(''); setDiffTurnId(undefined); setTurnDiffs({}); setPlan([]); setRequests([]); setItemCursor(null); setTokens(null); setBusy(false); setError('');
   }, [invalidateCache, updateInterrupted, pauseQueue]);
 
-  const connect = useCallback(async (directory?: string) => {
+  const detachThread = useCallback(() => {
+    if (terminalRef.current) return;
+    attentionSuppressed.current = false;
+    pauseQueue('Соединение восстанавливается. Проверьте историю перед продолжением очереди.');
+    updateInterrupted(null);
+    historyLoadSequenceRef.current++;
+    resumedThreadRef.current = null; setThreadReady(false);
+    lifecycleRef.current++; sendSequenceRef.current++;
+    compactionRef.current = null; setCompacting(false);
+    invalidateCache(); settledTurnsRef.current.clear();
+    cacheTurnRef.current = { id: null, observed: false, suppressed: true };
+    pendingRequestIdsRef.current.clear(); setRequests([]);
+    turnRef.current = null; activeRef.current = false; setBusy(false);
+    setTurnWork(current => Object.fromEntries(Object.entries(current).map(([id, work]) => [id, work.status === 'inProgress' ? { ...work, status: 'disconnected' } : work])));
+  }, [invalidateCache, updateInterrupted, pauseQueue]);
+
+  const connect = useCallback(async (directory?: string, options?: { keepThread?: boolean }) => {
     if (connectingRef.current || terminalRef.current) return;
     connectingRef.current = true;
     if (compactionRef.current) {
@@ -291,12 +307,13 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       // remembered full access still requires selection and confirmation here.
       setAccess(restored?.access ?? (saved.access === 'danger-full-access' ? 'workspace-write' : saved.access || 'workspace-write'));
       restoreSettingsRef.current = undefined;
-      updateConnection('ready'); clearThread();
+      updateConnection('ready');
+      if (options?.keepThread && threadRef.current) detachThread(); else clearThread();
       await saveSettings({ cwd: result.cwd });
       await refreshHistory(result.cwd);
     } catch (e) { invalidateCache(); updateConnection('error'); setError(errorText(e)); }
     finally { connectingRef.current = false; }
-  }, [bridge, clearThread, refreshHistory, saveSettings, invalidateCache, updateConnection]);
+  }, [bridge, clearThread, detachThread, refreshHistory, saveSettings, invalidateCache, updateConnection]);
 
   useEffect(() => {
     if (!bridge) { void connect(); return; }
@@ -679,6 +696,14 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     }
   };
 
+  const reconnect = async () => {
+    const previous = threadRef.current;
+    await connect(undefined, { keepThread: Boolean(previous) });
+    if (connectionRef.current !== 'ready') return false;
+    if (!previous || threadRef.current?.id !== previous.id || terminalRef.current) return true;
+    return resume(previous, true);
+  };
+
   const loadEarlier = async () => {
     if (terminalRef.current || !thread || !itemCursor || loadingRef.current) return;
     updateLoading(true);
@@ -913,7 +938,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, loading, error, notice,
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
     cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering,
-    connect, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
+    connect, reconnect, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
     resume, loadEarlier, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice,
   };
 }

@@ -672,7 +672,14 @@ function installHandlers() {
     context.assertActive(); return rememberRollbackPreview(session, value);
   });
   handle('host:listGitRollbacks', 0, ({ session }) => gitRollback.list(gitContext(session)));
+  const rollbackHunks = value => {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value) || !value.length || value.length > 10_000 || value.some(index => !Number.isSafeInteger(index) || index < 0 || index >= 10_000)) throw new Error('Некорректный выбор фрагментов отката.');
+    return value;
+  };
   const applyRollback = (session, options, operation) => {
+    const hunks = operation === 'restore' && options && typeof options === 'object' && 'hunks' in options ? rollbackHunks(options.hunks) : undefined;
+    if (hunks !== undefined) options = { previewId: options.previewId };
     const previewId = rollbackOption(options, 'previewId');
     const preview = rollbackPreviews.get(previewId);
     if (!preview || preview.session !== session || preview.generation !== session.generation || preview.cwd !== session.currentCwd || preview.operation !== operation || Date.parse(preview.expiresAt) <= Date.now()) throw new Error('Предпросмотр устарел или относится к другому диалогу. Откройте его снова.');
@@ -680,7 +687,7 @@ function installHandlers() {
     if ([...rollbackReservations].some(cwd => pathsOverlap(cwd, context.cwd))) throw new Error('В проекте уже выполняется откат.');
     rollbackPreviews.delete(previewId);
     rollbackReservations.add(context.cwd);
-    const job = Promise.resolve().then(() => operation === 'restore' ? gitRollback.apply({ ...context, previewId }) : gitRollback.applyUndo({ ...context, previewId })).finally(() => { rollbackReservations.delete(context.cwd); rollbackJobs.delete(job); });
+    const job = Promise.resolve().then(() => operation === 'restore' ? gitRollback.apply({ ...context, previewId, ...(hunks ? { hunks } : {}) }) : gitRollback.applyUndo({ ...context, previewId })).finally(() => { rollbackReservations.delete(context.cwd); rollbackJobs.delete(job); });
     rollbackJobs.add(job);
     return job;
   };

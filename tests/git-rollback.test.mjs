@@ -254,3 +254,64 @@ test('backup directory ancestor junction is refused before any worktree write', 
   assert.equal(await readFile(path.join(cwd, 'file.txt'), 'utf8'), 'user\n');
   assert.deepEqual(await readdir(outside), []);
 });
+
+test('multi-hunk preview lists fragments; a partial restore keeps unselected edits byte-exact and stays undoable', async t => {
+  const { cwd, git, write, commit, service } = await fixture(t);
+  const relative = 'src/partial.ts';
+  const base = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`).join('\r\n') + '\r\n';
+  await write(relative, '﻿' + base); await commit();
+  const edited = ('﻿' + base).replace('line 3\r\n', 'line 3 edited\r\n').replace('line 15\r\n', 'line 15 inserted\r\nline 15\r\n').replace('line 28\r\n', '');
+  await write(relative, edited);
+  const preview = await service.preview({ cwd, path: relative });
+  assert.equal(preview.hunks.length, 3);
+  assert.deepEqual(preview.hunks.map(h => [h.oldStart, h.oldCount, h.newStart, h.newCount, h.removed, h.added]), [[1, 6, 1, 6, 1, 1], [12, 7, 12, 6, 1, 0], [26, 5, 25, 6, 0, 1]]);
+  assert.equal(preview.hunks[0].excerpt, 'line 3 edited');
+  assert.equal((preview.diff.match(/^@@ /gm) || []).length, 3, 'three hunks in the unified diff');
+  assert.match(preview.diff, /^@@ -12,7 \+12,6 @@$/m);
+  // Invalid selections never consume the preview or touch the file.
+  for (const hunks of [[], [3], [0, 0], [-1], ['0']]) {
+    const fresh = await service.preview({ cwd, path: relative });
+    await assert.rejects(service.apply({ cwd, previewId: fresh.previewId, hunks }), /фрагмент/i);
+    assert.equal(await readFile(path.join(cwd, relative), 'utf8'), edited);
+  }
+  const selected = await service.preview({ cwd, path: relative });
+  const result = await service.apply({ cwd, previewId: selected.previewId, hunks: [2, 0] });
+  const expected = ('﻿' + base).replace('line 15\r\n', 'line 15 inserted\r\nline 15\r\n');
+  assert.equal(await readFile(path.join(cwd, relative), 'utf8'), expected, 'first and last hunks return to the index; the middle insertion, BOM and CRLF stay');
+  const again = await service.preview({ cwd, path: relative });
+  assert.equal(again.hunks, undefined, 'one remaining hunk offers no fragment selection');
+  assert.match(again.diff, /-line 15 inserted/);
+  const undo = await service.previewUndo({ cwd, undoId: result.undoId });
+  await service.applyUndo({ cwd, previewId: undo.previewId });
+  assert.equal(await readFile(path.join(cwd, relative), 'utf8'), edited, 'undo restores the exact pre-rollback bytes');
+  // Selecting every hunk is the exact full restore.
+  const full = await service.preview({ cwd, path: relative });
+  await service.apply({ cwd, previewId: full.previewId, hunks: [0, 1, 2] });
+  assert.equal(await readFile(path.join(cwd, relative), 'utf8'), '﻿' + base);
+  const deleted = await service.preview({ cwd, path: 'missing.txt' }).catch(() => null);
+  assert.equal(deleted, null);
+  await git('status');
+});
+
+test('deleted files and undo previews never offer fragments; no-newline endings survive a partial restore', async t => {
+  const { cwd, write, commit, service } = await fixture(t);
+  const base = Array.from({ length: 12 }, (_, i) => `l${i + 1}`).join('\n') + '\n';
+  await write('gone.txt', 'a\nb\n'); await write('tail.txt', base); await commit();
+  await rm(path.join(cwd, 'gone.txt'));
+  const gone = await service.preview({ cwd, path: 'gone.txt' });
+  assert.equal(gone.hunks, undefined);
+  await write('tail.txt', base.replace('l1\n', 'l1 changed\n').replace('l3\n', 'l3 changed\n'));
+  const tail = await service.preview({ cwd, path: 'tail.txt' });
+  assert.equal(tail.hunks, undefined, 'two edits within context distance form a single hunk');
+  const edited = base.replace('l1\n', 'l1 changed\n') + 'tail';
+  await write('tail.txt', edited);
+  const spaced = await service.preview({ cwd, path: 'tail.txt' });
+  assert.equal(spaced.hunks.length, 2);
+  assert.match(spaced.diff, /\ No newline at end of file/);
+  const result = await service.apply({ cwd, previewId: spaced.previewId, hunks: [1] });
+  assert.equal(await readFile(path.join(cwd, 'tail.txt'), 'utf8'), base.replace('l1\n', 'l1 changed\n'), 'the tail hunk returns to the index; the first edit stays');
+  const undo = await service.previewUndo({ cwd, undoId: result.undoId });
+  assert.equal(undo.hunks, undefined);
+  await service.applyUndo({ cwd, previewId: undo.previewId });
+  assert.equal(await readFile(path.join(cwd, 'tail.txt'), 'utf8'), edited);
+});

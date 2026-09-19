@@ -42,7 +42,8 @@ export type GitArea = 'staged' | 'unstaged' | 'untracked';
 export type GitEntry = { path: string; originalPath?: string; status: string; indexStatus: string; worktreeStatus: string; staged: boolean; unstaged: boolean; untracked: boolean; conflicted: boolean; submodule?: boolean };
 export type GitStatus = { available: boolean; reason?: 'not-repository' | 'git-unavailable' | 'bare'; root?: string; branch?: string; detached?: boolean; unborn?: boolean; head?: string; entries: GitEntry[]; truncated?: boolean; message?: string };
 export type GitDiff = { path: string; area: GitArea; diff: string; binary?: boolean; truncated?: boolean; message?: string };
-export type GitRollbackPreview = { previewId: string; path: string; diff: string; binary?: boolean; truncated?: boolean; message?: string; expiresAt: string; operation: 'restore' | 'undo' };
+export type GitRollbackHunk = { index: number; header: string; oldStart: number; oldCount: number; newStart: number; newCount: number; removed: number; added: number; excerpt: string };
+export type GitRollbackPreview = { previewId: string; path: string; diff: string; binary?: boolean; truncated?: boolean; message?: string; expiresAt: string; operation: 'restore' | 'undo'; hunks?: GitRollbackHunk[] };
 export type GitRollbackRecord = { undoId: string; path: string; createdAt: string };
 export type McpServerSummary = { name: string; transport: 'http' | 'stdio'; address: string; enabled: boolean; headerNames: string[]; envNames: string[] };
 export type McpConfigInfo = { configPath: string; servers: McpServerSummary[] };
@@ -68,7 +69,7 @@ export interface CodexBridge {
   getGitStatus(): Promise<GitStatus>;
   getGitDiff(options: { path: string; area: GitArea }): Promise<GitDiff>;
   previewGitRollback(options: { path: string }): Promise<GitRollbackPreview>;
-  applyGitRollback(options: { previewId: string }): Promise<GitRollbackRecord>;
+  applyGitRollback(options: { previewId: string; hunks?: number[] }): Promise<GitRollbackRecord>;
   listGitRollbacks(): Promise<GitRollbackRecord[]>;
   previewUndoGitRollback(options: { undoId: string }): Promise<GitRollbackPreview>;
   undoGitRollback(options: { previewId: string }): Promise<{ path: string }>;

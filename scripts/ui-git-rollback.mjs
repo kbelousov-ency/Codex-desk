@@ -40,7 +40,8 @@ try {
       ] };
       state.status = structuredClone(state.baseStatus);
       const makePreview = (path, operation, undoId) => {
-        const preview = { previewId: `${id}-preview-${++state.serial}`, path, operation, binary: path.endsWith('.png'), expiresAt: new Date(Date.now() + (state.expirePreview ? -1000 : 300000)).toISOString(), diff: path.endsWith('.png') ? '' : `@@ -3 +3 @@\n-${operation === 'restore' ? 'working edits' : 'restored version'}\n+${operation === 'restore' ? 'index version' : 'saved edits'}` };
+        const preview = { previewId: `${id}-preview-${++state.serial}`, path, operation, binary: path.endsWith('.png'), expiresAt: new Date(Date.now() + (state.expirePreview ? -1000 : 300000)).toISOString(), diff: path.endsWith('.png') ? '' : `@@ -3 +3 @@\n-${operation === 'restore' ? 'working edits' : 'restored version'}\n+${operation === 'restore' ? 'index version' : 'saved edits'}`,
+          ...(operation === 'restore' && path === 'src/shared.ts' ? { hunks: [{ index: 0, header: '@@ -1,4 +1,4 @@', oldStart: 1, oldCount: 4, newStart: 1, newCount: 4, removed: 1, added: 1, excerpt: 'import a from "./a";' }, { index: 1, header: '@@ -40,7 +40,6 @@', oldStart: 40, oldCount: 7, newStart: 40, newCount: 6, removed: 1, added: 0, excerpt: 'console.log(debug);' }] } : {}) };
         state.expirePreview = false;
         state.previews.set(preview.previewId, { ...preview, undoId });
         if (state.deferPreview) { state.deferPreview = false; return new Promise(resolve => state.pendingPreviews.push(value => resolve(value || preview))); }
@@ -74,8 +75,8 @@ try {
           if (!saved) throw new Error('Откат не найден.');
           return makePreview(saved.path, 'undo', undoId);
         },
-        async applyGitRollback({ previewId }) {
-          fixture.calls.push({ sessionId: id, method: 'apply', previewId });
+        async applyGitRollback({ previewId, hunks }) {
+          fixture.calls.push({ sessionId: id, method: 'apply', previewId, ...(hunks ? { hunks } : {}) });
           if (state.failApply) { const message = state.failApply; state.failApply = ''; throw new Error(message); }
           const preview = state.previews.get(previewId);
           const result = { undoId: `${previewId}-undo`, path: preview.path, createdAt: new Date().toISOString() };
@@ -140,7 +141,7 @@ try {
   await rollback('src/shared.ts').click();
   await modal().getByText('working edits', { exact: true }).waitFor();
   assert.deepEqual(await modal().locator('.diff-column-headings span').allTextContents(), ['Сейчас · рабочий файл', 'После · версия из индекса']);
-  assert.match(await modal().innerText(), /включая ваши собственные/);
+  assert.match(await modal().innerText(), /остальные неподготовленные изменения файла сохранятся/, 'a multi-fragment preview explains selective restore');
   assert.match(await modal().innerText(), /резервная копия/);
   assert.equal((await mutations()).length, 0, 'Preview does not mutate');
   await modal().getByRole('button', { name: 'Единый diff', exact: true }).click();
@@ -246,6 +247,25 @@ try {
   assert.equal(await undo('saved.md').isDisabled(), true);
   await panel().getByRole('button', { name: 'Обновить откаты', exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('.session-view:not([hidden]) [aria-label="Отменить откат saved.md"]')?.disabled);
+
+  // Fragment selection: unchecking one hunk switches to a partial restore that sends only the chosen indices.
+  await rollback('src/shared.ts').click(); await confirm().waitFor();
+  const fragments = modal().getByRole('group', { name: /Фрагменты для отката/ });
+  assert.equal(await fragments.getByRole('checkbox').count(), 2);
+  assert.equal(await fragments.getByRole('checkbox', { name: 'Фрагмент 2: строки 40–46' }).isChecked(), true, 'every fragment is selected by default');
+  await fragments.getByRole('checkbox', { name: 'Фрагмент 2: строки 40–46' }).uncheck();
+  const partialButton = modal().getByRole('button', { name: 'Отменить выбранные фрагменты (1 из 2)', exact: true });
+  await partialButton.waitFor();
+  await fragments.getByRole('button', { name: 'Снять все', exact: true }).click();
+  assert.equal(await modal().getByRole('button', { name: /Отменить выбранные фрагменты|Отменить изменения файла/ }).isDisabled(), true, 'nothing selected disables the confirm');
+  await fragments.getByRole('checkbox', { name: 'Фрагмент 1: строки 1–4' }).check();
+  await partialButton.click();
+  await panel().getByText(/отменены выбранные фрагменты \(1 из 2\)/).waitFor();
+  const partialCall = await page.evaluate(() => window.__rollback.calls.filter(call => call.method === 'apply').at(-1));
+  assert.deepEqual(partialCall.hunks, [0], 'only the selected fragment index is sent');
+  await page.evaluate(() => { const state = window.__rollback.sessions.a; state.status = structuredClone(state.baseStatus); });
+  await panel().getByRole('button', { name: 'Обновить Git', exact: true }).click();
+  await rollback('src/shared.ts').waitFor();
 
   await rollback('assets/binary.png').click();
   await modal().getByText('Бинарный файл. Текстовое сравнение недоступно.', { exact: true }).waitFor();
