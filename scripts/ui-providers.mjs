@@ -36,12 +36,13 @@ try {
       const emit = state.emit = (method, params) => { for (const listener of state.listeners) listener({ type: 'notification', data: { method, params } }); };
       state.complete = () => { const turnId = state.activeTurn; emit('item/completed', { threadId: thread().id, turnId, item: { id: `answer-${turnId}`, type: 'agentMessage', text: 'Ответ Claude' } }); emit('turn/completed', { threadId: thread().id, turn: { id: turnId, status: 'completed', items: [], error: null } }); state.activeTurn = null; };
       state.bridge = {
-        async start() { if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: true, steer: true, terminal: true, mcp: !claude, archive: !claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
+        async start() { if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: true, steer: true, terminal: true, mcp: !claude, archive: !claude, usage: claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
         async getSettings() { return { ...settings }; },
         async setSettings(patch) { calls.push({ id, method: 'setSettings', patch: { ...patch } }); Object.assign(settings, patch); },
         async request(method, params = {}) {
           calls.push({ id, provider, method, params: structuredClone(params) });
           if (method === 'thread/list') return { data: [], nextCursor: null };
+          if (method === 'usage/read') return fixture.usageUnavailable ? { available: false, windows: [], message: 'Лимиты плана не применяются к этому способу входа.' } : { available: true, subscription: 'max', updatedAt: new Date().toISOString(), windows: [{ key: 'five_hour', label: 'Сессия 5 часов', utilization: 42, resetsAt: new Date(Date.now() + 90 * 60000).toISOString() }, { key: 'seven_day', label: 'Неделя, все модели', utilization: 9, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() }] };
           if (method === 'thread/start') return { thread: thread(), model: settings.model };
           if (method === 'turn/start') {
             const turnId = state.activeTurn = `turn-${calls.filter(call => call.method === 'turn/start').length}`;
@@ -180,6 +181,30 @@ try {
   await view().getByRole('button', { name: 'Команды Claude Code', exact: true }).click();
   assert.equal(await view().locator('[data-command="compact"]').count(), 1, 'compact is offered in the Claude command menu');
   await draft().press('Escape');
+  // Plan limits: 5-hour window inline, every window in the popover, /usage as the CLI fallback.
+  const usageTrigger = view().getByRole('button', { name: /^Лимит 5 ч: 42 %/ });
+  await usageTrigger.waitFor();
+  assert.match(await usageTrigger.getAttribute('title'), /5-часовой сессии: использовано 42 %.*сброс через 1 ч 30 мин/);
+  await usageTrigger.click();
+  const usageDialog = view().getByRole('dialog', { name: 'Лимиты плана Claude', exact: true });
+  await usageDialog.waitFor();
+  assert.match(await usageDialog.innerText(), /max/);
+  assert.equal(await usageDialog.locator('[data-usage-window]').count(), 2);
+  assert.equal(await usageDialog.locator('[data-usage-window="seven_day"] strong').innerText(), '9 %');
+  await page.keyboard.press('Escape');
+  await usageDialog.waitFor({ state: 'detached' });
+  assert.ok((await calls('usage/read')).length >= 1, 'limits are read through the bridge, never guessed');
+  assert.equal((await calls('usage/read')).every(call => call.provider === 'claude'), true);
+  await page.evaluate(() => { window.__providers.usageUnavailable = true; });
+  await page.evaluate(() => window.__providers.sessions['session-1'].emit('turn/completed', { threadId: 'claude:session-1', turn: { id: 'refresh-usage', status: 'completed', items: [], error: null } }));
+  const plainLimit = view().getByRole('button', { name: 'Лимит: показать использование командой /usage', exact: true });
+  await plainLimit.waitFor();
+  const turnsBeforeUsage = (await calls('turn/start')).length;
+  await plainLimit.click();
+  await page.waitForFunction(count => window.__providers.calls.filter(call => call.method === 'turn/start').length === count + 1, turnsBeforeUsage);
+  assert.equal((await calls('turn/start')).at(-1).params.input[0].text, '/usage', 'without plan data the label runs the CLI command');
+  await page.evaluate(() => window.__providers.sessions['session-1'].complete());
+  await ready();
   await choose('Агент', 'codex');
   await ready();
   assert.equal(await page.getByRole('tab').count(), 3);

@@ -6,9 +6,9 @@ import { ClaudeClient, CLAUDE_CAPABILITIES } from './claude-client.mjs';
 import { directoryPath, findCodex, findClaude, publicConfig } from './host-utils.mjs';
 import { launchSessionTerminal } from './terminal-launcher.mjs';
 
-const allowedMethods = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/name/set', 'thread/compact/start', 'turn/start', 'turn/interrupt', 'turn/steer', 'model/list', 'account/read', 'config/read']);
+const allowedMethods = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/name/set', 'thread/compact/start', 'turn/start', 'turn/interrupt', 'turn/steer', 'model/list', 'account/read', 'config/read', 'usage/read']);
 const projectMethods = new Set(['thread/start', 'thread/resume', 'thread/list', 'turn/start', 'config/read']);
-const readOnlyMethods = new Set(['thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'model/list', 'account/read', 'config/read']);
+const readOnlyMethods = new Set(['thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'model/list', 'account/read', 'config/read', 'usage/read']);
 const threadUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function cleanSettings(patch) {
@@ -296,7 +296,7 @@ export class WindowSession {
       checkCurrent();
       const cliVersion = provider === 'claude' ? (typeof initialize?.version === 'string' ? initialize.version : undefined) : codexVersionFrom(initialize?.userAgent);
       this.bootstrap = { initialize, models, account, config: publicConfig(configResponse.config), cwd, executable: nextExecutable, provider, ...(cliVersion ? { cliVersion } : {}),
-        capabilities: provider === 'claude' ? { ...CLAUDE_CAPABILITIES } : { compact: true, steer: true, terminal: true, mcp: true, archive: true } };
+        capabilities: provider === 'claude' ? { ...CLAUDE_CAPABILITIES } : { compact: true, steer: true, terminal: true, mcp: true, archive: true, usage: false } };
       return this.bootstrap;
     } catch (error) {
       const failedCurrent = current();

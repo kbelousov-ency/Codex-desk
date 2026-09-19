@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Access, AgentProvider, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources } from './types';
+import type { Access, AgentCapabilities, AgentProvider, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources, UsageLimits } from './types';
 import { agentName } from './AgentContext';
 import { mergeHistoricalTurnWork, observeTurnWork } from './turn-work';
 import { historicalCacheActivity, responseTime } from './cache-history';
@@ -21,9 +21,9 @@ type CompactionOperation = {
 };
 type InterruptedTurn = { threadId: string; turnId: string };
 const STOPPED_NOTICE = 'Выполнение остановлено. Можно продолжить диалог.';
-const providerCapabilities = (provider: AgentProvider) => provider === 'claude'
-  ? { compact: false, steer: false, terminal: false, mcp: false, archive: false }
-  : { compact: true, steer: true, terminal: true, mcp: true, archive: true };
+const providerCapabilities = (provider: AgentProvider): AgentCapabilities => provider === 'claude'
+  ? { compact: false, steer: false, terminal: false, mcp: false, archive: false, usage: false }
+  : { compact: true, steer: true, terminal: true, mcp: true, archive: true, usage: false };
 
 export function accessParams(access: Access, cwd: string, turn = false) {
   if (access === 'inherited') return {};
@@ -84,6 +84,9 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [turnDiffs, setTurnDiffs] = useState<Record<string, string>>({});
   const [plan, setPlan] = useState<any[]>([]);
   const [tokens, setTokens] = useState<any>(null);
+  const [usage, setUsage] = useState<UsageLimits | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const usageRequestRef = useRef(0);
   const [cacheActivityAt, setCacheActivityAt] = useState<number | null>(null);
   const [cacheGeneration, setCacheGeneration] = useState(0);
   const [cacheTurnCompleted, setCacheTurnCompleted] = useState(0);
@@ -234,6 +237,19 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     await bridge.setSettings(partial).catch(e => setError(errorText(e)));
   }, [bridge]);
 
+  /** Plan rate limits (Claude only). Never throws: an unavailable answer is shown as a plain label. */
+  const refreshUsage = useCallback(async () => {
+    if (providerRef.current !== 'claude' || connectionRef.current !== 'ready' || terminalRef.current) return;
+    const sequence = ++usageRequestRef.current;
+    setUsageLoading(true);
+    try {
+      const result = await bridge.request('usage/read', {});
+      if (sequence === usageRequestRef.current && result && typeof result === 'object') setUsage({ available: Boolean(result.available), subscription: result.subscription ?? null, windows: Array.isArray(result.windows) ? result.windows : [], updatedAt: result.updatedAt, message: result.message });
+    } catch (e) {
+      if (sequence === usageRequestRef.current) setUsage({ available: false, windows: [], message: errorText(e) });
+    } finally { if (sequence === usageRequestRef.current) setUsageLoading(false); }
+  }, [bridge]);
+
   const refreshHistory = useCallback(async (path = cwdRef.current, cursor?: string) => {
     if (terminalRef.current || !path) return;
     setHistoryLoading(true);
@@ -319,9 +335,10 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       if (options?.keepThread && threadRef.current) detachThread(); else clearThread();
       await saveSettings({ cwd: result.cwd });
       await refreshHistory(result.cwd);
+      setUsage(null); if (providerRef.current === 'claude' && result.capabilities?.usage !== false) void refreshUsage();
     } catch (e) { invalidateCache(); updateConnection('error'); setError(errorText(e)); }
     finally { connectingRef.current = false; }
-  }, [bridge, clearThread, detachThread, refreshHistory, saveSettings, invalidateCache, updateConnection]);
+  }, [bridge, clearThread, detachThread, refreshHistory, refreshUsage, saveSettings, invalidateCache, updateConnection]);
 
   useEffect(() => {
     if (!bridge) { void connect(); return; }
@@ -398,6 +415,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         turnRef.current = p.turn.id; activeRef.current = true; setBusy(true); setDiff(''); setDiffTurnId(p.turn.id); setPlan([]);
       } else if (method === 'turn/completed') {
         const turnId = p.turn?.id;
+        if (providerRef.current === 'claude') void refreshUsage();
         if (compactionRef.current) {
           const operation = matchCompactionTurn(turnId);
           if (!operation) return;
@@ -517,6 +535,14 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
           finishCompaction(operation, 'completed');
           void refreshHistory();
         }
+      }
+      else if (method === 'usage/updated' && p.window?.key) {
+        setUsage(previous => {
+          const windows = [...(previous?.windows || [])];
+          const index = windows.findIndex(window => window.key === p.window.key);
+          if (index >= 0) windows[index] = p.window; else windows.push(p.window);
+          return { available: true, subscription: previous?.subscription ?? null, windows, updatedAt: new Date().toISOString() };
+        });
       }
       else if (method === 'serverRequest/resolved') {
         pendingRequestIdsRef.current.delete(p.requestId ?? p.id);
@@ -945,7 +971,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     connection, provider, capabilities, cwd, models, model, effort, access, account, config, executable, cliVersion, sources, history, historyCursor, historyLoading,
     thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, loading, error, notice,
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
-    cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering,
+    cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage,
     connect, reconnect, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
     resume, loadEarlier, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice,
   };

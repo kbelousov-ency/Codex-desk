@@ -13,7 +13,29 @@ const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermi
 // rounds; the result lists every consumed uuid. compact: the documented `/compact`
 // slash command runs as its own turn and emits a compact_boundary system frame.
 // archive: native Claude history has no archive; rename/delete are handled by ClaudeThreadManagement.
-export const CLAUDE_CAPABILITIES = Object.freeze({ steer: true, compact: true, terminal: true, mcp: false, archive: false });
+export const CLAUDE_CAPABILITIES = Object.freeze({ steer: true, compact: true, terminal: true, mcp: false, archive: false, usage: true });
+const USAGE_LABELS = { five_hour: 'Сессия 5 часов', seven_day: 'Неделя, все модели', seven_day_oauth_apps: 'Неделя, интеграции', seven_day_opus: 'Неделя, Opus', seven_day_sonnet: 'Неделя, Sonnet' };
+const usageWindow = (key, label, value) => {
+  if (!value || typeof value !== 'object') return null;
+  const utilization = Number.isFinite(value.utilization) ? Math.max(0, Math.min(100, value.utilization)) : null;
+  const resetsAt = typeof value.resets_at === 'string' && Number.isFinite(Date.parse(value.resets_at)) ? value.resets_at : typeof value.resets_at === 'number' ? new Date(value.resets_at * (value.resets_at < 1e12 ? 1000 : 1)).toISOString() : null;
+  if (utilization === null && !resetsAt) return null;
+  return { key, label, utilization, resetsAt };
+};
+/** Normalizes the experimental get_usage answer into stable windows the renderer can show. */
+export function normalizeUsage(response, updatedAt = new Date().toISOString()) {
+  if (!response || typeof response !== 'object') return { available: false, windows: [], updatedAt, message: 'Claude CLI не вернул данные об использовании.' };
+  const subscription = typeof response.subscription_type === 'string' ? response.subscription_type : null;
+  if (response.rate_limits_available === false || !response.rate_limits || typeof response.rate_limits !== 'object') {
+    return { available: false, subscription, windows: [], updatedAt, message: 'Лимиты плана не применяются к этому способу входа (API-ключ или сторонний провайдер).' };
+  }
+  const windows = [];
+  for (const [key, label] of Object.entries(USAGE_LABELS)) { const w = usageWindow(key, label, response.rate_limits[key]); if (w) windows.push(w); }
+  if (Array.isArray(response.rate_limits.model_scoped)) for (const [index, scoped] of response.rate_limits.model_scoped.entries()) {
+    const w = usageWindow(`model:${index}`, `Неделя, ${String(scoped?.display_name || 'модель').slice(0, 40)}`, scoped); if (w) windows.push(w);
+  }
+  return { available: windows.length > 0, subscription, windows, updatedAt, ...(windows.length ? {} : { message: 'Лимиты плана пока не получены.' }) };
+}
 const MAX_STEERS = 16;
 const cleanTitle = value => {
   const title = typeof value === 'string' ? value.trim() : '';
@@ -157,6 +179,11 @@ export class ClaudeClient extends EventEmitter {
       supportedReasoningEfforts: (m.supportedEffortLevels || []).map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })),
       inputModalities: ['text', 'image'],
       })), nextCursor: null };
+    }
+    if (method === 'usage/read') {
+      // Experimental control request: an old CLI answers with an error, which becomes "unavailable", not a failure.
+      try { return normalizeUsage(await this._control(session, 'get_usage', { skip_behaviors: true }, 20_000)); }
+      catch (error) { return { available: false, windows: [], updatedAt: new Date().toISOString(), message: `Claude CLI не сообщил лимиты: ${safeText(error.message, 300)}` }; }
     }
     if (method === 'account/read') {
       const account = session.initialized.account || {};
@@ -380,6 +407,13 @@ export class ClaudeClient extends EventEmitter {
     if (frame.type === 'control_cancel_request') {
       session.requests.delete(frame.request_id); this._notify('serverRequest/resolved', { requestId: frame.request_id }); return;
     }
+    if (frame.type === 'rate_limit_event' && frame.rate_limit_info && typeof frame.rate_limit_info === 'object') {
+      const info = frame.rate_limit_info;
+      const key = typeof info.rateLimitType === 'string' ? info.rateLimitType : 'five_hour';
+      const w = usageWindow(key, USAGE_LABELS[key] || key, { utilization: info.utilization, resets_at: Number.isFinite(info.resetsAt) ? info.resetsAt : null });
+      if (w) this._notify('usage/updated', { window: w, status: info.status });
+    }
+
     // Resume replays are already read from native history. Never attach them to a new turn.
     if (!this._active) return;
     if (frame.session_id && frame.session_id !== session.id) return;

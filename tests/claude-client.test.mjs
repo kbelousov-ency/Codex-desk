@@ -6,11 +6,12 @@ import { PassThrough, Writable } from 'node:stream';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { ClaudeClient } from '../electron/claude-client.mjs';
+import { ClaudeClient, normalizeUsage } from '../electron/claude-client.mjs';
 
 const nativeId = 'aaaaaaaa-1111-2222-3333-444444444444';
 const model = { value: 'sonnet', resolvedModel: 'claude-sonnet-test', displayName: 'Sonnet', supportedEffortLevels: ['low', 'medium', 'high'] };
-function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit = false, ...options } = {}) {
+const usageSample = { session: { total_cost_usd: 0 }, subscription_type: 'max', rate_limits_available: true, rate_limits: { five_hour: { utilization: 37.4, resets_at: '2030-01-01T10:00:00Z' }, seven_day: { utilization: 12, resets_at: '2030-01-05T00:00:00Z' }, seven_day_opus: null, model_scoped: [{ display_name: 'Fable', utilization: 5, resets_at: null }] } };
+function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit = false, usageAnswer = usageSample, ...options } = {}) {
   const children = [], spawns = [], frames = [], events = [], requests = [];
   const client = new ClaudeClient({ executable: 'claude.exe', cwd: process.cwd(), requestTimeoutMs, ...options,
     spawnImpl(executable, args, spawnOptions) {
@@ -33,6 +34,7 @@ function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit 
           if (request.subtype === 'apply_flag_settings') effort = request.settings.effortLevel;
           if (request.subtype === 'get_settings') response = { effective: { env: { API_KEY: 'DO NOT EXPORT' } }, sources: [], applied: { model: selected, effort } };
           if (request.subtype === 'get_binary_version') response = { version: '2.1.278' };
+          if (request.subtype === 'get_usage') { if (usageAnswer === 'error') { child.send({ type: 'control_response', response: { subtype: 'error', request_id: frame.request_id, error: 'Unknown request subtype' } }); callback(); return; } response = usageAnswer; }
           child.send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response } });
         }
         callback();
@@ -393,4 +395,26 @@ test('tool-less narration mid-turn stays commentary until result, so the work ti
   const items = h.events.find(e => e.method === 'turn/completed').params.turn.items.filter(i => i.type === 'agentMessage');
   assert.deepEqual(items.map(i => i.phase), ['commentary', 'final_answer']);
   assert.equal(items.filter(i => i.id.endsWith(':result')).length, 0, 'no duplicate synthesized answer');
+});
+
+test('usage/read normalizes plan windows, treats API-key accounts and old CLIs as unavailable, and rate_limit_event updates live', async t => {
+  const h = await running(t);
+  const usage = await h.client.request('usage/read', {});
+  assert.equal(h.frames.at(-1).request.subtype, 'get_usage'); assert.equal(h.frames.at(-1).request.skip_behaviors, true);
+  assert.equal(usage.available, true); assert.equal(usage.subscription, 'max');
+  assert.deepEqual(usage.windows.map(w => [w.key, w.label, w.utilization, w.resetsAt]), [
+    ['five_hour', 'Сессия 5 часов', 37.4, '2030-01-01T10:00:00.000Z'.replace('.000Z', 'Z')],
+    ['seven_day', 'Неделя, все модели', 12, '2030-01-05T00:00:00Z'],
+    ['model:0', 'Неделя, Fable', 5, null],
+  ]);
+  assert.deepEqual(normalizeUsage({ rate_limits_available: false, rate_limits: null, subscription_type: null }, 'now'), { available: false, subscription: null, windows: [], updatedAt: 'now', message: 'Лимиты плана не применяются к этому способу входа (API-ключ или сторонний провайдер).' });
+  assert.equal(normalizeUsage(null).available, false);
+  assert.equal(normalizeUsage({ rate_limits_available: true, rate_limits: { five_hour: { utilization: 250, resets_at: 'bad' } } }).windows[0].utilization, 100, 'utilization is clamped');
+  h.child.send({ type: 'rate_limit_event', uuid: 'r1', session_id: h.thread.id.slice(7), rate_limit_info: { status: 'allowed_warning', rateLimitType: 'five_hour', utilization: 81, resetsAt: 1893456000 } });
+  const live = h.events.find(e => e.method === 'usage/updated');
+  assert.equal(live.params.window.key, 'five_hour'); assert.equal(live.params.window.utilization, 81); assert.equal(live.params.window.resetsAt, '2030-01-01T00:00:00.000Z'); assert.equal(live.params.status, 'allowed_warning');
+  const old = await running(t, { usageAnswer: 'error' });
+  const unavailable = await old.client.request('usage/read', {});
+  assert.equal(unavailable.available, false); assert.match(unavailable.message, /не сообщил лимиты/);
+  assert.equal(old.client.state, 'ready', 'an unsupported control request never ends the session');
 });

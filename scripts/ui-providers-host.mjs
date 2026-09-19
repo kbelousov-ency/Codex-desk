@@ -47,9 +47,11 @@ async function bootstrap(id) {
     const bridge = window.codex.forSession(id);
     const boot = await bridge.start();
     const settings = await bridge.getSettings();
+    // Plan limits are a read-only control request; API-key accounts legitimately answer "unavailable".
+    const usage = boot.provider === 'claude' ? await bridge.request('usage/read', {}).catch(error => ({ error: String(error?.message || error) })) : null;
     return { provider: boot.provider, model: boot.config.model, effort: boot.config.model_reasoning_effort || '',
       models: boot.models.map(model => ({ model: model.model, supportedEfforts: model.supportedReasoningEfforts.map(level => level.reasoningEffort) })),
-      cwd: boot.cwd, executable: boot.executable, capabilities: boot.capabilities, cliVersion: boot.cliVersion, settings };
+      cwd: boot.cwd, executable: boot.executable, capabilities: boot.capabilities, cliVersion: boot.cliVersion, settings, usage };
   }, id);
 }
 async function launch() {
@@ -117,6 +119,8 @@ try {
   assert.equal(claude.capabilities.steer, true);
   assert.equal(claude.capabilities.compact, true);
   assert.equal(claude.capabilities.archive, false);
+  assert.equal(claude.capabilities.usage, true);
+  assert.ok(claude.usage && typeof claude.usage.available === 'boolean', 'usage/read answers through the real CLI without a model turn');
   assert.equal(claude.capabilities.terminal, true);
   await rememberCurrent(claude);
   await draft().fill('Черновик Claude сохраняется отдельно');
@@ -175,7 +179,7 @@ try {
   assert.deepEqual(errors, []);
   assert.equal(calls.filter(method => ['thread/start', 'turn/start', 'turn/steer', 'thread/compact/start'].includes(method)).length, 0);
   const result = { checks, modelCalls: 0, codex: { model: codex.model, effort: codex.effort, modelCount: codex.models.length, cliVersion: codex.cliVersion },
-    claude: { model: claude.model, effort: claude.effort, modelCount: claude.models.length, cliVersion: claude.cliVersion }, runDir };
+    claude: { model: claude.model, effort: claude.effort, modelCount: claude.models.length, cliVersion: claude.cliVersion, usage: claude.usage && { available: claude.usage.available, subscription: claude.usage.subscription, windows: (claude.usage.windows || []).map(w => [w.key, w.utilization, w.resetsAt]), message: claude.usage.message, error: claude.usage.error } }, runDir };
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
