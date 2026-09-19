@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Archive, Bell, FolderPlus, LoaderCircle, MessageSquare, Plus, Terminal, X } from 'lucide-react';
 import AgentLogo from './AgentLogo';
+import WorktreePanel from './WorktreePanel';
 import App, { type SessionSummary, type WorkspaceControls } from './App';
 import { projectKey, type ProjectHistory } from './ProjectTree';
 import ProjectSidebar from './ProjectSidebar';
@@ -60,6 +61,7 @@ function TabbedWorkspace() {
   const [worktreeDialog, setWorktreeDialog] = useState<{ cwd: string } | null>(null);
   const [worktreeName, setWorktreeName] = useState('');
   const [worktreeNotice, setWorktreeNotice] = useState('');
+  const [tasksPanel, setTasksPanel] = useState<{ cwd: string } | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [decidingUpdate, setDecidingUpdate] = useState(false);
   const [preparingUpdate, setPreparingUpdate] = useState(false);
@@ -560,6 +562,7 @@ function TabbedWorkspace() {
     addProject: () => void open(),
     closeProject: requestCloseProject,
     newWorktree: (cwd: string) => { setError(''); setWorktreeName(''); setWorktreeDialog({ cwd }); },
+    showTasks: (cwd: string) => { setError(''); setTasksPanel({ cwd }); },
     toggleProject: cwd => setExpanded(previous => ({ ...previous, [projectKey(cwd)]: !previous[projectKey(cwd)] })),
     refreshProject: (cwd, cursor) => void loadProjectHistory(cwd, cursor),
     newChat: (cwd: string, provider?: AgentProvider) => void open(cwd, undefined, provider), openThread: (cwd, thread) => void open(cwd, thread), report, registerUpdateCapture, onSessionStateChange, flushSessionState, onSessionAttention,
@@ -650,6 +653,11 @@ function TabbedWorkspace() {
       {error && <p className="thread-action-error" role="alert">{error}</p>}
       <div className="confirm-actions"><button type="button" className="secondary-button" disabled={opening} onClick={() => setWorktreeDialog(null)}>Отмена</button><button type="submit" className="primary-button" disabled={opening || !worktreeName.trim()}>{opening ? 'Создаём…' : 'Создать и открыть'}</button></div>
     </form></div>}
+    {tasksPanel && <WorktreePanel cwd={tasksPanel.cwd} openTabs={folder => tabsRef.current.filter(tab => !tab.archivedThread && sameFolder(tab.cwd, folder)).length}
+      onClose={() => setTasksPanel(null)}
+      onOpen={folder => { setTasksPanel(null); void open(folder); }}
+      onNewTask={() => { const cwd = tasksPanel.cwd; setTasksPanel(null); setError(''); setWorktreeName(''); setWorktreeDialog({ cwd }); }}
+      onCloseTabs={async folder => { for (const tab of tabsRef.current.filter(tab => !tab.archivedThread && sameFolder(tab.cwd, folder))) await close(tab.id); }} />}
     {worktreeNotice && <div className="alert notice-alert workspace-notice" role="status"><span>{worktreeNotice}</span><button className="icon-button small" aria-label="Скрыть уведомление" title="Скрыть" onClick={() => setWorktreeNotice('')}><X size={14} /></button></div>}
     {preparingUpdate && <div className="nightly-update-overlay" role="dialog" aria-modal="true" aria-labelledby="nightly-update-title" tabIndex={-1}><section><LoaderCircle size={24} className="spin" /><h2 id="nightly-update-title">Nightly обновляется…</h2><p>Сохраняем вкладки и перезапускаем приложение.</p></section></div>}
     {showNotificationSettings && <NotificationSettings onClose={() => setShowNotificationSettings(false)} />}

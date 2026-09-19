@@ -79,6 +79,29 @@ try {
         return create(cwd, { ...sessions[options.fromSessionId]?.settings, ...options.settings });
       },
       async closeSession(id) { sessions[id].closed = true; sessions[id].listeners.clear(); },
+      async listWorktrees(cwd) {
+        (fixture.worktreeLists ??= []).push(cwd);
+        const root = cwd.replace(/\.worktrees\/[^/]+$/, '');
+        return { root, mainBranch: 'main', mainPath: root, worktrees: [
+          { path: root, branch: 'main', head: 'aaaa', detached: false, bare: false, main: true, current: cwd === root, dirty: false, ahead: null, behind: null },
+          ...(fixture.removedTask ? [] : [{ path: `${root}.worktrees/fix-login`, branch: 'fix-login', head: 'bbbb', detached: false, bare: false, main: false, current: cwd !== root, dirty: Boolean(fixture.taskDirty), ahead: 2, behind: 0 }]),
+        ] };
+      },
+      async previewWorktreeMerge(cwd) {
+        (fixture.mergePreviews ??= []).push(cwd);
+        return { branch: 'fix-login', target: 'main', mainPath: cwd.replace(/\.worktrees\/[^/]+$/, ''), worktreePath: cwd, commits: [{ hash: 'b1b1b1b', subject: 'Fix login redirect' }, { hash: 'c2c2c2c', subject: 'Add test' }], stat: ' src/login.ts | 4 ++--\n 1 file changed', ahead: 2, behind: 0, mainDirty: false, worktreeDirty: false, blocked: fixture.mergeBlocked ? 'В основной рабочей копии есть незафиксированные изменения.' : null };
+      },
+      async mergeWorktree(cwd) {
+        (fixture.merges ??= []).push(cwd);
+        return { branch: 'fix-login', target: 'main', mainPath: cwd.replace(/\.worktrees\/[^/]+$/, ''), before: 'aaaa111', after: 'dddd222', commits: 2 };
+      },
+      async removeWorktree(cwd, options) {
+        (fixture.removals ??= []).push({ cwd, options });
+        if (Object.values(sessions).some(state => !state.closed && state.cwd === cwd)) throw new Error('Сначала закройте вкладки этой рабочей копии.');
+        fixture.removedTask = true;
+        const index = projects.indexOf(cwd); if (index >= 0) projects.splice(index, 1);
+        return { path: cwd, branch: 'fix-login', branchDeleted: Boolean(options?.deleteBranch) };
+      },
       async createWorktreeSession(options = {}) {
         (fixture.worktrees ??= []).push(options);
         if (fixture.failWorktree) { fixture.failWorktree = false; throw new Error('Ветка с таким именем уже занята другой рабочей копией.'); }
@@ -346,14 +369,41 @@ try {
   await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').waitFor();
   assert.equal(await modelCalls(), modelCallsBeforeWorktree, 'Opening a worktree tab sends no model request');
   await page.getByRole('button', { name: 'Скрыть уведомление', exact: true }).click();
-  // Leave the rest of the scenario as it was: close the worktree tab and return to the previous one.
-  await page.getByRole('button', { name: /^Закрыть вкладку fix-login/ }).click();
-  await tabs(tabsBeforeWorktree);
+  // Tasks dialog: list, merge preview → merge, removal refuses while the tab is open, then removes after closing tabs.
+  await projectMenu('PROJECT_A').click();
+  await page.getByRole('menuitem', { name: 'Задачи проекта…', exact: true }).click();
+  const tasks = page.getByRole('dialog', { name: 'Задачи проекта', exact: true });
+  await tasks.waitFor();
+  await tasks.locator('[data-worktree-branch="fix-login"]').waitFor();
+  assert.equal(await tasks.locator('.worktree-row').count(), 2);
+  assert.match(await tasks.locator('[data-worktree-branch="fix-login"]').innerText(), /вкладок открыто: 1/);
+  await tasks.locator('[data-worktree-branch="fix-login"]').getByRole('button', { name: /Перенести в main/ }).click();
+  const mergePreview = tasks.getByRole('region', { name: 'Предпросмотр переноса', exact: true });
+  await mergePreview.waitFor();
+  assert.match(await mergePreview.innerText(), /Fix login redirect/);
+  await mergePreview.getByRole('button', { name: 'Выполнить merge', exact: true }).click();
+  await tasks.getByRole('status').filter({ hasText: 'перенесена в «main»' }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__tree.merges), ['C:/Fixtures/PROJECT_A.worktrees/fix-login']);
+  await tasks.getByRole('button', { name: 'Удалить копию fix-login', exact: true }).click();
+  const removal = tasks.getByRole('alertdialog', { name: 'Удалить рабочую копию', exact: true });
+  await removal.waitFor();
+  await removal.getByRole('checkbox', { name: /Удалить и ветку/ }).check();
+  await removal.getByRole('button', { name: 'Удалить копию', exact: true }).click();
+  await tasks.getByRole('status').filter({ hasText: 'ветка «fix-login» удалена' }).waitFor();
+  const removals = await page.evaluate(() => window.__tree.removals);
+  assert.deepEqual(removals.at(-1), { cwd: 'C:/Fixtures/PROJECT_A.worktrees/fix-login', options: { force: false, deleteBranch: true } });
+  assert.equal(await tasks.locator('.worktree-row').count(), 1, 'Removed copy disappears from the list');
+  assert.equal(await page.getByRole('tab').count(), tabsBeforeWorktree, 'The worktree tab was closed before removal');
+  await tasks.getByRole('button', { name: 'Закрыть задачи проекта', exact: true }).click();
+  await tasks.waitFor({ state: 'detached' });
+  // The removal already closed the worktree tab; return to the previous tab and drop the stale folder entry if it remains.
   await page.locator(`.session-tab[data-session-id="${activeBeforeWorktree}"]`).getByRole('tab').click();
   assert.equal(await activeId(), activeBeforeWorktree);
-  await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').getByRole('button', { name: 'Действия проекта fix-login', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Закрыть проект', exact: true }).click();
-  await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').waitFor({ state: 'detached' });
+  if (await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').count()) {
+    await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').getByRole('button', { name: 'Действия проекта fix-login', exact: true }).click();
+    await page.getByRole('menuitem', { name: 'Закрыть проект', exact: true }).click();
+    await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').waitFor({ state: 'detached' });
+  }
   assert.deepEqual(errors, []);
   console.log('PASS: compact folder tree, isolated history/loading/errors/pagination, history reuse, new project and empty-folder chat, inline cache at 1440/940px; project menu/keyboard/context menu, immediate and confirmed close, cancel with draft/running task, close failure recovery, archived views close, other project isolation, history returns after adding, empty workspace, isolated task via worktree menu/dialog. Fake bridges and token events only; no real model request.');
 } catch (error) {

@@ -11,7 +11,7 @@ import { listProjectThreads } from './project-history.mjs';
 import { listProjectFiles } from './project-files.mjs';
 import { getGitStatus, getGitDiff } from './git-reader.mjs';
 import { GitRollbackService } from './git-rollback.mjs';
-import { createWorktree } from './git-worktree.mjs';
+import { createWorktree, mergeWorktree, previewWorktreeMerge, removeWorktree, worktreeSummary } from './git-worktree.mjs';
 import { prepareComposerFiles } from './composer-files.mjs';
 import { ClaudeHistory } from './claude-history.mjs';
 import { ClaudeThreadManagement } from './claude-threads.mjs';
@@ -543,6 +543,33 @@ function installHandlers() {
     assertActive();
     const created = await createSessionFor(record, event, { ...(sourceId == null ? {} : { fromSessionId: sourceId }), cwd: worktree.path, ...(options.provider ? { provider: options.provider } : {}) });
     return created ? { ...created, worktree } : null;
+  });
+  // Worktree management: read-only listing/preview for any registered folder; merge and remove require idle sessions in the repository.
+  const worktreeFolder = value => { if (typeof value !== 'string' || !value || value.length >= 4096 || !path.isAbsolute(value)) throw new Error('Некорректная папка рабочей копии.'); return value; };
+  const worktreeGuard = (record, event) => () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); };
+  const assertRepositoryIdle = (paths) => {
+    for (const item of windows.values()) for (const session of item.sessions.values()) {
+      if (!session.currentCwd || !paths.some(folder => pathsOverlap(folder, session.currentCwd))) continue;
+      if (session.terminal || session.pendingBoots || session.pendingMutations || session.requests.size || session.activeThreadTurns.size || session.compactingThreads.size) throw new Error('Дождитесь завершения задач и подтверждений во вкладках этого репозитория; закройте его терминал.');
+    }
+    if (rollbackReservations.size && [...rollbackReservations].some(cwd => paths.some(folder => pathsOverlap(folder, cwd)))) throw new Error('В проекте выполняется откат файла.');
+  };
+  workspaceHandle('host:listWorktrees', (record, event, cwd) => worktreeSummary({ cwd: worktreeFolder(cwd), assertActive: worktreeGuard(record, event) }));
+  workspaceHandle('host:previewWorktreeMerge', (record, event, cwd) => previewWorktreeMerge({ cwd: worktreeFolder(cwd), assertActive: worktreeGuard(record, event) }));
+  workspaceHandle('host:mergeWorktree', async (record, event, cwd) => {
+    const folder = worktreeFolder(cwd);
+    const preview = await previewWorktreeMerge({ cwd: folder, assertActive: worktreeGuard(record, event) });
+    assertRepositoryIdle([preview.mainPath, preview.worktreePath]);
+    return mergeWorktree({ cwd: folder, assertActive: () => { worktreeGuard(record, event)(); assertRepositoryIdle([preview.mainPath, preview.worktreePath]); } });
+  });
+  workspaceHandle('host:removeWorktree', async (record, event, cwd, options = {}) => {
+    const folder = worktreeFolder(cwd);
+    if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['force', 'deleteBranch'].includes(key) || typeof options[key] !== 'boolean')) throw new Error('Некорректные параметры удаления копии.');
+    for (const item of windows.values()) for (const session of item.sessions.values()) {
+      if (session.currentCwd && pathsOverlap(folder, session.currentCwd)) throw new Error('Сначала закройте вкладки этой рабочей копии.');
+    }
+    assertRepositoryIdle([folder]);
+    return removeWorktree({ cwd: folder, force: Boolean(options.force), deleteBranch: Boolean(options.deleteBranch), assertActive: worktreeGuard(record, event) });
   });
   workspaceHandle('host:closeSession', (record, event, id) => {
     if (typeof id !== 'string' || !id) throw new Error('Некорректная сессия.');

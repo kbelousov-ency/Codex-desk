@@ -29,6 +29,9 @@ export type Model = { id: string; model: string; displayName: string; hidden?: b
 
 export type SessionInfo = { id: string; cwd: string; provider?: AgentProvider };
 export type WorktreeInfo = { path: string; branch: string; created: boolean; root: string };
+export type WorktreeEntry = { path: string; branch: string | null; head: string | null; detached: boolean; bare: boolean; main: boolean; current: boolean; dirty: boolean | null; ahead: number | null; behind: number | null };
+export type WorktreeSummary = { root: string; mainBranch: string | null; mainPath: string | null; worktrees: WorktreeEntry[] };
+export type WorktreeMergePreview = { branch: string; target: string; mainPath: string; worktreePath: string; commits: { hash: string; subject: string }[]; stat: string; ahead: number | null; behind: number | null; mainDirty: boolean; worktreeDirty: boolean; blocked: string | null };
 export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
 export type UpdateSnapshot = { version: 1; activeIndex: number; tabs: UpdateTabSnapshot[] };
 export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
@@ -123,6 +126,10 @@ export interface WorkspaceBridge extends CodexBridge {
   manageThread(options: { action: ThreadAction; threadId: string; cwd: string; name?: string }): Promise<{ thread?: Thread; affectedThreadIds?: string[] }>;
   createSession(options?: { cwd?: string; fromSessionId?: string; settings?: Settings; provider?: AgentProvider }): Promise<SessionInfo | null>;
   createWorktreeSession?(options: { cwd: string; fromSessionId?: string; name: string; provider?: AgentProvider }): Promise<(SessionInfo & { worktree: WorktreeInfo }) | null>;
+  listWorktrees?(cwd: string): Promise<WorktreeSummary>;
+  previewWorktreeMerge?(cwd: string): Promise<WorktreeMergePreview>;
+  mergeWorktree?(cwd: string): Promise<{ branch: string; target: string; mainPath: string; before: string; after: string; commits: number }>;
+  removeWorktree?(cwd: string, options?: { force?: boolean; deleteBranch?: boolean }): Promise<{ path: string; branch: string | null; branchDeleted: boolean }>;
   closeSession(id: string): Promise<void>;
   closeProject(cwd: string, options?: { force?: boolean }): Promise<{ projects: string[]; closedSessionIds: string[] }>;
   forSession(id: string): CodexBridge;
