@@ -180,6 +180,20 @@ export class ClaudeClient extends EventEmitter {
       inputModalities: ['text', 'image'],
       })), nextCursor: null };
     }
+    if (method === 'agent/capabilities') {
+      const text = (value, limit = 200) => typeof value === 'string' ? value.slice(0, limit) : '';
+      const commands = (Array.isArray(session.initialized.commands) ? session.initialized.commands : []).filter(c => c && typeof c.name === 'string')
+        .map(c => ({ name: text(c.name, 80), description: text(c.description), builtin: Boolean(c.builtin) })).slice(0, 500);
+      const agents = (Array.isArray(session.initialized.agents) ? session.initialized.agents : []).filter(a => a && typeof a.name === 'string')
+        .map(a => ({ name: text(a.name, 80), description: text(a.description) })).slice(0, 200);
+      let mcpServers = null, mcpError;
+      try {
+        const status = await this._control(session, 'mcp_status', {}, 15_000);
+        mcpServers = (Array.isArray(status?.mcpServers) ? status.mcpServers : []).filter(s => s && typeof s.name === 'string')
+          .map(s => ({ name: text(s.name, 80), status: ['connected', 'failed', 'needs-auth', 'pending', 'disabled'].includes(s.status) ? s.status : 'pending', error: s.error ? safeText(s.error, 300) : undefined, scope: text(s.scope, 40) || undefined })).slice(0, 200);
+      } catch (error) { mcpError = `Состояние MCP недоступно: ${safeText(error.message, 300)}`; }
+      return { commands, agents, mcpServers, ...(mcpError ? { mcpError } : {}) };
+    }
     if (method === 'usage/read') {
       // Experimental control request: an old CLI answers with an error, which becomes "unavailable", not a failure.
       try { return normalizeUsage(await this._control(session, 'get_usage', { skip_behaviors: true }, 20_000)); }

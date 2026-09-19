@@ -42,6 +42,7 @@ try {
         async request(method, params = {}) {
           calls.push({ id, provider, method, params: structuredClone(params) });
           if (method === 'thread/list') return { data: [], nextCursor: null };
+          if (method === 'agent/capabilities') return { commands: [{ name: 'compact', description: 'Compact', builtin: true }, { name: 'ency-extension', description: 'Build ENCY extensions', builtin: false }], agents: [{ name: 'Explore', description: 'Search' }], mcpServers: [{ name: 'plane', status: 'connected' }, { name: 'atlassian', status: 'failed', error: 'timeout' }] };
           if (method === 'usage/read') return fixture.usageUnavailable ? { available: false, windows: [], message: 'Лимиты плана не применяются к этому способу входа.' } : { available: true, subscription: 'max', updatedAt: new Date().toISOString(), windows: [{ key: 'five_hour', label: 'Сессия 5 часов', utilization: 42, resetsAt: new Date(Date.now() + 90 * 60000).toISOString() }, { key: 'seven_day', label: 'Неделя, все модели', utilization: 9, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() }] };
           if (method === 'thread/start') return { thread: thread(), model: settings.model };
           if (method === 'turn/start') {
@@ -137,6 +138,13 @@ try {
   assert.match(effectiveText, /Разрешать правки\s*\n?\s*выбрано в этой вкладке/, 'access changed in this tab is attributed to the tab');
   assert.equal(await effective.locator('[data-capability="steer"]').getAttribute('data-available'), 'true');
   assert.equal(await effective.locator('[data-capability="archive"]').getAttribute('data-available'), 'false');
+  await effective.locator('[data-effective="skills"] summary').waitFor();
+  assert.match(await effective.locator('[data-effective="skills"]').innerText(), /1 пользовательских, 1 встроенных, субагентов: 1/);
+  await effective.locator('[data-effective="skills"] summary').click();
+  assert.match(await effective.locator('[data-effective="skills"]').innerText(), /\/ency-extension/);
+  assert.equal(await effective.locator('[data-effective="mcp"] [data-mcp-status="connected"]').innerText(), 'plane подключён');
+  assert.match(await effective.locator('[data-effective="mcp"] [data-mcp-status="failed"]').innerText(), /atlassian ошибка\s*timeout/);
+  assert.equal((await calls('agent/capabilities')).every(call => call.provider === 'claude'), true, 'details are read only for the Claude tab');
   assert.equal((await calls('getMcpConfig')).length, 0, 'Claude settings never access the Codex MCP editor');
   await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await draft().fill('Изучи материалы');

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Access, AgentCapabilities, AgentProvider, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources, UsageLimits } from './types';
+import type { Access, AgentCapabilities, AgentDetails, AgentProvider, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources, UsageLimits } from './types';
 import { agentName } from './AgentContext';
 import { mergeHistoricalTurnWork, observeTurnWork } from './turn-work';
 import { historicalCacheActivity, responseTime } from './cache-history';
@@ -87,6 +87,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [usage, setUsage] = useState<UsageLimits | null>(null);
   const [usageLoading, setUsageLoading] = useState(false);
   const usageRequestRef = useRef(0);
+  const [agentDetails, setAgentDetails] = useState<AgentDetails | null>(null);
+  const [agentDetailsLoading, setAgentDetailsLoading] = useState(false);
   const [cacheActivityAt, setCacheActivityAt] = useState<number | null>(null);
   const [cacheGeneration, setCacheGeneration] = useState(0);
   const [cacheTurnCompleted, setCacheTurnCompleted] = useState(0);
@@ -238,6 +240,15 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   }, [bridge]);
 
   /** Plan rate limits (Claude only). Never throws: an unavailable answer is shown as a plain label. */
+  /** Skills/commands, subagents and MCP status of the connected Claude CLI (read-only control requests). */
+  const refreshAgentDetails = useCallback(async () => {
+    if (providerRef.current !== 'claude' || connectionRef.current !== 'ready' || terminalRef.current) return;
+    setAgentDetailsLoading(true);
+    try { const result = await bridge.request('agent/capabilities', {}); if (result && typeof result === 'object') setAgentDetails(result as AgentDetails); }
+    catch (e) { setAgentDetails({ commands: [], agents: [], mcpServers: null, mcpError: errorText(e) }); }
+    finally { setAgentDetailsLoading(false); }
+  }, [bridge]);
+
   const refreshUsage = useCallback(async () => {
     if (providerRef.current !== 'claude' || connectionRef.current !== 'ready' || terminalRef.current) return;
     const sequence = ++usageRequestRef.current;
@@ -335,10 +346,11 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       if (options?.keepThread && threadRef.current) detachThread(); else clearThread();
       await saveSettings({ cwd: result.cwd });
       await refreshHistory(result.cwd);
-      setUsage(null); if (providerRef.current === 'claude' && result.capabilities?.usage !== false) void refreshUsage();
+      setUsage(null); setAgentDetails(null); if (providerRef.current === 'claude' && result.capabilities?.usage !== false) void refreshUsage();
     } catch (e) { invalidateCache(); updateConnection('error'); setError(errorText(e)); }
     finally { connectingRef.current = false; }
   }, [bridge, clearThread, detachThread, refreshHistory, refreshUsage, saveSettings, invalidateCache, updateConnection]);
+  void refreshAgentDetails; // declared above for the settings dialog
 
   useEffect(() => {
     if (!bridge) { void connect(); return; }
@@ -971,7 +983,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     connection, provider, capabilities, cwd, models, model, effort, access, account, config, executable, cliVersion, sources, history, historyCursor, historyLoading,
     thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, loading, error, notice,
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
-    cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage,
+    cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage, agentDetails, agentDetailsLoading, refreshAgentDetails,
     connect, reconnect, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
     resume, loadEarlier, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice,
   };

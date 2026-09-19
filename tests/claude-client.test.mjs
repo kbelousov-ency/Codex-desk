@@ -11,7 +11,8 @@ import { ClaudeClient, normalizeUsage } from '../electron/claude-client.mjs';
 const nativeId = 'aaaaaaaa-1111-2222-3333-444444444444';
 const model = { value: 'sonnet', resolvedModel: 'claude-sonnet-test', displayName: 'Sonnet', supportedEffortLevels: ['low', 'medium', 'high'] };
 const usageSample = { session: { total_cost_usd: 0 }, subscription_type: 'max', rate_limits_available: true, rate_limits: { five_hour: { utilization: 37.4, resets_at: '2030-01-01T10:00:00Z' }, seven_day: { utilization: 12, resets_at: '2030-01-05T00:00:00Z' }, seven_day_opus: null, model_scoped: [{ display_name: 'Fable', utilization: 5, resets_at: null }] } };
-function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit = false, usageAnswer = usageSample, ...options } = {}) {
+const mcpSample = { mcpServers: [{ name: 'plane', status: 'connected', scope: 'user' }, { name: 'atlassian', status: 'failed', error: 'Version negotiation probe timed out; token sk-abcdefghijklmnop123' }], error_count: 1 };
+function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit = false, usageAnswer = usageSample, mcpAnswer = mcpSample, ...options } = {}) {
   const children = [], spawns = [], frames = [], events = [], requests = [];
   const client = new ClaudeClient({ executable: 'claude.exe', cwd: process.cwd(), requestTimeoutMs, ...options,
     spawnImpl(executable, args, spawnOptions) {
@@ -28,12 +29,14 @@ function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit 
           let response = {};
           if (request.subtype === 'initialize') {
             if (!initialize) { callback(); return; }
-            response = { models: [model], account: { email: 'user@example.test', subscriptionType: 'Test', tokenSource: 'secret' }, current_permission_mode: 'default' };
+            response = { models: [model], account: { email: 'user@example.test', subscriptionType: 'Test', tokenSource: 'secret' }, current_permission_mode: 'default',
+              commands: [{ name: 'compact', description: 'Compact', argumentHint: '', builtin: true }, { name: 'ency-extension', description: 'Build ENCY extensions', argumentHint: '', builtin: false }], agents: [{ name: 'Explore', description: 'Read-only search' }] };
           }
           if (request.subtype === 'set_model') selected = request.model;
           if (request.subtype === 'apply_flag_settings') effort = request.settings.effortLevel;
           if (request.subtype === 'get_settings') response = { effective: { env: { API_KEY: 'DO NOT EXPORT' } }, sources: [], applied: { model: selected, effort } };
           if (request.subtype === 'get_binary_version') response = { version: '2.1.278' };
+          if (request.subtype === 'mcp_status') { if (mcpAnswer === 'error') { child.send({ type: 'control_response', response: { subtype: 'error', request_id: frame.request_id, error: 'nope' } }); callback(); return; } response = mcpAnswer; }
           if (request.subtype === 'get_usage') { if (usageAnswer === 'error') { child.send({ type: 'control_response', response: { subtype: 'error', request_id: frame.request_id, error: 'Unknown request subtype' } }); callback(); return; } response = usageAnswer; }
           child.send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response } });
         }
@@ -448,4 +451,17 @@ test('token usage is reported per model call: live from stream usage, counted on
   assert.equal(next.turnId, turn2.id);
   assert.equal(next.tokenUsage.total.totalTokens, 9402 + 9015); assert.equal(next.tokenUsage.modelContextWindow, 200000); assert.equal(next.tokenUsage.last.inputTokens, 9010);
   h.child.send(result(turn2.id));
+});
+
+test('agent/capabilities lists commands, agents and MCP status from documented control data; MCP failures degrade to a message', async t => {
+  const h = await running(t);
+  const details = await h.client.request('agent/capabilities', {});
+  assert.deepEqual(details.commands, [{ name: 'compact', description: 'Compact', builtin: true }, { name: 'ency-extension', description: 'Build ENCY extensions', builtin: false }]);
+  assert.deepEqual(details.agents, [{ name: 'Explore', description: 'Read-only search' }]);
+  assert.equal(details.mcpServers.length, 2); assert.equal(details.mcpServers[0].status, 'connected'); assert.equal(details.mcpServers[1].status, 'failed');
+  assert.doesNotMatch(details.mcpServers[1].error, /sk-abcdef/, 'secrets in MCP errors are redacted');
+  assert.equal(h.frames.at(-1).request.subtype, 'mcp_status');
+  const failing = await running(t, { mcpAnswer: 'error' });
+  const degraded = await failing.client.request('agent/capabilities', {});
+  assert.equal(degraded.mcpServers, null); assert.match(degraded.mcpError, /недоступно/); assert.equal(degraded.commands.length, 2);
 });
