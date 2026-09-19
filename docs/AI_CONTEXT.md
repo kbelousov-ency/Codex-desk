@@ -127,7 +127,7 @@ React UI → window.codex (preload) → Electron IPC → CodexClient
 - Подтверждения команд/файлов: `{decision:'accept'|'decline'|...}`. Для permissions — `{permissions:{...},scope:'turn'|'session'}`, отказ — пустой `permissions`.
 - Ответ на вопросы: `{answers:{[questionId]:{answers:string[]}}}`. `isSecret` требует password input.
 - `serverRequest/resolved` удаляет ожидающий запрос и в UI, и в транспорте. `client.respond()` асинхронен: обязательно `await`, затем убрать запрос.
-- Не отправлять универсальное «accept» неизвестному serverRequest. Формы MCP пока можно отклонять; неподдерживаемый dynamic tool получает ответ об ошибке.
+- Не отправлять универсальное «accept» неизвестному serverRequest. Формы MCP (`mcpServer/elicitation/request`, mode `form` со схемой MCP 2025-11-25) с 2026-09-19 заполняются в карточке запроса (`src/ElicitationForm.tsx`): string/number/integer/boolean/enum/multi-select с проверкой required/min/max; `accept` отправляет только введённые значения, `decline`/`cancel` — без content. Режим `url` показывает адрес без автоматического открытия; неизвестные схемы можно только отклонить. Неподдерживаемый dynamic tool получает ответ об ошибке.
 
 ### Изображения и данные
 

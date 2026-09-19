@@ -3,6 +3,7 @@ import { ArrowRight, Check, ShieldCheck, X } from 'lucide-react';
 import type { Item, Request } from './types';
 import { errorText } from './useCodex';
 import { useAgentName } from './AgentContext';
+import ElicitationForm from './ElicitationForm';
 
 export default function Approval({ request, items, respond }: { request: Request; items: Item[]; respond: (request: Request, result: any) => Promise<void> }) {
   const engineName = useAgentName();
@@ -45,12 +46,7 @@ export default function Approval({ request, items, respond }: { request: Request
         {(!q.options?.length || q.isOther) && <input className="text-input" type={q.isSecret ? 'password' : 'text'} placeholder={q.options?.length ? 'Или свой ответ…' : 'Ваш ответ…'} value={q.options?.some((o: any) => o.label === answers[q.id]) ? '' : answers[q.id] || ''} onChange={e => setAnswers(previous => ({ ...previous, [q.id]: e.target.value }))} autoComplete="off" />}
       </fieldset>)}
       <div className="approval-actions"><button className="text-button" type="button" disabled={pending} onClick={() => void submit({ answers: {} })}>Пропустить</button><button className="primary-button" disabled={pending} type="submit">Ответить <ArrowRight size={15} /></button></div>
-    </form> : elicitation ? <>
-      <p>{p.message}</p>
-      {p.url && <p className="muted break-word">{p.url}</p>}
-      <p className="muted">Это подключение запрашивает дополнительные данные. Формы подключений пока не поддерживаются.</p>
-      <button className="secondary-button" disabled={pending} onClick={() => void submit({ action: 'decline', content: null, _meta: null })}>Отклонить запрос</button>
-    </> : !approval ? <>
+    </form> : elicitation ? <ElicitationForm params={p} pending={pending} onSubmit={result => void submit(result)} /> : !approval ? <>
       <p>Этот запрос пока не поддерживается оболочкой: <code>{request.method}</code>.</p>
       {request.method === 'item/tool/call' ? <button className="secondary-button" disabled={pending} onClick={() => void submit({ success: false, contentItems: [{ type: 'inputText', text: 'This client does not implement the requested dynamic tool.' }] })}>Сообщить {engineName}</button> : <p className="muted">Остановите выполнение кнопкой под сообщением. Если запрос связан с аккаунтом, войдите через {engineName} CLI и переподключитесь.</p>}
     </> : <>

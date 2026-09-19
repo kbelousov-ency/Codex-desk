@@ -168,6 +168,35 @@ try {
   state = await page.evaluate(() => window.__scenario.state);
   assert.deepEqual(state.responses, [{ id: 'approve-1', result: { decision: 'accept' } }, { id: 'decline-1', result: { decision: 'decline' } }]);
 
+  // MCP form elicitation: typed fields are validated and sent as structured content; decline sends none.
+  const schema = { type: 'object', required: ['project', 'env'], properties: {
+    project: { type: 'string', title: 'Проект', description: 'Имя проекта в трекере', minLength: 2 },
+    env: { type: 'string', title: 'Окружение', oneOf: [{ const: 'stage', title: 'Стенд' }, { const: 'prod', title: 'Продакшен' }] },
+    replicas: { type: 'integer', title: 'Реплики', minimum: 1, maximum: 5, default: 2 },
+    notify: { type: 'boolean', title: 'Уведомить команду', default: true },
+    tags: { type: 'array', title: 'Метки', items: { type: 'string', enum: ['api', 'ui', 'db'] } },
+  } };
+  await requestApproval('elicit-1', 'mcpServer/elicitation/request', { threadId: context.threadId, turnId: context.turnId, serverName: 'deploy-mcp', mode: 'form', _meta: null, message: 'Параметры выкладки', requestedSchema: schema });
+  const form = page.getByRole('form', { name: 'Форма подключения deploy-mcp', exact: true });
+  await form.waitFor();
+  await form.getByRole('button', { name: 'Отправить', exact: true }).click();
+  await form.getByText('Обязательное поле.', { exact: true }).first().waitFor();
+  assert.equal((await page.evaluate(() => window.__scenario.state.responses)).length, 2, 'Invalid form is not sent');
+  await form.getByLabel('Проект', { exact: false }).fill('Desk');
+  await form.getByRole('radio', { name: 'Продакшен', exact: true }).check();
+  await form.getByRole('checkbox', { name: 'ui', exact: true }).check();
+  await form.getByRole('checkbox', { name: 'db', exact: true }).check();
+  await form.getByRole('button', { name: 'Отправить', exact: true }).click();
+  await waitState(() => window.__scenario.state.responses.length === 3);
+  state = await page.evaluate(() => window.__scenario.state);
+  assert.deepEqual(state.responses[2], { id: 'elicit-1', result: { action: 'accept', content: { project: 'Desk', env: 'prod', replicas: 2, notify: true, tags: ['ui', 'db'] }, _meta: null } });
+  await requestApproval('elicit-2', 'mcpServer/elicitation/request', { threadId: context.threadId, turnId: context.turnId, serverName: 'deploy-mcp', mode: 'url', _meta: null, message: 'Войдите в систему', url: 'https://example.invalid/login', elicitationId: 'e2' });
+  await page.getByText('https://example.invalid/login', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Отклонить', exact: true }).click();
+  await waitState(() => window.__scenario.state.responses.length === 4);
+  state = await page.evaluate(() => window.__scenario.state);
+  assert.deepEqual(state.responses[3], { id: 'elicit-2', result: { action: 'decline', content: null, _meta: null } });
+
   const diff = 'diff --git a/fixture.ts b/fixture.ts\n--- a/fixture.ts\n+++ b/fixture.ts\n@@ -1 +1 @@\n-const before = true;\n+const after = true;';
   await notify('item/completed', { ...context, item: { id: 'command-1', type: 'commandExecution', command: readCommand, commandActions, aggregatedOutput: 'fixture-command-output-v1', status: 'completed', exitCode: 0, durationMs: 50 } });
   await notify('item/completed', { ...context, item: { id: 'file-1', type: 'fileChange', status: 'completed', changes: [{ path: 'C:/Fixtures/Review Project/fixture.ts', kind: { type: 'update', movePath: null }, diff }] } });
