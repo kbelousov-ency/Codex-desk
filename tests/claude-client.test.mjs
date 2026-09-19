@@ -10,13 +10,13 @@ import { ClaudeClient } from '../electron/claude-client.mjs';
 
 const nativeId = 'aaaaaaaa-1111-2222-3333-444444444444';
 const model = { value: 'sonnet', resolvedModel: 'claude-sonnet-test', displayName: 'Sonnet', supportedEffortLevels: ['low', 'medium', 'high'] };
-function harness({ onFrame, initialize = true, requestTimeoutMs = 300, ...options } = {}) {
+function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit = false, ...options } = {}) {
   const children = [], spawns = [], frames = [], events = [], requests = [];
   const client = new ClaudeClient({ executable: 'claude.exe', cwd: process.cwd(), requestTimeoutMs, ...options,
     spawnImpl(executable, args, spawnOptions) {
       spawns.push({ executable, args, options: spawnOptions });
       const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
-      child.killed = false; child.kill = () => { if (!child.killed) { child.killed = true; child.emit('exit', null, 'SIGTERM'); } return true; };
+      child.killed = false; child.kill = () => { if (!child.killed) { child.killed = true; if (slowExit) setTimeout(() => child.emit('exit', null, 'SIGTERM'), 30); else child.emit('exit', null, 'SIGTERM'); } return true; };
       child.send = frame => child.stdout.write(`${JSON.stringify(frame)}\n`);
       let selected = model.resolvedModel, effort = 'medium';
       child.stdin = new Writable({ write(chunk, encoding, callback) {
@@ -356,4 +356,26 @@ test('rename of the open session uses the rename_session control request and upd
   assert.equal(reply.thread.name, 'План миграции');
   assert.deepEqual(h.events.find(e => e.method === 'thread/name/updated').params, { threadId: h.thread.id, name: 'План миграции' });
   assert.equal((await h.client.request('thread/read', { threadId: h.thread.id })).thread.name, 'План миграции');
+});
+
+test('history reads stay available while the CLI process is being replaced for a resume; other requests wait for the new process', async t => {
+  const other = 'claude:cccccccc-1111-2222-3333-444444444444';
+  const history = { async list() { return { data: [{ id: other, provider: 'claude' }], nextCursor: null }; }, async read({ threadId }) { return { thread: { id: threadId, provider: 'claude', cwd: process.cwd(), turns: [] } }; } };
+  const h = harness({ slowExit: true, history }); t.after(() => h.client.stop()); await h.client.start();
+  const thread = (await h.client.request('thread/start')).thread;
+  const turn = (await h.client.request('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Привет' }] })).turn;
+  h.child.send(result(turn.id));
+  const resume = h.client.request('thread/resume', { threadId: other });
+  await new Promise(resolve => setTimeout(resolve, 5)); // the old process is ending, the new one is not spawned yet
+  assert.equal(h.spawns.length, 1);
+  assert.equal(h.children[0].killed, true);
+  const listed = await h.client.request('thread/list', {});
+  assert.equal(listed.data[0].id, other, 'thread/list is served from native history during the restart window');
+  const read = await h.client.request('thread/read', { threadId: other });
+  assert.equal(read.thread.id, other);
+  const config = h.client.request('config/read', {});
+  const resumed = await resume;
+  assert.equal(resumed.thread.id, other); assert.equal(h.spawns.length, 2);
+  assert.ok(await config, 'a live-session request issued mid-restart resolves against the new process');
+  assert.ok(h.spawns[1].args.includes('--resume'));
 });

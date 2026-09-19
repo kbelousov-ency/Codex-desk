@@ -65,7 +65,7 @@ export class ClaudeClient extends EventEmitter {
     this.executable = executable; this.cwd = cwd; this.settings = { ...settings };
     this.history = history; this.attachmentsDirectory = attachmentsDirectory;
     this._spawn = spawnImpl; this._timeout = requestTimeoutMs; this._diagnostics = diagnostics; this._diagnosticContext = diagnosticContext;
-    this._session = null; this._startPromise = null; this._active = null; this._thread = null;
+    this._session = null; this._startPromise = null; this._active = null; this._thread = null; this._relaunch = null;
     this._mutation = false; this._generation = 0; this.state = 'stopped'; this.capabilities = CLAUDE_CAPABILITIES;
   }
 
@@ -134,8 +134,17 @@ export class ClaudeClient extends EventEmitter {
   }
 
   async request(method, params = {}) {
-    const session = this._ensureSession();
     if (params.cwd && path.resolve(params.cwd).toLowerCase() !== path.resolve(this.cwd).toLowerCase()) throw new Error('Диалог Claude находится в другой рабочей папке.');
+    // Native history is read from files and must stay available while the CLI process is being replaced.
+    if (method === 'thread/list') return this.history?.list({ ...params, cwd: this.cwd }) || { data: this._thread ? [this._thread] : [], nextCursor: null };
+    if (method === 'thread/read' && this._thread?.id !== params.threadId) {
+      rawId(params.threadId);
+      if (!this.history) throw new Error('История Claude недоступна.');
+      return this.history.read({ ...params, cwd: this.cwd });
+    }
+    // A resume/restart replaces the process; later requests wait for the new one instead of failing on the old.
+    if (this._relaunch) await this._relaunch.catch(() => {});
+    const session = this._ensureSession();
     if (method === 'model/list') {
       const rows = [...(session.initialized.models || [])], current = this._config().model;
       if (current && !rows.some(m => m.value === current)) {
@@ -154,13 +163,7 @@ export class ClaudeClient extends EventEmitter {
       return { account: { type: 'claude', email: account.email, planType: account.subscriptionType, apiProvider: account.apiProvider }, requiresOpenaiAuth: false };
     }
     if (method === 'config/read') return { config: this._config(), layers: null, origins: {} };
-    if (method === 'thread/list') return this.history?.list({ ...params, cwd: this.cwd }) || { data: this._thread ? [this._thread] : [], nextCursor: null };
-    if (method === 'thread/read') {
-      rawId(params.threadId);
-      if (this._thread?.id === params.threadId) return { thread: structuredClone(this._thread) };
-      if (!this.history) throw new Error('История Claude недоступна.');
-      return this.history.read({ ...params, cwd: this.cwd });
-    }
+    if (method === 'thread/read') { rawId(params.threadId); return { thread: structuredClone(this._thread) }; }
     if (method === 'turn/steer') {
       this._ensureThread(params.threadId);
       const active = this._active;
@@ -261,7 +264,13 @@ export class ClaudeClient extends EventEmitter {
 
   _threadResponse() { const config = this._config(); return { thread: structuredClone(this._thread), model: config.model, reasoningEffort: config.model_reasoning_effort, cwd: this.cwd }; }
   _launchSettings(params) { const s = this._session; return { mode: permissionMode(params, s?.mode), model: params.model || s?.model, effort: params.effort || s?.effort }; }
-  async _restart(options) {
+  _restart(options) {
+    // The whole replacement (waiting for the old exit, spawning the new process) is one window other requests wait on.
+    const run = this._replaceProcess(options);
+    this._relaunch = run;
+    return run.finally(() => { if (this._relaunch === run) this._relaunch = null; });
+  }
+  async _replaceProcess(options) {
     const generation = this._generation;
     const old = this._session;
     if (old && !old.ended) {
