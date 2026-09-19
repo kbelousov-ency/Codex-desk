@@ -379,3 +379,18 @@ test('history reads stay available while the CLI process is being replaced for a
   assert.ok(await config, 'a live-session request issued mid-restart resolves against the new process');
   assert.ok(h.spawns[1].args.includes('--resume'));
 });
+
+test('tool-less narration mid-turn stays commentary until result, so the work timer does not stop early', async t => {
+  const h = await running(t);
+  const sid = h.thread.id.slice(7);
+  h.child.send({ type: 'assistant', uuid: 'n1', session_id: sid, message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'Разбираюсь: проверяю запрос.' }] } });
+  h.child.send({ type: 'assistant', uuid: 'n2', session_id: sid, message: { id: 'm2', role: 'assistant', content: [{ type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'git status' } }] } });
+  h.child.send({ type: 'assistant', uuid: 'n3', session_id: sid, message: { id: 'm3', role: 'assistant', content: [{ type: 'text', text: 'Готово: причина найдена.' }] } });
+  const phases = () => h.events.filter(e => e.method === 'item/completed' && e.params.item.type === 'agentMessage').map(e => [e.params.item.text, e.params.item.phase]);
+  assert.deepEqual(phases(), [['Разбираюсь: проверяю запрос.', 'commentary'], ['Готово: причина найдена.', 'commentary']], 'no final_answer is announced while the turn still runs');
+  h.child.send(result(h.turn.id, { result: 'Готово: причина найдена.' }));
+  assert.deepEqual(phases().at(-1), ['Готово: причина найдена.', 'final_answer'], 'the last text is promoted to the answer exactly once at result');
+  const items = h.events.find(e => e.method === 'turn/completed').params.turn.items.filter(i => i.type === 'agentMessage');
+  assert.deepEqual(items.map(i => i.phase), ['commentary', 'final_answer']);
+  assert.equal(items.filter(i => i.id.endsWith(':result')).length, 0, 'no duplicate synthesized answer');
+});

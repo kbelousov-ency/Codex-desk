@@ -473,7 +473,7 @@ export class ClaudeClient extends EventEmitter {
     };
     blocks.forEach((b, index) => {
       if (b.type === 'text') {
-        const item = { id: blockId(b, index), type: 'agentMessage', text: b.text || '', phase: hasTools ? 'commentary' : 'final_answer' };
+        const item = { id: blockId(b, index), type: 'agentMessage', text: b.text || '', phase: 'commentary' };
         this._item(item, true); a.latestText = item.id;
       } else if (b.type === 'thinking') this._item({ id: blockId(b, index), type: 'reasoning', summary: [], content: b.thinking ? [b.thinking] : [] }, true);
       else if (b.type === 'tool_use') this._toolStart(b);
@@ -511,6 +511,11 @@ export class ClaudeClient extends EventEmitter {
       .map(k => [k, totals.every(t => t[k] !== undefined) ? totals.reduce((sum, t) => sum + t[k], 0) : undefined]));
     this._notify('thread/tokenUsage/updated', { threadId: this._thread.id, turnId: a.id,
       tokenUsage: { last: usageBreakdown(frame.usage), total, modelContextWindow: Object.values(frame.modelUsage || {}).find(u => u.contextWindow > 0)?.contextWindow } });
+    if (a.latestText && !frame.is_error) {
+      // The last text of the turn is the answer; earlier texts stay commentary in the work log.
+      const last = a.items.get(a.latestText);
+      if (last && last.type === 'agentMessage' && last.phase !== 'final_answer') this._item({ ...last, phase: 'final_answer' }, true);
+    }
     if (!a.latestText && !frame.is_error && typeof frame.result === 'string' && frame.result) this._item({ id: `${a.id}:result`, type: 'agentMessage', text: frame.result, phase: 'final_answer' }, true);
     const failed = frame.is_error || frame.subtype !== 'success';
     this._finish(a.interrupted ? 'interrupted' : failed ? 'failed' : 'completed', failed ? safeText(frame.errors?.join('\n') || frame.result || 'Claude завершил запрос с ошибкой.') : undefined);
