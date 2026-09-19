@@ -59,12 +59,12 @@ function usageBreakdown(usage, camel = false) {
  * No SDK prompt replacement, credential reads, global config writes or model calls at startup.
  */
 export class ClaudeClient extends EventEmitter {
-  constructor({ executable = 'claude', cwd, settings = {}, history, attachmentsDirectory, spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics } = {}) {
+  constructor({ executable = 'claude', cwd, settings = {}, history, attachmentsDirectory, spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics, diagnosticContext = {} } = {}) {
     super();
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) throw new TypeError('requestTimeoutMs must be positive.');
     this.executable = executable; this.cwd = cwd; this.settings = { ...settings };
     this.history = history; this.attachmentsDirectory = attachmentsDirectory;
-    this._spawn = spawnImpl; this._timeout = requestTimeoutMs; this._diagnostics = diagnostics;
+    this._spawn = spawnImpl; this._timeout = requestTimeoutMs; this._diagnostics = diagnostics; this._diagnosticContext = diagnosticContext;
     this._session = null; this._startPromise = null; this._active = null; this._thread = null;
     this._mutation = false; this._generation = 0; this.state = 'stopped'; this.capabilities = CLAUDE_CAPABILITIES;
   }
@@ -115,9 +115,12 @@ export class ClaudeClient extends EventEmitter {
       const effective = await this._control(session, 'get_settings');
       // Do not retain full settings: env and per-source config may carry credentials.
       session.applied = { model: effective?.applied?.model, effort: effective?.applied?.effort };
+      // The version is informational: a CLI that cannot answer this request still boots.
+      const binary = await this._control(session, 'get_binary_version', {}, 5_000).catch(() => null);
       this._ensureSession(session);
+      this._version(session, binary?.version);
       this._status('ready');
-      return { userAgent: 'claude-code', provider: 'claude', capabilities: this.capabilities };
+      return { userAgent: 'claude-code', provider: 'claude', capabilities: this.capabilities, version: session.version };
     } catch (error) { this._end(session, error, 'error'); throw error; }
   }
 
@@ -309,10 +312,18 @@ export class ClaudeClient extends EventEmitter {
     return content;
   }
 
-  _control(session, subtype, fields = {}) {
+  _record(level, event, data = {}) {
+    try { this._diagnostics?.record(level, event, { ...this._diagnosticContext, ...data }); } catch { /* Logging must not affect Claude. */ }
+  }
+  _version(session, value) {
+    if (session.version || typeof value !== 'string' || !/^\d{1,4}\.\d{1,4}\.\d{1,4}(?:[-+.][A-Za-z0-9.-]{1,32})?$/.test(value)) return;
+    session.version = value;
+    this._record('info', 'claude.version', { claudeVersion: value });
+  }
+  _control(session, subtype, fields = {}, timeoutMs = this._timeout) {
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { if (session.pending.delete(requestId)) reject(new Error(`Claude CLI не ответил: ${subtype}.`)); }, this._timeout);
+      const timer = setTimeout(() => { if (session.pending.delete(requestId)) reject(new Error(`Claude CLI не ответил: ${subtype}.`)); }, timeoutMs);
       session.pending.set(requestId, { resolve, reject, timer });
       this._write(session, { type: 'control_request', request_id: requestId, request: { subtype, ...fields } }).catch(error => {
         const pending = session.pending.get(requestId); if (!pending) return;
@@ -374,7 +385,7 @@ export class ClaudeClient extends EventEmitter {
   }
 
   _system(session, frame) {
-    if (frame.subtype === 'init') { if (frame.model) session.applied.model = frame.model; return; }
+    if (frame.subtype === 'init') { if (frame.model) session.applied.model = frame.model; this._version(session, frame.claude_code_version); return; }
     const a = this._active; if (!a) return;
     if (frame.subtype === 'compact_boundary') {
       const meta = frame.compact_metadata || {};

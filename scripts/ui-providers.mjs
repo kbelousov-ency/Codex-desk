@@ -129,6 +129,13 @@ try {
   assert.equal(await page.evaluate(() => window.__providers.sessions['session-1'].settings.access), 'auto', 'Declining full access preserves prior permissions');
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
   await view().getByRole('dialog').getByText(/Подключения Claude Code настраиваются/).waitFor();
+  const effective = view().getByRole('dialog').getByRole('region', { name: 'Действующие настройки', exact: true });
+  const effectiveText = await effective.innerText();
+  assert.match(effectiveText, /Claude Code/);
+  assert.match(effectiveText, /fixture-sonnet\s*\n?\s*сохранённые настройки агента/, 'model and its source are listed');
+  assert.match(effectiveText, /Разрешать правки\s*\n?\s*выбрано в этой вкладке/, 'access changed in this tab is attributed to the tab');
+  assert.equal(await effective.locator('[data-capability="steer"]').getAttribute('data-available'), 'true');
+  assert.equal(await effective.locator('[data-capability="archive"]').getAttribute('data-available'), 'false');
   assert.equal((await calls('getMcpConfig')).length, 0, 'Claude settings never access the Codex MCP editor');
   await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await draft().fill('Изучи материалы');

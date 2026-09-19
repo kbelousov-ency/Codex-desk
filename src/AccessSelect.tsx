@@ -10,6 +10,14 @@ const codexModes: { value: Access; label: string; description: string; icon: Luc
   { value: 'danger-full-access', label: 'Полный доступ', description: 'Доступ к файлам и сети без запросов подтверждения', icon: ShieldAlert },
 ];
 
+/** Human label of an access mode as shown in the composer selector, per agent. */
+export function accessLabel(provider: AgentProvider, value: Access | undefined): string {
+  if (!value || value === 'inherited') return `Как в ${agentName(provider)}`;
+  if (value === 'read-only') return provider === 'claude' ? 'Планирование' : 'Только чтение';
+  if (value === 'auto') return provider === 'claude' ? 'Разрешать правки' : 'Одобрять за меня';
+  return codexModes.find(mode => mode.value === value)?.label ?? value;
+}
+
 export default function AccessSelect({ value, disabled, active = true, onChange, openSignal = 0, provider = 'codex' }: {
   value: Access; disabled: boolean; active?: boolean; onChange(value: Access): void; openSignal?: number; provider?: AgentProvider;
 }) {

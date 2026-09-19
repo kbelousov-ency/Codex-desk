@@ -49,7 +49,7 @@ async function bootstrap(id) {
     const settings = await bridge.getSettings();
     return { provider: boot.provider, model: boot.config.model, effort: boot.config.model_reasoning_effort || '',
       models: boot.models.map(model => ({ model: model.model, supportedEfforts: model.supportedReasoningEfforts.map(level => level.reasoningEffort) })),
-      cwd: boot.cwd, executable: boot.executable, capabilities: boot.capabilities, settings };
+      cwd: boot.cwd, executable: boot.executable, capabilities: boot.capabilities, cliVersion: boot.cliVersion, settings };
   }, id);
 }
 async function launch() {
@@ -174,8 +174,8 @@ try {
   checks.push('normal close and restart restore two agents, selection and drafts');
   assert.deepEqual(errors, []);
   assert.equal(calls.filter(method => ['thread/start', 'turn/start', 'turn/steer', 'thread/compact/start'].includes(method)).length, 0);
-  const result = { checks, modelCalls: 0, codex: { model: codex.model, effort: codex.effort, modelCount: codex.models.length },
-    claude: { model: claude.model, effort: claude.effort, modelCount: claude.models.length }, runDir };
+  const result = { checks, modelCalls: 0, codex: { model: codex.model, effort: codex.effort, modelCount: codex.models.length, cliVersion: codex.cliVersion },
+    claude: { model: claude.model, effort: claude.effort, modelCount: claude.models.length, cliVersion: claude.cliVersion }, runDir };
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {

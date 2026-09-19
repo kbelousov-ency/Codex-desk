@@ -268,13 +268,13 @@ test('multi-hunk preview lists fragments; a partial restore keeps unselected edi
   assert.equal(preview.hunks[0].excerpt, 'line 3 edited');
   assert.equal((preview.diff.match(/^@@ /gm) || []).length, 3, 'three hunks in the unified diff');
   assert.match(preview.diff, /^@@ -12,7 \+12,6 @@$/m);
-  // Invalid selections never consume the preview or touch the file.
-  for (const hunks of [[], [3], [0, 0], [-1], ['0']]) {
-    const fresh = await service.preview({ cwd, path: relative });
-    await assert.rejects(service.apply({ cwd, previewId: fresh.previewId, hunks }), /фрагмент/i);
-    assert.equal(await readFile(path.join(cwd, relative), 'utf8'), edited);
-  }
+  // Malformed selections are rejected before the one-shot preview is consumed; out-of-range consumes it but changes nothing.
   const selected = await service.preview({ cwd, path: relative });
+  for (const hunks of [[], [0, 0], [-1], ['0']]) await assert.rejects(service.apply({ cwd, previewId: selected.previewId, hunks }), /фрагмент/i);
+  const stale = await service.preview({ cwd, path: relative });
+  await assert.rejects(service.apply({ cwd, previewId: stale.previewId, hunks: [3] }), /фрагмент/i);
+  await assert.rejects(service.apply({ cwd, previewId: stale.previewId, hunks: [0] }), /истёк|использован/);
+  assert.equal(await readFile(path.join(cwd, relative), 'utf8'), edited);
   const result = await service.apply({ cwd, previewId: selected.previewId, hunks: [2, 0] });
   const expected = ('﻿' + base).replace('line 15\r\n', 'line 15 inserted\r\nline 15\r\n');
   assert.equal(await readFile(path.join(cwd, relative), 'utf8'), expected, 'first and last hunks return to the index; the middle insertion, BOM and CRLF stay');

@@ -209,13 +209,19 @@ function diffPreview(relative, before, after) {
   return { diff, hunks, oldLines };
 }
 
+/** Shape check that does not need the preview: an invalid request must not consume the one-shot token. */
+function checkSelection(selection) {
+  if (!Array.isArray(selection) || !selection.length) throw new Error('Выберите хотя бы один фрагмент для отката.');
+  if (new Set(selection).size !== selection.length || selection.some(index => !Number.isSafeInteger(index) || index < 0)) throw new Error('Некорректный выбор фрагментов. Откройте предпросмотр заново.');
+}
+
 /** Applies only the selected hunks of a preview to the current text; other changes stay. */
 function partialBytes(preview, selection) {
   const { hunks, oldLines } = preview;
+  checkSelection(selection);
   if (!Array.isArray(hunks) || hunks.length < 2 || !oldLines) throw new Error('Откат отдельных фрагментов недоступен для этого файла: используйте откат целиком.');
-  if (!Array.isArray(selection) || !selection.length || selection.length > hunks.length) throw new Error('Выберите хотя бы один фрагмент для отката.');
   const chosen = [...new Set(selection)];
-  if (chosen.length !== selection.length || chosen.some(index => !Number.isSafeInteger(index) || index < 0 || index >= hunks.length)) throw new Error('Некорректный выбор фрагментов. Откройте предпросмотр заново.');
+  if (chosen.some(index => index >= hunks.length)) throw new Error('Некорректный выбор фрагментов. Откройте предпросмотр заново.');
   if (chosen.length === hunks.length) return null; // Every hunk: identical to the exact index bytes.
   const lines = [...oldLines];
   for (const index of chosen.sort((a, b) => b - a)) {
@@ -415,6 +421,7 @@ export class GitRollbackService {
   apply({ cwd, previewId, hunks, assertActive = () => {} }) {
     return this.serial(async () => {
       const ctx = await context(cwd, assertActive);
+      if (hunks !== undefined) checkSelection(hunks);
       const preview = await this.consume(ctx, previewId, 'restore');
       if (hunks !== undefined) {
         const bytes = partialBytes(preview, hunks);

@@ -2,6 +2,9 @@ export type Access = 'inherited' | 'auto' | 'read-only' | 'workspace-write' | 'd
 export type AgentProvider = 'codex' | 'claude';
 export type AgentCapabilities = { compact: boolean; steer: boolean; terminal: boolean; mcp: boolean; archive: boolean };
 export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string; provider?: AgentProvider };
+/** Where a tab's effective value came from: restored tab snapshot, saved agent defaults, CLI configuration, a built-in default, or the user's choice in this tab. */
+export type SettingSource = 'tab' | 'saved' | 'cli' | 'default' | 'selected';
+export type SettingSources = { model: SettingSource; effort: SettingSource; access: SettingSource };
 export type BridgeEvent = { type: 'notification' | 'serverRequest' | 'status' | 'diagnostic' | 'terminal' | 'mcp'; data: any };
 export type Attachment = { name: string; dataUrl: string; path?: string };
 export type ComposerFiles = { images: Attachment[]; paths: string[]; message?: string };
@@ -51,7 +54,7 @@ export type McpImportPreview = { previewId: string; configPath: string; servers:
 export type McpSaveResult = { configPath: string; backupPath: string | null; servers: string[]; message?: string };
 export type McpConnectionReport = { servers: { name: string; authStatus: string; status: string; toolCount: number }[]; message?: string };
 export interface CodexBridge {
-  start(options?: { cwd?: string }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities }>;
+  start(options?: { cwd?: string }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities; cliVersion?: string }>;
   request(method: string, params?: any): Promise<any>;
   respond(id: number | string, result: any): Promise<void>;
   chooseDirectory(): Promise<string | null>;

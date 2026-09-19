@@ -174,7 +174,8 @@ try {
   await notify('turn/diff/updated', { ...context, diff });
   await clickNamed(/изменения/i);
   await page.locator('.change-file > summary').first().click();
-  await page.locator('.changes-panel').getByText('+const after = true;', { exact: true }).first().waitFor({ state: 'visible' });
+  // ReviewDiff renders the sign and the code in separate spans; match the added row by its code text.
+  await page.locator('.changes-panel .diff-unified-row.add', { hasText: 'const after = true;' }).first().waitFor({ state: 'visible' });
   await notify('turn/completed', { threadId: context.threadId, turn: { id: context.turnId, status: 'completed', items: [], error: null } });
   await mkdir('artifacts', { recursive: true });
   await page.screenshot({ path: 'artifacts/scenarios.png', fullPage: true });

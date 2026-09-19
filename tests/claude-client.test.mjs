@@ -32,6 +32,7 @@ function harness({ onFrame, initialize = true, requestTimeoutMs = 300, ...option
           if (request.subtype === 'set_model') selected = request.model;
           if (request.subtype === 'apply_flag_settings') effort = request.settings.effortLevel;
           if (request.subtype === 'get_settings') response = { effective: { env: { API_KEY: 'DO NOT EXPORT' } }, sources: [], applied: { model: selected, effort } };
+          if (request.subtype === 'get_binary_version') response = { version: '2.1.278' };
           child.send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response } });
         }
         callback();
@@ -55,7 +56,8 @@ test('Claude boot is shared, uses local streaming CLI, preserves native prompt/s
   const p = h.client.start(); assert.equal(h.client.start(), p);
   const boot = await p;
   assert.equal(boot.provider, 'claude'); assert.equal(boot.capabilities.steer, true); assert.equal(boot.capabilities.compact, true); assert.equal(boot.capabilities.archive, false);
-  assert.deepEqual(h.frames.map(f => f.request?.subtype), ['initialize', 'get_settings']);
+  assert.deepEqual(h.frames.map(f => f.request?.subtype), ['initialize', 'get_settings', 'get_binary_version']);
+  assert.equal(boot.version, '2.1.278');
   assert.deepEqual(h.frames[0].request, { subtype: 'initialize' });
   const { args, options } = h.spawns[0];
   assert.ok(args.includes('--permission-prompt-tool')); assert.ok(args.includes('stdio')); assert.ok(args.includes('--permission-prompts'));

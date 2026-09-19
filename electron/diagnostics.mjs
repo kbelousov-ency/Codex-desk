@@ -19,7 +19,7 @@ const EVENTS = new Set([
   'notification.failed',
   'transport.start', 'transport.ready', 'transport.end', 'transport.exit', 'transport.diagnostic',
   'rpc.start', 'rpc.complete', 'rpc.failed', 'rpc.respond', 'rpc.serverRequest', 'rpc.notification',
-  'codex.notification', 'codex.serverRequest', 'codex.version',
+  'codex.notification', 'codex.serverRequest', 'codex.version', 'claude.version',
   'terminal.opened', 'terminal.closed', 'terminal.failed', 'unknown',
 ]);
 const CHANNELS = new Set([
@@ -90,7 +90,7 @@ const NUMBERS = new Set([
 ]);
 const BOOLEANS = new Set(['success', 'canceled', 'retry', 'packaged', 'available']);
 const IDS = new Set(['sessionId', 'clientId', 'threadId', 'turnId', 'projectId', 'fingerprint']);
-const VERSION_KEYS = new Set(['appVersion', 'electronVersion', 'chromeVersion', 'nodeVersion', 'codexVersion']);
+const VERSION_KEYS = new Set(['appVersion', 'electronVersion', 'chromeVersion', 'nodeVersion', 'codexVersion', 'claudeVersion']);
 const APP_FILES = new Set([
   'main.mjs', 'preload.cjs', 'diagnostics.mjs', 'codex-client.mjs', 'window-session.mjs',
   'notification-service.mjs', 'NotificationSettings.tsx',
@@ -345,6 +345,7 @@ export function createDiagnostics({ directory, metadata = {}, limits = {} } = {}
         level: LEVELS.has(level) ? level : 'info', event: EVENTS.has(event) ? event : 'unknown',
         data: event === 'app.start' ? { ...safeData(data), ...environment } : safeData(data) };
       if (event === 'codex.version' && entry.data.codexVersion) environment.codexVersion = entry.data.codexVersion;
+      if (event === 'claude.version' && entry.data.claudeVersion) environment.claudeVersion = entry.data.claudeVersion;
       let line = `${JSON.stringify(entry)}\n`;
       let bytes = Buffer.byteLength(line);
       if (bytes > Math.min(MAX_LINE_BYTES, maxFileBytes)) { fail(); return; }

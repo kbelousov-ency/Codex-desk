@@ -152,6 +152,7 @@ React UI → window.codex (preload) → Electron IPC → CodexClient
 | `npm.cmd run build` | TypeScript без emit + production Vite bundle. |
 | `npm.cmd start` | Запуск текущего dist через Electron. |
 | `npm.cmd run check` | Типы, все Node-тесты и production bundle одной командой; останавливается на первой ошибке. |
+| `scripts/ui-scenarios.mjs` | 2026-09-19 исправлено устаревшее ожидание `+const after = true;`: ReviewDiff рисует знак и код отдельными span, сценарий ищет строку `.diff-unified-row.add`. |
 | `npm.cmd run test:hosts [имена]` | Все host-сценарии `scripts/ui-*-host.mjs` по очереди с итоговой таблицей; без запросов модели. |
 | `npm.cmd test` | Node-тесты транспорта/host; без модели. |
 | `npm.cmd run smoke` | Настоящий App Server, чтение моделей/конфига/истории, без turn. |

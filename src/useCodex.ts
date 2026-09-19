@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Access, AgentProvider, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork } from './types';
+import type { Access, AgentProvider, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources } from './types';
 import { agentName } from './AgentContext';
 import { mergeHistoricalTurnWork, observeTurnWork } from './turn-work';
 import { historicalCacheActivity, responseTime } from './cache-history';
@@ -61,6 +61,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [account, setAccount] = useState<any>(null);
   const [config, setConfig] = useState<any>(null);
   const [executable, setExecutable] = useState('');
+  const [cliVersion, setCliVersion] = useState('');
+  const [sources, setSources] = useState<SettingSources>({ model: 'default', effort: 'default', access: 'default' });
   const [history, setHistory] = useState<Thread[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -299,6 +301,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       cwdRef.current = result.cwd; setCwd(result.cwd);
       const visibleModels = (Array.isArray(result.models) ? result.models : (result.models as any)?.data || []).filter((m: Model) => !m.hidden);
       setModels(visibleModels); setConfig(effective); setExecutable(result.executable);
+      setCliVersion(typeof result.cliVersion === 'string' ? result.cliVersion : '');
       setAccount(result.account?.account ?? result.account);
       const restored = restoreSettingsRef.current;
       setModel(restored?.model ?? (saved.model || effective.model || visibleModels.find((m: Model) => m.isDefault)?.model || ''));
@@ -306,6 +309,11 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       // New sessions start with manual approvals. Preserve explicit legacy modes;
       // remembered full access still requires selection and confirmation here.
       setAccess(restored?.access ?? (saved.access === 'danger-full-access' ? 'workspace-write' : saved.access || 'workspace-write'));
+      setSources({
+        model: restored?.model ? 'tab' : saved.model ? 'saved' : effective.model ? 'cli' : 'default',
+        effort: restored?.effort ? 'tab' : saved.effort ? 'saved' : effective.model_reasoning_effort ? 'cli' : 'default',
+        access: restored?.access ? 'tab' : saved.access && saved.access !== 'danger-full-access' ? 'saved' : 'default',
+      });
       restoreSettingsRef.current = undefined;
       updateConnection('ready');
       if (options?.keepThread && threadRef.current) detachThread(); else clearThread();
@@ -554,16 +562,16 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     const selected = models.find(m => m.model === value);
     const nextEffort = selected?.supportedReasoningEfforts.some(e => e.reasoningEffort === effort) ? effort : selected?.defaultReasoningEffort || '';
     if (value !== model || nextEffort !== effort) invalidateCache();
-    setModel(value); setEffort(nextEffort); void saveSettings({ model: value, effort: nextEffort });
+    setModel(value); setEffort(nextEffort); setSources(previous => ({ ...previous, model: 'selected', effort: 'selected' })); void saveSettings({ model: value, effort: nextEffort });
   };
-  const selectEffort = (value: string) => { if (terminalRef.current) return; if (value !== effort) invalidateCache(); setEffort(value); void saveSettings({ effort: value }); };
+  const selectEffort = (value: string) => { if (terminalRef.current) return; if (value !== effort) invalidateCache(); setEffort(value); setSources(previous => ({ ...previous, effort: 'selected' })); void saveSettings({ effort: value }); };
   const selectAccess = (value: Access) => {
     if (terminalRef.current) return;
     if (value !== access) invalidateCache();
     if (value === 'inherited' && access !== 'inherited' && thread) {
       clearThread(); setNotice(`Открыт новый диалог: доступ будет взят из конфигурации ${agentName(providerRef.current)}. Предыдущий диалог сохранён в истории.`);
     }
-    setAccess(value); void saveSettings({ access: value });
+    setAccess(value); setSources(previous => ({ ...previous, access: 'selected' })); void saveSettings({ access: value });
   };
 
   const resume = async (selected: Thread, preserveSettings = false) => {
@@ -934,7 +942,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   };
 
   return {
-    connection, provider, capabilities, cwd, models, model, effort, access, account, config, executable, history, historyCursor, historyLoading,
+    connection, provider, capabilities, cwd, models, model, effort, access, account, config, executable, cliVersion, sources, history, historyCursor, historyLoading,
     thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, loading, error, notice,
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
     cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering,

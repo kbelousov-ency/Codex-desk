@@ -43,6 +43,13 @@ function asError(value) {
 }
 
 /** JSONL transport for the locally installed Codex app-server. */
+/** Codex CLI version from the App Server user agent, e.g. `codex_cli_rs/0.154.0`. */
+export function codexVersionFrom(userAgent) {
+  return typeof userAgent === 'string'
+    ? /(?:^|\s)codex(?:-cli|_cli_rs|_desk)\/(\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)(?:\.\d{1,4}){0,4})?)(?=\s|$|\()/.exec(userAgent)?.[1]
+    : undefined;
+}
+
 export class CodexClient extends EventEmitter {
   constructor({ executable = 'codex', cwd, spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics, diagnosticContext = {} } = {}) {
     super();
@@ -210,9 +217,7 @@ export class CodexClient extends EventEmitter {
       });
       await this._write(session, { method: 'initialized' });
       if (session.ended || this._session !== session) throw new Error('Codex startup was interrupted.');
-      const version = typeof result?.userAgent === 'string'
-        ? /(?:^|\s)codex(?:-cli|_cli_rs|_desk)\/(\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)(?:\.\d{1,4}){0,4})?)(?=\s|$|\()/.exec(result.userAgent)?.[1]
-        : undefined;
+      const version = codexVersionFrom(result?.userAgent);
       if (version) this._record('info', 'codex.version', { codexVersion: version });
       this._record('info', 'transport.ready');
       this._status('ready');
