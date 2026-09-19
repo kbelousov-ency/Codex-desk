@@ -247,6 +247,7 @@ export class ClaudeClient extends EventEmitter {
         if (this._thread || session.sent || session.resumed) await this._restart({ id: randomUUID(), ...this._launchSettings(params) });
         await this._configure(params);
         const now = Math.floor(Date.now() / 1000);
+        this._resetUsage();
         this._thread = { id: `claude:${this._session.id}`, provider: 'claude', cwd: this.cwd, createdAt: now, updatedAt: now,
           name: '', preview: '', historyMode: 'legacy', turns: [], status: { type: 'idle' } };
         this._notify('thread/started', { thread: this._thread });
@@ -260,7 +261,7 @@ export class ClaudeClient extends EventEmitter {
           if (loaded?.thread?.id !== params.threadId) throw new Error('История вернула другой диалог Claude.');
           if (loaded.thread.cwd && path.resolve(loaded.thread.cwd).toLowerCase() !== path.resolve(this.cwd).toLowerCase()) throw new Error('Диалог Claude находится в другой рабочей папке.');
           await this._restart({ id, resume: true, ...this._launchSettings(params) });
-          this._thread = loaded.thread;
+          this._thread = loaded.thread; this._resetUsage();
         }
         await this._configure(params);
         return this._threadResponse();
@@ -278,6 +279,31 @@ export class ClaudeClient extends EventEmitter {
       } catch (error) { this._finish('failed', error.message); throw error; }
       return { turn: { ...turn, items: [] } };
     } finally { this._mutation = false; }
+  }
+
+  /** Token accounting. `last` is the most recent model call (its input ≈ current context), `total` the CLI's running
+   * per-model totals for the whole session; between results the total is advanced call by call. */
+  _resetUsage() { this._usage = { total: null, contextWindow: null, seen: new Set() }; }
+  _addUsage(total, part) {
+    const keys = ['inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens', 'reasoningOutputTokens'];
+    const base = total || Object.fromEntries(keys.map(k => [k, k === 'reasoningOutputTokens' ? undefined : 0]));
+    return Object.fromEntries(keys.map(k => [k, base[k] === undefined || part[k] === undefined ? (k === 'reasoningOutputTokens' ? undefined : base[k]) : base[k] + part[k]]));
+  }
+  _emitUsage(last) {
+    if (!this._thread || !this._active) return;
+    this._usage ||= { total: null, contextWindow: null, seen: new Set() };
+    this._notify('thread/tokenUsage/updated', { threadId: this._thread.id, turnId: this._active.id,
+      tokenUsage: { last, total: this._usage.total || undefined, modelContextWindow: this._usage.contextWindow || undefined } });
+  }
+  /** One completed API call (assistant message with usage). Counted once per message id. */
+  _callUsage(messageId, usage) {
+    const a = this._active; if (!a || !usage || typeof usage !== 'object') return;
+    this._usage ||= { total: null, contextWindow: null, seen: new Set() };
+    const last = usageBreakdown(usage);
+    if (last.totalTokens === undefined) return;
+    a.lastCallUsage = last;
+    if (messageId && !this._usage.seen.has(messageId)) { this._usage.seen.add(messageId); this._usage.total = this._addUsage(this._usage.total, last); }
+    this._emitUsage(last);
   }
 
   /** Registers a new in-progress turn on the open thread and announces it. */
@@ -457,7 +483,19 @@ export class ClaudeClient extends EventEmitter {
   }
   _stream(session, event) {
     if (!event || !this._active) return;
-    if (event.type === 'message_start') { session.messageId = event.message?.id || randomUUID(); session.blocks.clear(); return; }
+    if (event.type === 'message_start') {
+      session.messageId = event.message?.id || randomUUID(); session.blocks.clear();
+      session.startUsage = event.message?.usage && typeof event.message.usage === 'object' ? event.message.usage : null;
+      return;
+    }
+    if (event.type === 'message_delta') {
+      if (event.usage && typeof event.usage === 'object' && session.startUsage) {
+        // Live estimate for the current call; the final assistant frame replaces it and is the one counted in totals.
+        const live = usageBreakdown({ ...session.startUsage, ...Object.fromEntries(Object.entries(event.usage).filter(([, v]) => Number.isSafeInteger(v))) });
+        if (live.totalTokens !== undefined && this._active) { this._active.lastCallUsage = live; this._emitUsage(live); }
+      }
+      return;
+    }
     if (event.type === 'content_block_start') {
       const b = event.content_block || {}, index = event.index;
       const id = b.type === 'tool_use' ? b.id : `${session.messageId}:${b.type}:${index}`;
@@ -488,6 +526,7 @@ export class ClaudeClient extends EventEmitter {
     const recordKey = frame.uuid || `${messageId}:${JSON.stringify(blocks)}`;
     if (a.completedMessages.has(recordKey)) return;
     a.completedMessages.add(recordKey);
+    if (m.usage && messageId) this._callUsage(messageId, m.usage);
     const hasTools = blocks.some(b => b.type === 'tool_use');
     if (hasTools) for (const item of a.items.values()) {
       if (item.type === 'agentMessage' && item.id.startsWith(`${messageId}:text:`) && item.phase !== 'commentary') this._item({ ...item, phase: 'commentary' }, true);
@@ -539,12 +578,18 @@ export class ClaudeClient extends EventEmitter {
     const pending = [...a.steers].filter(([id]) => consumed.size && !consumed.has(id));
     const followUp = pending.length && !a.interrupted && Number.isSafeInteger(frame.queued_turn_count) && frame.queued_turn_count > 0;
     for (const [id] of pending) a.items.delete(id);
+    this._usage ||= { total: null, contextWindow: null, seen: new Set() };
     const totals = Object.values(frame.modelUsage || {}).map(u => usageBreakdown(u, true));
-    let total;
-    if (totals.length) total = Object.fromEntries(['inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens', 'reasoningOutputTokens']
-      .map(k => [k, totals.every(t => t[k] !== undefined) ? totals.reduce((sum, t) => sum + t[k], 0) : undefined]));
-    this._notify('thread/tokenUsage/updated', { threadId: this._thread.id, turnId: a.id,
-      tokenUsage: { last: usageBreakdown(frame.usage), total, modelContextWindow: Object.values(frame.modelUsage || {}).find(u => u.contextWindow > 0)?.contextWindow } });
+    if (totals.length) {
+      // modelUsage is cumulative for the session (including resumed history); it supersedes the call-by-call sum.
+      this._usage.total = Object.fromEntries(['inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens', 'reasoningOutputTokens']
+        .map(k => [k, totals.every(t => t[k] !== undefined) ? totals.reduce((sum, t) => sum + t[k], 0) : undefined]));
+      const window = Object.values(frame.modelUsage).find(u => Number.isSafeInteger(u?.contextWindow) && u.contextWindow > 0)?.contextWindow;
+      if (window) this._usage.contextWindow = window;
+    }
+    // `frame.usage` sums the whole turn; the context proxy is the last call. Fall back only when no call reported usage.
+    const last = a.lastCallUsage || usageBreakdown(frame.usage);
+    if (last.totalTokens !== undefined || this._usage.total) this._emitUsage(last.totalTokens !== undefined ? last : {});
     if (a.latestText && !frame.is_error) {
       // The last text of the turn is the answer; earlier texts stay commentary in the work log.
       const last = a.items.get(a.latestText);

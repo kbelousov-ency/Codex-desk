@@ -55,6 +55,11 @@ try {
             patch('second-alpha', [{ path: `${cwd}/src/alpha.ts`.replaceAll('/', '\\'), kind: { type: 'update' }, diff: '@@ -11 +11 @@\n-second version\n+final version' }]),
             { id: 'answer-two', type: 'agentMessage', phase: 'final_answer', text: 'Второй набор правок готов.' },
           ] },
+          ...Array.from({ length: 24 }, (_, index) => ({
+            id: `history-${index + 1}`, status: 'completed', items: [user(`history-user-${index + 1}`, index === 23
+              ? `Пересмотри отображение длинного запроса, сохрани удобный поиск по всей переписке и перенос содержимого в узкой панели. ${'длинное_имя_без_пробелов_'.repeat(12)} маяк_дальнего_поиска`
+              : `Обсудим улучшение интерфейса ${index + 1}`)],
+          })),
         ] : [{ id: 'turn-other', status: 'completed', items: [user('other-user', 'Правка другого проекта'), patch('other-edit', [{ path: 'src/alpha.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-project b old\n+project b new' }])] }],
       };
       state.emit = (method, params = {}) => { for (const listener of state.listeners) listener({ type: 'notification', data: { method, params: { threadId: thread.id, ...params } } }); };
@@ -92,7 +97,18 @@ try {
   const panel = () => view().locator('.changes-panel');
   const groups = () => panel().locator('details.change-file');
   const group = path => groups().filter({ has: page.locator('.change-path').filter({ hasText: new RegExp(`^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) }) });
-  const filter = () => panel().getByRole('combobox', { name: 'Изменения по запросу', exact: true });
+  const filter = () => panel().getByRole('button', { name: 'Изменения по запросу', exact: true });
+  const picker = () => page.getByRole('dialog', { name: 'Выбор запроса', exact: true });
+  const turnSearch = () => picker().getByRole('combobox', { name: 'Найти запрос', exact: true });
+  const turnList = () => picker().getByRole('listbox', { name: 'Запросы', exact: true });
+  const turnOption = value => turnList().locator(`[role="option"][data-value="${value}"]`);
+  const chooseTurn = async value => {
+    await filter().click();
+    await picker().waitFor();
+    await turnOption(value).click();
+    await picker().waitFor({ state: 'hidden' });
+    assert.equal(await filter().getAttribute('data-value'), value);
+  };
   const search = () => panel().getByRole('textbox', { name: 'Найти изменённый файл', exact: true });
   const modal = () => page.getByRole('dialog', { name: 'Просмотр изменений', exact: true });
   const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -119,28 +135,67 @@ try {
   await ready();
   await view().getByText('Второй набор правок готов.', { exact: true }).waitFor();
   await showChanges();
-  assert.equal(await filter().inputValue(), 'all');
+  assert.equal(await filter().getAttribute('data-value'), 'all');
   assert.equal(await groups().count(), 7, 'Repeated edits share a canonical file group without losing legacy files');
   assert.equal(await view().locator('.panel-tabs .count-badge').innerText(), '7');
-  const options = await filter().locator('option').evaluateAll(nodes => nodes.map(node => ({ value: node.value, label: node.textContent })));
+  await filter().click();
+  const options = await turnList().getByRole('option').evaluateAll(nodes => nodes.map(node => ({ value: node.dataset.value, label: node.textContent })));
   assert.match(options.find(option => option.value === 'turn-one')?.label || '', /Обнови обработку файлов/);
   assert.match(options.find(option => option.value === 'turn-two')?.label || '', /Уточни сообщение/);
-  const unknownOption = options.find(option => !['all', 'turn-one', 'turn-two'].includes(option.value));
+  const unknownOption = options.find(option => option.value === 'unknown');
   assert.ok(unknownOption, 'Changes lacking a turn id remain selectable as an explicit unknown group');
+  assert.ok(options.findIndex(option => option.value === 'history-24') < options.findIndex(option => option.value === 'turn-two'), 'Recent requests appear before older requests');
+  assert.match(options.find(option => option.value === 'turn-one')?.label || '', /(?:Запрос\s*|№\s*)1\b/, 'Request numbers retain their conversation order');
+  assert.equal(await turnSearch().evaluate(node => node === document.activeElement), true, 'Opening the picker focuses its search field');
+
+  await turnSearch().fill('МАЯК_ДАЛЬНЕГО_ПОИСКА');
+  assert.equal(await turnOption('history-24').count(), 1, 'Turn search uses the full message, including text beyond the former 90-character cutoff');
+  assert.equal(await turnOption('turn-one').count(), 0, 'Turn search is case insensitive and excludes unrelated requests');
+  await turnSearch().fill('запроса_с_таким_текстом_нет');
+  assert.equal(await turnList().locator('[role="option"]').evaluateAll(nodes => nodes.filter(node => !['all', 'unknown'].includes(node.dataset.value)).length), 0);
+  assert.match(await picker().innerText(), /не найден|ничего не найден/i, 'Empty turn search explains the missing results');
+  assert.equal(await filter().getAttribute('data-value'), 'all', 'Searching does not silently change the active filter');
+  await turnSearch().press('Escape');
+  await picker().waitFor({ state: 'hidden' });
+  assert.equal(await filter().evaluate(node => node === document.activeElement), true, 'Escape returns focus to the trigger');
+
+  await filter().press('Enter');
+  await picker().waitFor();
+  assert.equal(await turnSearch().inputValue(), '', 'A reopened picker starts with the full request list');
+  for (let index = 0; index < 24; index++) await turnSearch().press('ArrowDown');
+  const keyboardSelection = await turnSearch().evaluate(node => {
+    const option = document.getElementById(node.getAttribute('aria-activedescendant'));
+    const list = option?.closest('[role="listbox"]');
+    if (!option || !list) return null;
+    const item = option.getBoundingClientRect(), bounds = list.getBoundingClientRect();
+    return { value: option.dataset.value, top: item.top, bottom: item.bottom, listTop: bounds.top, listBottom: bounds.bottom };
+  });
+  assert.ok(keyboardSelection && keyboardSelection.value !== 'all', 'Arrow navigation exposes the active option to assistive technology');
+  assert.ok(keyboardSelection.top >= keyboardSelection.listTop - 1 && keyboardSelection.bottom <= keyboardSelection.listBottom + 1, 'Keyboard navigation scrolls a long request list to keep the active option visible');
+  await turnSearch().press('Enter');
+  await picker().waitFor({ state: 'hidden' });
+  assert.equal(await filter().getAttribute('data-value'), keyboardSelection.value, 'Enter applies the highlighted request');
+  await chooseTurn('all');
+
+  await filter().click();
+  const composer = view().locator('.composer textarea');
+  await composer.click();
+  await picker().waitFor({ state: 'hidden' });
+  assert.equal(await composer.evaluate(node => node === document.activeElement), true, 'Clicking outside closes the picker without stealing focus');
 
   await expand('src/alpha.ts');
   assert.equal(await group('src/alpha.ts').locator('.change-patch').count(), 2);
   assert.match(await group('src/alpha.ts').innerText(), /second version/);
   assert.match(await group('src/alpha.ts').innerText(), /final version/);
-  await filter().selectOption('turn-two');
+  await chooseTurn('turn-two');
   assert.equal(await groups().count(), 1);
   await expand('src/alpha.ts');
   assert.equal(await group('src/alpha.ts').locator('.change-patch').count(), 1, 'Turn filter selects patches as well as file cards');
   assert.match(await group('src/alpha.ts').innerText(), /final version/);
   assert.doesNotMatch(await group('src/alpha.ts').innerText(), /first version|old footer/);
-  await filter().selectOption(unknownOption.value);
+  await chooseTurn(unknownOption.value);
   assert.deepEqual(await groups().locator('.change-path').allTextContents(), ['src/unknown.txt']);
-  await filter().selectOption('turn-one');
+  await chooseTurn('turn-one');
   assert.equal(await groups().count(), 6);
   await search().fill('ALPHA');
   assert.deepEqual(await groups().locator('.change-path').allTextContents(), ['src/alpha.ts'], 'File search is case insensitive');
@@ -232,7 +287,17 @@ try {
   await page.locator('.session-tab[data-session-id="a"]').getByRole('tab').click();
   await ready();
   assert.equal(await modal().count(), 0, 'A dismissed inactive review does not reappear after returning');
-  assert.equal(await filter().inputValue(), 'turn-one', 'Returning keeps the selected turn');
+  assert.equal(await filter().getAttribute('data-value'), 'turn-one', 'Returning keeps the selected turn');
+
+  await filter().click();
+  await picker().waitFor();
+  await page.evaluate(() => { for (const listener of window.__diffReview.activationListeners) listener({ sessionId: 'b' }); });
+  await page.locator('.session-view[data-session-id="b"]:visible').waitFor();
+  await picker().waitFor({ state: 'hidden' });
+  await page.locator('.session-tab[data-session-id="a"]').getByRole('tab').click();
+  await ready();
+  assert.equal(await picker().count(), 0, 'An inactive request picker does not reappear when returning to the session');
+  assert.equal(await filter().getAttribute('data-value'), 'turn-one', 'Dismissing a picker preserves the selected request');
 
   for (const width of [1440, 940]) {
     await page.setViewportSize({ width, height: width === 1440 ? 900 : 640 });
@@ -240,6 +305,27 @@ try {
     if (await view().locator('.app-shell').evaluate(node => node.classList.contains('panel-hidden'))) {
       await view().getByRole('button', { name: 'Переключить панель действий', exact: true }).click();
     }
+    await filter().click();
+    await picker().waitFor();
+    const pickerBounds = await picker().evaluate(node => {
+      const r = node.getBoundingClientRect();
+      const list = node.querySelector('[role="listbox"]');
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, width: innerWidth, height: innerHeight,
+        client: node.clientWidth, scroll: node.scrollWidth, listClient: list.clientHeight, listScroll: list.scrollHeight };
+    });
+    assert.ok(pickerBounds.left >= 0 && pickerBounds.top >= 0 && pickerBounds.right <= pickerBounds.width + 1 && pickerBounds.bottom <= pickerBounds.height + 1, `Request picker fits ${width}px viewport`);
+    assert.ok(pickerBounds.scroll <= pickerBounds.client + 1, 'Long request text does not add horizontal scrolling to the picker');
+    assert.ok(pickerBounds.listScroll > pickerBounds.listClient, 'A long request history scrolls inside its bounded list');
+    await turnSearch().fill('маяк_дальнего_поиска');
+    await settle();
+    assert.equal(await turnOption('history-24').isVisible(), true);
+    const longBounds = await turnOption('history-24').evaluate(node => ({ width: node.clientWidth, scroll: node.scrollWidth }));
+    assert.ok(longBounds.scroll <= longBounds.width + 1, `A long unbroken request title fits its option at ${width}px`);
+    await turnSearch().fill('');
+    await settle();
+    await page.screenshot({ path: `artifacts/change-turn-picker-${width}.png` });
+    await turnSearch().press('Escape');
+    await picker().waitFor({ state: 'hidden' });
     await expand('src/alpha.ts');
     const overflow = await group('src/alpha.ts').evaluate(node => ({
       width: node.clientWidth, scroll: node.scrollWidth,
@@ -282,13 +368,13 @@ try {
   await emit('turn/completed', { turn: { id: 'live-two', status: 'completed', error: null } });
   await ready();
   await emit('turn/diff/updated', { turnId: 'live-one', diff: summaryLate });
-  await filter().selectOption('all');
+  await chooseTurn('all');
   const summary = () => panel().locator('.change-turn-diff');
   await summary().waitFor();
   if (await summary().getAttribute('open') === null) await summary().locator('summary').click();
   assert.match(await summary().innerText(), /summary second/);
   assert.doesNotMatch(await summary().innerText(), /summary first/, 'A delayed older summary does not replace the latest turn');
-  await filter().selectOption('live-one');
+  await chooseTurn('live-one');
   assert.equal(await groups().count(), 0, 'Summary-only turns do not invent file cards');
   assert.match(await summary().innerText(), /summary first final/);
   assert.doesNotMatch(await summary().innerText(), /summary second/);
@@ -297,12 +383,12 @@ try {
   assert.match(await modal().innerText(), /summary first final/);
   assert.equal(await modal().getByRole('button', { name: 'Открыть файл', exact: true }).count(), 0, 'A summary without a file path cannot open an invented target');
   await closeReview();
-  await filter().selectOption('live-two');
+  await chooseTurn('live-two');
   assert.match(await summary().innerText(), /summary second/);
 
   assert.deepEqual(errors, []);
   assert.equal(await page.evaluate(() => window.__diffReview.requests.filter(call => /^(turn\/start|thread\/start)$/.test(call.method)).length), 0, 'Reviewing history never starts a model request');
-  console.log('PASS: production diff review, two turns and legacy unknown group, canonical repeated files, scoped turn/file filters, empty search, add/delete/rename/binary/raw, split/unified line numbers and fragment navigation, scoped opens and failure recovery, inactive modal dismissal, resize and 1440/940 layout, live per-turn summaries and delayed older updates. Deterministic bridges; no real model requests.');
+  console.log('PASS: production diff review, searchable request picker with full-text search, keyboard selection, Escape/focus and outside dismissal, long history and titles, 1440/940 picker layout, legacy unknown group, canonical repeated files, scoped turn/file filters, empty search, add/delete/rename/binary/raw, split/unified line numbers and fragment navigation, scoped opens and failure recovery, inactive modal/picker dismissal, resize and 1440/940 layout, live per-turn summaries and delayed older updates. Deterministic bridges; no real model requests.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/diff-review-failure.png' }); console.error(await page.locator('body').innerText()); }
   throw error;

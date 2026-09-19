@@ -10,6 +10,7 @@ import './changes.css';
 import { DiffReview, ReviewDiff } from './DiffReview';
 import type { ReviewSelection } from './DiffReview';
 import GitPanel from './GitPanel';
+import ChangeTurnPicker from './ChangeTurnPicker';
 
 export function Diff({ text }: { text: string }) {
   return <pre className="diff-code" tabIndex={0} aria-label="Добавленные и удалённые строки">{diffLines(text).map(({ line, kind, label }, index) => <span key={index} className={`diff-line diff-${kind}`} title={label ? line : undefined}>{label || line || ' '}{'\n'}</span>)}</pre>;
@@ -103,12 +104,12 @@ export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}
       if (!ordered.has(item.turnId)) ordered.set(item.turnId, '');
       if (item.type === 'userMessage' && !ordered.get(item.turnId)) {
         const text = (item.content || []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join(' ').trim();
-        ordered.set(item.turnId, text.replace(/\s+/g, ' ').slice(0, 90));
+        ordered.set(item.turnId, text.replace(/\s+/g, ' '));
       }
     }
     for (const id of Object.keys(turnDiffs)) if (!ordered.has(id)) ordered.set(id, '');
     if (diffTurnId && !ordered.has(diffTurnId)) ordered.set(diffTurnId, '');
-    return [...ordered].map(([id, text], index) => ({ id, label: `Запрос ${index + 1}${text ? ` · ${text}` : ''}` }));
+    return [...ordered].map(([id, text], index) => ({ id, number: index + 1, text }));
   }, [items, turnDiffs, diffTurnId]);
   const unknown = items.some(item => item.type === 'fileChange' && !item.turnId);
   const selectedItems = turn === 'all' ? items : items.filter(item => turn === 'unknown' ? !item.turnId : item.turnId === turn);
@@ -133,7 +134,7 @@ export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}
     {source === 'git' ? <GitPanel cwd={cwd} active={active} refreshKey={`${busy}:${items.filter(item => item.type === 'fileChange').map(item => `${item.id}:${item.status}:${item.complete}`).join('|')}`} onReviewChange={onReviewChange} mutationsAllowed={mutationsAllowed} /> : <>
     {error && <div className="link-error" role="alert"><span>{error}</span><button aria-label="Скрыть ошибку открытия файла" onClick={() => setError('')}>×</button></div>}
     {(allFiles.length > 0 || diff || Object.keys(turnDiffs).length > 0) && <div className="changes-filters">
-      <label>Показать изменения<select aria-label="Изменения по запросу" value={turn} onChange={event => { setTurn(event.target.value); setReview(null); }}><option value="all">Вся загруженная беседа</option>{turns.map(value => <option key={value.id} value={value.id}>{value.label}</option>)}{unknown && <option value="unknown">Без привязки к запросу</option>}</select></label>
+      <ChangeTurnPicker value={turn} turns={turns} unknown={unknown} active={active} onChange={value => { setTurn(value); setReview(null); }} />
       <input aria-label="Найти изменённый файл" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />
     </div>}
     {hasEarlier && <button type="button" className="text-button" disabled={loading} onClick={onLoadEarlier}>{loading ? 'Загружаем…' : 'Загрузить более ранние правки'}</button>}

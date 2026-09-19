@@ -418,3 +418,34 @@ test('usage/read normalizes plan windows, treats API-key accounts and old CLIs a
   assert.equal(unavailable.available, false); assert.match(unavailable.message, /не сообщил лимиты/);
   assert.equal(old.client.state, 'ready', 'an unsupported control request never ends the session');
 });
+
+test('token usage is reported per model call: live from stream usage, counted once per message, last call is the context proxy, totals from cumulative modelUsage', async t => {
+  const h = await running(t);
+  const sid = h.thread.id.slice(7);
+  const usageEvents = () => h.events.filter(e => e.method === 'thread/tokenUsage/updated').map(e => e.params.tokenUsage);
+  h.child.send({ type: 'stream_event', session_id: sid, event: { type: 'message_start', message: { id: 'm1', usage: { input_tokens: 100, cache_read_input_tokens: 4000, cache_creation_input_tokens: 500, output_tokens: 1 } } } });
+  h.child.send({ type: 'stream_event', session_id: sid, event: { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 40 } } });
+  let usage = usageEvents();
+  assert.equal(usage.length, 1, 'message_delta yields a live estimate');
+  assert.equal(usage[0].last.inputTokens, 4600); assert.equal(usage[0].last.cachedInputTokens, 4000); assert.equal(usage[0].last.outputTokens, 40); assert.equal(usage[0].total, undefined);
+  h.child.send({ type: 'assistant', uuid: 'a1', session_id: sid, message: { id: 'm1', role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }], usage: { input_tokens: 100, cache_read_input_tokens: 4000, cache_creation_input_tokens: 500, output_tokens: 42 } } });
+  h.child.send({ type: 'assistant', uuid: 'a1b', session_id: sid, message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'читаю' }], usage: { input_tokens: 100, cache_read_input_tokens: 4000, cache_creation_input_tokens: 500, output_tokens: 42 } } });
+  usage = usageEvents();
+  assert.equal(usage.at(-1).last.outputTokens, 42);
+  assert.equal(usage.at(-1).total.totalTokens, 4642, 'sibling records with one message id are counted once');
+  h.child.send({ type: 'assistant', uuid: 'a2', session_id: sid, message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'Готово' }], usage: { input_tokens: 50, cache_read_input_tokens: 4700, cache_creation_input_tokens: 0, output_tokens: 10 } } });
+  usage = usageEvents();
+  assert.equal(usage.at(-1).last.inputTokens, 4750, 'last reflects the latest call, the context proxy');
+  assert.equal(usage.at(-1).total.totalTokens, 4642 + 4760);
+  h.child.send(result(h.turn.id, { usage: { input_tokens: 150, cache_read_input_tokens: 8700, cache_creation_input_tokens: 500, output_tokens: 52 }, modelUsage: { 'claude-x': { inputTokens: 150, cacheReadInputTokens: 8700, cacheCreationInputTokens: 500, outputTokens: 52, contextWindow: 200000 } } }));
+  const final = usageEvents().at(-1);
+  assert.equal(final.last.inputTokens, 4750, 'result does not replace last with the whole-turn sum');
+  assert.equal(final.total.totalTokens, 9402, 'result totals come from cumulative modelUsage');
+  assert.equal(final.modelContextWindow, 200000);
+  const turn2 = (await h.client.request('turn/start', { threadId: h.thread.id, input: [{ type: 'text', text: 'ещё' }] })).turn;
+  h.child.send({ type: 'assistant', uuid: 'a3', session_id: sid, message: { id: 'm3', role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 10, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0, output_tokens: 5 } } });
+  const next = h.events.filter(e => e.method === 'thread/tokenUsage/updated').at(-1).params;
+  assert.equal(next.turnId, turn2.id);
+  assert.equal(next.tokenUsage.total.totalTokens, 9402 + 9015); assert.equal(next.tokenUsage.modelContextWindow, 200000); assert.equal(next.tokenUsage.last.inputTokens, 9010);
+  h.child.send(result(turn2.id));
+});

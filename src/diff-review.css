@@ -1,6 +1,5 @@
 .changes-filters{display:flex;flex-direction:column;gap:9px;margin-bottom:14px}
-.changes-filters label{display:flex;flex-direction:column;gap:6px;color:#95ac9d;font-size:10px}
-.changes-filters select,.changes-filters input{width:100%;min-width:0;padding:8px 9px;background:#131b16;border:1px solid #3b4d40;border-radius:6px;color:#c8d9cf;font-family:inherit;font-size:11px}
+.changes-filters>input{width:100%;min-width:0;padding:9px 11px;background:#171d1a;border:1px solid #36463c;border-radius:7px;color:#c8d9cf;font-family:inherit;font-size:11px}
 .changes-filter-empty{font-size:12px;color:#92a99b;line-height:1.8}
 .change-file-toolbar{flex-wrap:wrap}
 .change-file-toolbar .expand-diff{margin-left:auto;display:flex;align-items:center;gap:5px}
