@@ -9,6 +9,10 @@ import './token-usage.css';
 const format = (value: number | null) => value === null ? 'Нет данных' : value.toLocaleString('ru');
 const percent = (value: number | null) => value === null ? 'Нет данных' : `${value.toLocaleString('ru', { maximumFractionDigits: 1 })}%`;
 
+/** Share of the context window above which the trigger and the panel warn about plan usage. */
+export const CONTEXT_WARN_PERCENT = 60;
+export const CONTEXT_CRITICAL_PERCENT = 85;
+
 export default function TokenUsage({ tokens, active = true, sessionKey, openSignal = 0, canCompact = false, compactSupported = true, compacting = false, onCompact }: { tokens: unknown; active?: boolean; sessionKey: string; openSignal?: number; canCompact?: boolean; compactSupported?: boolean; compacting?: boolean; onCompact?(): void }) {
   const engineName = useAgentName();
   const metrics = useMemo(() => getTokenMetrics(tokens), [tokens]);
@@ -75,10 +79,13 @@ export default function TokenUsage({ tokens, active = true, sessionKey, openSign
     return () => { window.removeEventListener('resize', place); document.removeEventListener('scroll', onScroll, true); };
   }, [visible, metrics]);
 
+  // Every request resends the whole context, so a full window is the main driver of plan usage.
+  const contextShare = metrics.lastInputContextPercent;
+  const contextLevel = contextShare === null ? null : contextShare >= CONTEXT_CRITICAL_PERCENT ? 'critical' : contextShare >= CONTEXT_WARN_PERCENT ? 'warn' : null;
   return <>
-    <button ref={trigger} type="button" className={`token-usage token-usage-trigger ${pinned ? 'pinned' : ''}`} aria-label="Подробности токенов" aria-haspopup="dialog" aria-expanded={visible} aria-pressed={pinned} aria-controls={visible ? id : undefined}
+    <button ref={trigger} type="button" data-context-level={contextLevel ?? undefined} className={`token-usage token-usage-trigger ${pinned ? 'pinned' : ''} ${contextLevel ? `context-${contextLevel}` : ''}`} aria-label="Подробности токенов" aria-haspopup="dialog" aria-expanded={visible} aria-pressed={pinned} aria-controls={visible ? id : undefined}
       onPointerEnter={show} onPointerLeave={scheduleClose} onFocus={() => { if (!suppressFocus.current) show(); }} onBlur={event => { if (!panel.current?.contains(event.relatedTarget as Node | null)) scheduleClose(); }} onClick={togglePin}>
-      {metrics.last.totalTokens === null ? 'Токены: нет данных' : `${format(metrics.last.totalTokens)} токенов`}{pinned && <Pin size={10} />}
+      {metrics.last.totalTokens === null ? 'Токены: нет данных' : `${format(metrics.last.totalTokens)} токенов`}{contextLevel && <span className="token-context-badge" data-level={contextLevel}>{Math.round(contextShare!)} % окна</span>}{pinned && <Pin size={10} />}
     </button>
     {visible && createPortal(<div ref={panel} id={id} role="dialog" aria-label="Использование токенов" className="token-details" style={position} onPointerEnter={cancelClose} onPointerLeave={scheduleClose} onBlur={event => {
       if (!event.currentTarget.contains(event.relatedTarget as Node | null) && event.relatedTarget !== trigger.current) scheduleClose();
@@ -90,7 +97,7 @@ export default function TokenUsage({ tokens, active = true, sessionKey, openSign
       </section>
       <section className="token-details-section"><UsageBreakdown title="За весь диалог" name="total" data={metrics.total} /><p className="token-details-note">Накопленные расходы: один и тот же контекст может учитываться повторно в нескольких запросах.</p></section>
       <section className="token-details-section" data-token-section="cache"><h3>Что входит в кэш</h3><p>«Из кэша» — входные токены повторно использованного префикса запроса. «Запись кэша» — токены, для которых провайдер сообщил создание новой записи. Это счётчики запросов, а не размер всего сохранённого кэша.</p><p>В префикс могут входить инструкции, история диалога и описания инструментов. <b>Разбивку по файлам, сообщениям, изображениям и инструкциям {engineName} не передаёт.</b> Определить их доли по этим данным нельзя.</p><p>Кэш сокращает повторную обработку входа; токены из кэша всё равно входят в запрос и занимают контекст.</p></section>
-      <section className="token-details-section" data-token-section="context"><h3>Контекст модели</h3><dl><Metric name="Окно контекста" value={metrics.modelContextWindow} field="window" /><div className="token-metric" data-token-field="context-share"><dt>Вход последнего запроса / окно</dt><dd>{percent(metrics.lastInputContextPercent)}</dd></div></dl><p className="token-details-note">Сопоставление последнего входа с лимитом модели. Оно не учитывает последующие изменения диалога.</p></section>
+      <section className="token-details-section" data-token-section="context"><h3>Контекст модели</h3><dl><Metric name="Окно контекста" value={metrics.modelContextWindow} field="window" /><div className="token-metric" data-token-field="context-share"><dt>Вход последнего запроса / окно</dt><dd>{percent(metrics.lastInputContextPercent)}</dd></div></dl><p className="token-details-note">Сопоставление последнего входа с лимитом модели. Оно не учитывает последующие изменения диалога.</p>{contextLevel && <p className={`token-context-warning ${contextLevel}`} role="status" data-token-warning={contextLevel}>Контекст заполнен на {Math.round(contextShare!)} %. Каждый запрос отправляет весь контекст заново, поэтому расход лимита растёт с каждым сообщением{contextLevel === 'critical' ? ', а место для ответа сокращается' : ''}. Сожмите контекст или начните новый диалог для новой темы.</p>}</section>
       <section className="token-details-section"><button type="button" className="secondary-button token-compact-action" aria-label="Сжать контекст" title={!compactSupported ? `Сжатие ${engineName} из приложения пока недоступно` : undefined} disabled={!compactSupported || !canCompact || compacting} onClick={() => { cancelClose(); pinRef.current = true; setPinned(true); onCompact?.(); }}>{compacting ? <LoaderCircle size={14} className="spin" /> : <Minimize2 size={14} />}{compacting ? 'Сжимаем контекст…' : 'Сжать контекст'}<code>/compact</code></button></section>
     </div>, document.body)}
   </>;

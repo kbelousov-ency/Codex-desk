@@ -202,6 +202,22 @@ try {
   await usage('session-1', { last: { inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 }, total: { totalTokens: 0 }, modelContextWindow: null });
   assert.equal(normal(await trigger().innerText()), '0 токенов', 'Zero is measured data, not missing data');
   await hover(); text = await popupText(); assert.doesNotMatch(text, /NaN|Infinity|undefined|−0/); await close();
+  // Context-window warnings: badge on the trigger and a note in the panel, driven only by reported numbers.
+  await usage('session-1', { last: { inputTokens: 150000, cachedInputTokens: 140000, outputTokens: 500, totalTokens: 150500 }, total: { totalTokens: 900000 }, modelContextWindow: 200000 });
+  assert.equal(await trigger().getAttribute('data-context-level'), 'warn');
+  assert.equal(normal(await trigger().locator('.token-context-badge').innerText()), '75 % окна');
+  await hover();
+  assert.match(await popupText(), /Контекст заполнен на 75 %/);
+  assert.equal(await popup().locator('[data-token-warning="warn"]').count(), 1);
+  await away(); await popup().waitFor({ state: 'hidden' });
+  await usage('session-1', { last: { inputTokens: 180000, cachedInputTokens: 170000, outputTokens: 500, totalTokens: 180500 }, total: { totalTokens: 1100000 }, modelContextWindow: 200000 });
+  assert.equal(await trigger().getAttribute('data-context-level'), 'critical');
+  await hover();
+  assert.match(await popupText(), /место для ответа сокращается/);
+  await away(); await popup().waitFor({ state: 'hidden' });
+  await usage('session-1', { last: { inputTokens: 20000, cachedInputTokens: 0, outputTokens: 100, totalTokens: 20100 }, total: { totalTokens: 1120100 }, modelContextWindow: 200000 });
+  assert.equal(await trigger().getAttribute('data-context-level'), null, 'Below the threshold nothing is highlighted');
+  assert.equal(await trigger().locator('.token-context-badge').count(), 0);
   await usage('session-1', { last: { totalTokens: 14, inputTokens: 10 }, total: null, modelContextWindow: null });
   await hover(); text = await popupText(); assert.match(text, /14/); assert.match(text, /нет данных|не (?:переда|сообщ)|—/i); assert.doesNotMatch(text, /NaN|Infinity|undefined/); await close();
   await usage('session-1', { last: { inputTokens: 10, cachedInputTokens: 90, cacheWriteInputTokens: 200, outputTokens: 2, reasoningOutputTokens: 5, totalTokens: 12 }, total: {}, modelContextWindow: 0 });
