@@ -11,6 +11,7 @@ import { listProjectThreads } from './project-history.mjs';
 import { listProjectFiles } from './project-files.mjs';
 import { getGitStatus, getGitDiff } from './git-reader.mjs';
 import { GitRollbackService } from './git-rollback.mjs';
+import { createWorktree } from './git-worktree.mjs';
 import { prepareComposerFiles } from './composer-files.mjs';
 import { ClaudeHistory } from './claude-history.mjs';
 import { ClaudeThreadManagement } from './claude-threads.mjs';
@@ -496,7 +497,7 @@ function installHandlers() {
     const next = a.nextCursor || b.nextCursor ? `desk:${Buffer.from(JSON.stringify({ cwd, codex: a.nextCursor || null, claude: b.nextCursor || null })).toString('base64url')}` : null;
     return { data: [...a.data, ...b.data].sort((x, y) => (y.updatedAt || 0) - (x.updatedAt || 0)), nextCursor: next };
   });
-  workspaceHandle('host:createSession', async (record, event, options = {}) => {
+  const createSessionFor = async (record, event, options = {}) => {
     if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Некорректные параметры сессии.');
     const sourceId = options.fromSessionId ?? record.defaultSessionId;
     const source = sourceId == null ? null : sessionForEvent(windows, event, sourceId).session;
@@ -526,6 +527,22 @@ function installHandlers() {
     windowForEvent(windows, event);
     source?.assertActive();
     return addSession(record, { ...settings, cwd });
+  };
+  workspaceHandle('host:createSession', createSessionFor);
+  // Isolated task: a sibling Git worktree on its own branch, opened as a new tab and project folder.
+  workspaceHandle('host:createWorktreeSession', async (record, event, options = {}) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Некорректные параметры задачи.');
+    const sourceId = options.fromSessionId ?? record.defaultSessionId;
+    const source = sourceId == null ? null : sessionForEvent(windows, event, sourceId).session;
+    source?.assertLocalControl();
+    // The project folder comes from the menu; the source session only seeds settings.
+    const cwd = typeof options.cwd === 'string' && options.cwd ? options.cwd : source?.currentCwd;
+    if (!cwd || !path.isAbsolute(cwd) || cwd.length >= 4096) throw new Error('Сначала выберите рабочую папку.');
+    const assertActive = () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); source?.assertActive(); };
+    const worktree = await createWorktree({ cwd, name: options.name, assertActive });
+    assertActive();
+    const created = await createSessionFor(record, event, { ...(sourceId == null ? {} : { fromSessionId: sourceId }), cwd: worktree.path, ...(options.provider ? { provider: options.provider } : {}) });
+    return created ? { ...created, worktree } : null;
   });
   workspaceHandle('host:closeSession', (record, event, id) => {
     if (typeof id !== 'string' || !id) throw new Error('Некорректная сессия.');

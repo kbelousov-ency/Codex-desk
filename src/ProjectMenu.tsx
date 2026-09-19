@@ -1,10 +1,10 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { EllipsisVertical, FolderMinus } from 'lucide-react';
+import { EllipsisVertical, FolderMinus, GitBranchPlus } from 'lucide-react';
 import './project-menu.css';
 
-export default function ProjectMenu({ name, active, disabled, onClose, children }: {
-  name: string; active: boolean; disabled: boolean; onClose(): void; children: ReactNode;
+export default function ProjectMenu({ name, active, disabled, onClose, onWorktree, children }: {
+  name: string; active: boolean; disabled: boolean; onClose(): void; onWorktree?(): void; children: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties>({ visibility: 'hidden' });
@@ -60,6 +60,7 @@ export default function ProjectMenu({ name, active, disabled, onClose, children 
     {visible && createPortal(<div ref={menu} id={id} className="thread-action-menu project-action-menu" role="menu" aria-label={`Действия проекта ${name}`} style={position} onBlur={event => {
       if (!event.currentTarget.contains(event.relatedTarget as Node | null) && !row.current?.contains(event.relatedTarget as Node | null)) close();
     }} onKeyDown={event => { if (event.key === 'Tab') { event.preventDefault(); close(true); } }}>
+      {onWorktree && <button type="button" role="menuitem" onClick={() => { close(true); onWorktree(); }}><GitBranchPlus size={14} /><span>Новая задача в отдельной ветке…</span></button>}
       <button type="button" role="menuitem" onClick={() => { close(true); onClose(); }}><FolderMinus size={14} /><span>Закрыть проект</span></button>
     </div>, document.body)}
   </div>;

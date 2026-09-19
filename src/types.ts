@@ -26,6 +26,7 @@ export type Request = { id: number | string; method: string; params: any };
 export type Model = { id: string; model: string; displayName: string; hidden?: boolean; isDefault?: boolean; defaultReasoningEffort: string; supportedReasoningEfforts: { reasoningEffort: string; description: string }[]; inputModalities?: string[] };
 
 export type SessionInfo = { id: string; cwd: string; provider?: AgentProvider };
+export type WorktreeInfo = { path: string; branch: string; created: boolean; root: string };
 export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
 export type UpdateSnapshot = { version: 1; activeIndex: number; tabs: UpdateTabSnapshot[] };
 export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
@@ -119,6 +120,7 @@ export interface WorkspaceBridge extends CodexBridge {
   openArchivedPath(options: { threadId: string; target: string; menu?: boolean }): Promise<void>;
   manageThread(options: { action: ThreadAction; threadId: string; cwd: string; name?: string }): Promise<{ thread?: Thread; affectedThreadIds?: string[] }>;
   createSession(options?: { cwd?: string; fromSessionId?: string; settings?: Settings; provider?: AgentProvider }): Promise<SessionInfo | null>;
+  createWorktreeSession?(options: { cwd: string; fromSessionId?: string; name: string; provider?: AgentProvider }): Promise<(SessionInfo & { worktree: WorktreeInfo }) | null>;
   closeSession(id: string): Promise<void>;
   closeProject(cwd: string, options?: { force?: boolean }): Promise<{ projects: string[]; closedSessionIds: string[] }>;
   forSession(id: string): CodexBridge;

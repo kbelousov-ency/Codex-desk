@@ -56,6 +56,9 @@ function TabbedWorkspace() {
   const [searchRevision, setSearchRevision] = useState(0);
   const [actionDialog, setActionDialog] = useState<{ action: 'rename' | 'delete'; cwd: string; thread: Thread } | null>(null);
   const [newName, setNewName] = useState('');
+  const [worktreeDialog, setWorktreeDialog] = useState<{ cwd: string } | null>(null);
+  const [worktreeName, setWorktreeName] = useState('');
+  const [worktreeNotice, setWorktreeNotice] = useState('');
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [decidingUpdate, setDecidingUpdate] = useState(false);
   const [preparingUpdate, setPreparingUpdate] = useState(false);
@@ -402,6 +405,28 @@ function TabbedWorkspace() {
       if (created) await window.codex.closeSession(created.id).catch(() => {});
     } finally { pendingOpen.current = false; setOpening(false); }
   };
+  /** Creates a sibling Git worktree for `cwd` and opens it as a new tab and folder. */
+  const openWorktree = async (cwd: string, name: string) => {
+    if (pendingOpen.current) return;
+    if (!window.codex.createWorktreeSession) { setError('Изолированные задачи доступны после обновления приложения.'); return; }
+    // The folder is explicit; a tab of the same project (else any tab) only seeds model/effort/access.
+    const source = tabsRef.current.find(tab => tab.id === activeId && !tab.archivedThread && sameFolder(tab.cwd, cwd)) || tabsRef.current.find(tab => !tab.archivedThread && sameFolder(tab.cwd, cwd)) || tabsRef.current.find(tab => !tab.archivedThread);
+    pendingOpen.current = true; setOpening(true); setError('');
+    let created: (SessionInfo & { worktree: { path: string; branch: string; created: boolean } }) | null = null;
+    try {
+      created = await window.codex.createWorktreeSession({ cwd, ...(source ? { fromSessionId: source.id } : {}), name });
+      if (!created) return;
+      const tab: Tab = { ...created, bridge: window.codex.forSession(created.id) };
+      setTabs(previous => [...previous, tab]); setActiveId(tab.id);
+      setProjects(previous => previous.some(folder => sameFolder(folder, tab.cwd)) ? previous : [...previous, tab.cwd]);
+      setExpanded(previous => ({ ...previous, [projectKey(tab.cwd)]: true }));
+      setWorktreeDialog(null); setWorktreeName('');
+      setWorktreeNotice(`Задача «${created.worktree.branch}» открыта в отдельной рабочей копии: ${created.worktree.path}. Файлы основного проекта не затронуты; результат переносится через Git (merge/cherry-pick) в терминале.`);
+    } catch (e) {
+      setError(errorText(e));
+      if (created) await window.codex.closeSession(created.id).catch(() => {});
+    } finally { pendingOpen.current = false; setOpening(false); }
+  };
   const close = async (id: string) => {
     if (closing || actionPending.current) return;
     setClosing(true); setError('');
@@ -533,6 +558,7 @@ function TabbedWorkspace() {
     activeThreadId: summaries[activeId]?.threadId,
     addProject: () => void open(),
     closeProject: requestCloseProject,
+    newWorktree: (cwd: string) => { setError(''); setWorktreeName(''); setWorktreeDialog({ cwd }); },
     toggleProject: cwd => setExpanded(previous => ({ ...previous, [projectKey(cwd)]: !previous[projectKey(cwd)] })),
     refreshProject: (cwd, cursor) => void loadProjectHistory(cwd, cursor),
     newChat: (cwd: string, provider?: AgentProvider) => void open(cwd, undefined, provider), openThread: (cwd, thread) => void open(cwd, thread), report, registerUpdateCapture, onSessionStateChange, flushSessionState, onSessionAttention,
@@ -616,6 +642,14 @@ function TabbedWorkspace() {
       {error && <p className="thread-action-error" role="alert">{error}</p>}
       <div className="confirm-actions"><button type="button" className="secondary-button" disabled={actionBusy} onClick={() => setActionDialog(null)}>Отмена</button><button type="submit" className={actionDialog.action === 'delete' ? 'danger-button' : 'primary-button'} disabled={actionBusy || (actionDialog.action === 'rename' && !newName.trim())}>{actionBusy ? 'Выполняем…' : actionDialog.action === 'rename' ? 'Сохранить' : 'Удалить'}</button></div>
     </form></div>}
+    {worktreeDialog && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget && !opening) setWorktreeDialog(null); }}><form className="confirm-modal thread-action-modal" role="dialog" aria-modal="true" aria-label="Новая задача в отдельной ветке" onSubmit={event => { event.preventDefault(); void openWorktree(worktreeDialog.cwd, worktreeName.trim()); }}>
+      <h2>Новая задача в отдельной ветке</h2>
+      <p className="muted">Git создаст ветку и отдельную рабочую копию рядом с проектом: <code>{folderName(worktreeDialog.cwd)}.worktrees/…</code>. Диалог откроется в новой вкладке в этой копии, а файлы основной папки останутся без изменений.</p>
+      <label className="thread-name-label">Имя ветки и папки<input autoFocus aria-label="Имя задачи" value={worktreeName} maxLength={64} disabled={opening} placeholder="например, fix-login" onChange={event => setWorktreeName(event.target.value)} /></label>
+      {error && <p className="thread-action-error" role="alert">{error}</p>}
+      <div className="confirm-actions"><button type="button" className="secondary-button" disabled={opening} onClick={() => setWorktreeDialog(null)}>Отмена</button><button type="submit" className="primary-button" disabled={opening || !worktreeName.trim()}>{opening ? 'Создаём…' : 'Создать и открыть'}</button></div>
+    </form></div>}
+    {worktreeNotice && <div className="alert notice-alert workspace-notice" role="status"><span>{worktreeNotice}</span><button className="icon-button small" aria-label="Скрыть уведомление" title="Скрыть" onClick={() => setWorktreeNotice('')}><X size={14} /></button></div>}
     {preparingUpdate && <div className="nightly-update-overlay" role="dialog" aria-modal="true" aria-labelledby="nightly-update-title" tabIndex={-1}><section><LoaderCircle size={24} className="spin" /><h2 id="nightly-update-title">Nightly обновляется…</h2><p>Сохраняем вкладки и перезапускаем приложение.</p></section></div>}
     {showNotificationSettings && <NotificationSettings onClose={() => setShowNotificationSettings(false)} />}
     {showLibrary && <HistoryLibrary projects={projects} initialCwd={controls.activeCwd} onClose={() => setShowLibrary(false)} onOpen={(target: HistoryTarget) => {

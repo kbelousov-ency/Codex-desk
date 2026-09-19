@@ -79,6 +79,14 @@ try {
         return create(cwd, { ...sessions[options.fromSessionId]?.settings, ...options.settings });
       },
       async closeSession(id) { sessions[id].closed = true; sessions[id].listeners.clear(); },
+      async createWorktreeSession(options = {}) {
+        (fixture.worktrees ??= []).push(options);
+        if (fixture.failWorktree) { fixture.failWorktree = false; throw new Error('Ветка с таким именем уже занята другой рабочей копией.'); }
+        const source = sessions[options.fromSessionId];
+        const cwd = `${options.cwd}.worktrees/${options.name}`;
+        if (!projects.includes(cwd)) projects.push(cwd);
+        return { ...create(cwd, { ...source?.settings }), worktree: { path: cwd, branch: options.name, created: true, root: options.cwd } };
+      },
       async closeProject(cwd, options = {}) {
         fixture.closes.push({ cwd, options });
         if (fixture.failClose) { fixture.failClose = false; throw new Error('Ошибка закрытия проекта'); }
@@ -253,6 +261,7 @@ try {
   await projectMenu('PROJECT_C').click();
   await page.getByRole('menuitem', { name: 'Закрыть проект', exact: true }).waitFor();
   await page.keyboard.press('Escape');
+
   assert.equal(await projectMenu('PROJECT_C').getAttribute('aria-expanded'), 'false');
   await toggle('PROJECT_C').click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Закрыть проект', exact: true }).click();
@@ -311,7 +320,42 @@ try {
   await tree().getByText('Добавьте проект, чтобы открыть диалог.', { exact: true }).waitFor();
   await newProject().waitFor();
   assert.deepEqual(errors, []);
-  console.log('PASS: compact folder tree, isolated history/loading/errors/pagination, history reuse, new project and empty-folder chat, inline cache at 1440/940px; project menu/keyboard/context menu, immediate and confirmed close, cancel with draft/running task, close failure recovery, archived views close, other project isolation, history returns after adding, empty workspace. Fake bridges and token events only; no real model request.');
+  // Isolated task: dialog, host error surfaced in place, then a new tab in the sibling worktree folder.
+  await page.evaluate(() => { window.__tree.nextFolder = 'C:/Fixtures/PROJECT_A'; });
+  await newProject().click(); await tabs(1); await ready();
+  const tabsBeforeWorktree = await page.getByRole('tab').count();
+  const activeBeforeWorktree = await activeId();
+  const modelCalls = () => page.evaluate(() => Object.values(window.__tree.sessions).flatMap(state => state.requests).filter(request => ['thread/start', 'turn/start'].includes(request.method)).length);
+  const modelCallsBeforeWorktree = await modelCalls();
+  await projectMenu('PROJECT_A').click();
+  await page.getByRole('menuitem', { name: 'Новая задача в отдельной ветке…', exact: true }).click();
+  const worktreeDialog = page.getByRole('dialog', { name: 'Новая задача в отдельной ветке', exact: true });
+  await worktreeDialog.waitFor();
+  assert.equal(await worktreeDialog.getByRole('button', { name: 'Создать и открыть', exact: true }).isDisabled(), true, 'Empty name cannot be submitted');
+  await page.evaluate(() => { window.__tree.failWorktree = true; });
+  await worktreeDialog.getByLabel('Имя задачи', { exact: true }).fill('fix-login');
+  await worktreeDialog.getByRole('button', { name: 'Создать и открыть', exact: true }).click();
+  await worktreeDialog.getByRole('alert').filter({ hasText: 'уже занята' }).waitFor();
+  assert.equal(await page.getByRole('tab').count(), tabsBeforeWorktree, 'A failed worktree opens no tab');
+  await worktreeDialog.getByRole('button', { name: 'Создать и открыть', exact: true }).click();
+  await worktreeDialog.waitFor({ state: 'detached' });
+  await page.getByRole('status').filter({ hasText: 'Задача «fix-login» открыта' }).waitFor();
+  assert.equal(await page.getByRole('tab').count(), tabsBeforeWorktree + 1);
+  const worktreeCalls = await page.evaluate(() => window.__tree.worktrees);
+  assert.equal(worktreeCalls.length, 2); assert.equal(worktreeCalls[1].name, 'fix-login'); assert.equal(worktreeCalls[1].cwd, 'C:/Fixtures/PROJECT_A', 'The folder comes from the menu, not from the active tab');
+  await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').waitFor();
+  assert.equal(await modelCalls(), modelCallsBeforeWorktree, 'Opening a worktree tab sends no model request');
+  await page.getByRole('button', { name: 'Скрыть уведомление', exact: true }).click();
+  // Leave the rest of the scenario as it was: close the worktree tab and return to the previous one.
+  await page.getByRole('button', { name: /^Закрыть вкладку fix-login/ }).click();
+  await tabs(tabsBeforeWorktree);
+  await page.locator(`.session-tab[data-session-id="${activeBeforeWorktree}"]`).getByRole('tab').click();
+  assert.equal(await activeId(), activeBeforeWorktree);
+  await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').getByRole('button', { name: 'Действия проекта fix-login', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Закрыть проект', exact: true }).click();
+  await tree().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_A.worktrees/fix-login"]').waitFor({ state: 'detached' });
+  assert.deepEqual(errors, []);
+  console.log('PASS: compact folder tree, isolated history/loading/errors/pagination, history reuse, new project and empty-folder chat, inline cache at 1440/940px; project menu/keyboard/context menu, immediate and confirmed close, cancel with draft/running task, close failure recovery, archived views close, other project isolation, history returns after adding, empty workspace, isolated task via worktree menu/dialog. Fake bridges and token events only; no real model request.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/project-tree-failure.png' }); console.error(await page.locator('body').innerText()); }
   throw error;

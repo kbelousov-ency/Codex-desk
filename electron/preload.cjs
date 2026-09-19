@@ -105,6 +105,7 @@ contextBridge.exposeInMainWorld('codex', {
   manageThread: (options) => ipcRenderer.invoke('host:manageThread', options),
   openArchivedPath: (options) => ipcRenderer.invoke('host:openArchivedPath', options),
   createSession: (options) => ipcRenderer.invoke('host:createSession', options),
+  createWorktreeSession: (options) => ipcRenderer.invoke('host:createWorktreeSession', options),
   closeSession: (id) => ipcRenderer.invoke('host:closeSession', id),
   closeProject: (cwd, options) => ipcRenderer.invoke('host:closeProject', cwd, options),
   forSession,

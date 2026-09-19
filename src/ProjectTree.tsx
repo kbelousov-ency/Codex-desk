@@ -29,6 +29,7 @@ export type ProjectTreeControls = {
   threadLocked?(threadId: string): boolean;
   addProject(): void;
   closeProject?(cwd: string): void;
+  newWorktree?(cwd: string): void;
   newChat(cwd: string): void;
   toggleProject(cwd: string): void;
   refreshProject(cwd: string, cursor?: string): void;
@@ -44,7 +45,7 @@ export default function ProjectTree({ controls, active = true }: { controls: Pro
       const history = controls.histories[key];
       const activeFolder = projectKey(controls.activeCwd) === key;
       return <section className={`folder-tree-entry ${activeFolder ? 'active-folder' : ''}`} data-cwd={cwd} key={key}>
-        <ProjectMenu name={name} active={active} disabled={controls.opening || Boolean(controls.actionBusy) || !controls.closeProject} onClose={() => controls.closeProject?.(cwd)}>
+        <ProjectMenu name={name} active={active} disabled={controls.opening || Boolean(controls.actionBusy) || !controls.closeProject} onClose={() => controls.closeProject?.(cwd)} onWorktree={controls.newWorktree ? () => controls.newWorktree?.(cwd) : undefined}>
           <button className="folder-toggle" aria-label={`Диалоги папки ${name}`} aria-expanded={expanded} title={cwd} onClick={() => controls.toggleProject(cwd)}><span>{name}</span><ChevronRight size={12} className={expanded ? 'folder-chevron expanded' : 'folder-chevron'} /></button>
           {expanded && <button className="icon-button small folder-refresh" aria-label={`Обновить диалоги ${name}`} title="Обновить диалоги" disabled={history?.loading} onClick={() => controls.refreshProject(cwd)}><RefreshCw size={12} className={history?.loading ? 'spin' : ''} /></button>}
           <button className="icon-button small folder-add" aria-label={`Новый диалог в папке ${name}`} title={`Новый диалог в папке ${name}`} disabled={controls.opening} onClick={() => controls.newChat(cwd)}><Plus size={15} /></button>
