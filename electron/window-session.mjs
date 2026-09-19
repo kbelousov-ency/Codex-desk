@@ -2,7 +2,8 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { CodexClient } from './codex-client.mjs';
-import { directoryPath, findCodex, publicConfig } from './host-utils.mjs';
+import { ClaudeClient } from './claude-client.mjs';
+import { directoryPath, findCodex, findClaude, publicConfig } from './host-utils.mjs';
 import { launchSessionTerminal } from './terminal-launcher.mjs';
 
 const allowedMethods = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/name/set', 'thread/compact/start', 'turn/start', 'turn/interrupt', 'turn/steer', 'model/list', 'account/read', 'config/read']);
@@ -15,6 +16,7 @@ export function cleanSettings(patch) {
   for (const key of ['cwd', 'model', 'effort', 'access', 'executable']) {
     if (typeof patch?.[key] === 'string' && patch[key].length < 4096) clean[key] = patch[key];
   }
+  if (patch?.provider === 'codex' || patch?.provider === 'claude') clean.provider = patch.provider;
   return clean;
 }
 
@@ -47,6 +49,25 @@ export class SettingsStore {
   update(patch) {
     const clean = cleanSettings(patch);
     return this._update(previous => ({ ...previous, ...clean }));
+  }
+
+  async snapshotProvider(provider) {
+    const current = await this.snapshot();
+    if (!['codex', 'claude'].includes(provider)) throw new Error('Неизвестный агент.');
+    // Legacy top-level values belong to Codex. They never seed Claude defaults.
+    const profile = current.providers?.[provider];
+    return { ...cleanSettings(profile || (provider === 'codex' ? current : {})), ...(current.cwd ? { cwd: current.cwd } : {}), provider };
+  }
+
+  updateProvider(provider, patch) {
+    if (!['codex', 'claude'].includes(provider)) throw new Error('Неизвестный агент.');
+    const clean = cleanSettings(patch); delete clean.provider;
+    return this._update(previous => {
+      const priorProfile = cleanSettings(previous.providers?.[provider] || (provider === 'codex' ? previous : {}));
+      delete priorProfile.provider;
+      return { ...previous, ...(provider === 'codex' ? clean : clean.cwd ? { cwd: clean.cwd } : {}),
+        providers: { ...previous.providers, [provider]: { ...priorProfile, ...clean } } };
+    });
   }
 
   _update(updater) {
@@ -122,12 +143,16 @@ export class WindowSession {
   constructor({ settings = {}, persistSettings = async () => {}, send = () => {}, onCwd = () => {},
     createClient = options => new CodexClient(options), resolveDirectory = directoryPath,
     resolveExecutable = findCodex, fallbackCwd = process.cwd(), launchTerminal = launchSessionTerminal, threadActions = null,
-    diagnostics = null, diagnosticContext = {} } = {}) {
+    diagnostics = null, diagnosticContext = {}, createClaudeClient = options => new ClaudeClient(options), resolveClaudeExecutable = findClaude, attachmentsDirectory, claudeHistory } = {}) {
     this.settings = cleanSettings(settings);
     this.persistSettings = persistSettings;
     this.send = send;
     this.onCwd = onCwd;
     this.createClient = createClient;
+    this.createClaudeClient = createClaudeClient;
+    this.resolveClaudeExecutable = resolveClaudeExecutable;
+    this.attachmentsDirectory = attachmentsDirectory;
+    this.claudeHistory = claudeHistory;
     this.resolveDirectory = resolveDirectory;
     this.resolveExecutable = resolveExecutable;
     this.fallbackCwd = fallbackCwd;
@@ -172,6 +197,7 @@ export class WindowSession {
     this.assertActive();
     this.assertLocalControl();
     const clean = cleanSettings(patch);
+    if (clean.provider && clean.provider !== (this.settings.provider || 'codex')) throw new Error('Смена агента открывает отдельный диалог.');
     this.settings = { ...this.settings, ...clean };
     return this.persistSettings(clean);
   }
@@ -193,7 +219,8 @@ export class WindowSession {
     this.threadActions?.assertAllowed(this.currentThreadId);
     const cwd = await this.resolveDirectory(options.cwd || this.currentCwd || this.settings.cwd || this.fallbackCwd);
     this.assertActive(generation);
-    const nextExecutable = await this.resolveExecutable(this.settings.executable);
+    const provider = this.settings.provider || 'codex';
+    const nextExecutable = await (provider === 'claude' ? this.resolveClaudeExecutable : this.resolveExecutable)(this.settings.executable);
     this.assertActive(generation);
     if (this.bootstrap && this.client && this.currentCwd === cwd && this.executable === nextExecutable) return this.bootstrap;
     const previous = this.client;
@@ -209,7 +236,7 @@ export class WindowSession {
     this.settings = { ...this.settings, cwd };
     this.executable = nextExecutable;
     this.onCwd(cwd);
-    const owned = this.createClient({ executable: nextExecutable, cwd, ...(this.diagnostics ? {
+    const owned = (provider === 'claude' ? this.createClaudeClient : this.createClient)({ executable: nextExecutable, cwd, ...(provider === 'claude' ? { settings: this.settings, attachmentsDirectory: this.attachmentsDirectory, history: this.claudeHistory } : {}), ...(this.diagnostics ? {
       diagnostics: this.diagnostics, diagnosticContext: { ...this.diagnosticContext, projectId: this.diagnostics.id(cwd) },
     } : {}) });
     this.client = owned;
@@ -267,7 +294,8 @@ export class WindowSession {
       checkCurrent();
       await this.setSettings({ cwd });
       checkCurrent();
-      this.bootstrap = { initialize, models, account, config: publicConfig(configResponse.config), cwd, executable: nextExecutable };
+      this.bootstrap = { initialize, models, account, config: publicConfig(configResponse.config), cwd, executable: nextExecutable, provider,
+        capabilities: provider === 'claude' ? { compact: false, steer: false, terminal: true, mcp: false, archive: false } : { compact: true, steer: true, terminal: true, mcp: true, archive: true } };
       return this.bootstrap;
     } catch (error) {
       const failedCurrent = current();
@@ -285,6 +313,7 @@ export class WindowSession {
   async request(method, params = {}) {
     this.assertActive();
     if (!allowedMethods.has(method)) throw new Error('Этот метод недоступен в Codex Desk.');
+    if (params.threadId && (this.settings.provider === 'claude') !== String(params.threadId).startsWith('claude:')) throw new Error('Диалог принадлежит другому агенту.');
     const mutation = !readOnlyMethods.has(method);
     if (mutation) {
       this.assertLocalControl();
@@ -330,6 +359,7 @@ export class WindowSession {
   }
 
   async mcpRuntime(check = false) {
+    if (this.settings.provider === 'claude') throw new Error('MCP Claude Code управляется через его CLI и настройки.');
     this.assertActive();
     const deferred = () => ({ status: 'deferred', message: 'Дождитесь завершения задачи и закройте терминал, затем примените MCP в этой сессии.' });
     if (this.terminal || this.mcpRefreshing || this.pendingBoots || this.pendingMutations || this.requests.size || this.activeThreadTurns.size || this.compactingThreads.size) {
@@ -369,7 +399,9 @@ export class WindowSession {
   async openTerminal(options = {}) {
     this.assertActive();
     this.assertLocalControl();
-    if (!options || typeof options !== 'object' || Array.isArray(options) || typeof options.threadId !== 'string' || !threadUuid.test(options.threadId)) throw new Error('Некорректный идентификатор диалога.');
+    const provider = this.settings.provider || 'codex';
+    const rawThreadId = provider === 'claude' && typeof options?.threadId === 'string' ? options.threadId.replace(/^claude:/, '') : options?.threadId;
+    if (!options || typeof options !== 'object' || Array.isArray(options) || typeof options.threadId !== 'string' || !threadUuid.test(rawThreadId) || (provider === 'claude' && !options.threadId.startsWith('claude:'))) throw new Error('Некорректный идентификатор диалога.');
     this.threadActions?.assertAllowed(options.threadId);
     if (!this.client || !this.bootstrap || !this.executable) throw new Error('Нет подключения к Codex.');
     if (this.pendingBoots || this.pendingMutations || this.requests.size || this.activeThreadTurns.has(options.threadId) || this.compactingThreads.has(options.threadId)) throw new Error('Дождитесь завершения работы и подтверждений Codex.');
@@ -381,7 +413,7 @@ export class WindowSession {
     const model = options.model ?? this.settings.model ?? '';
     const effort = options.effort ?? this.settings.effort ?? '';
     const access = options.access ?? this.settings.access ?? 'inherited';
-    if (typeof model !== 'string' || model.length > 256 || (model && !/^[a-zA-Z0-9][a-zA-Z0-9._/:+\-]*$/.test(model))) throw new Error('Некорректный идентификатор модели.');
+    if (typeof model !== 'string' || model.length > 256 || (model && !(provider === 'claude' ? /^[a-zA-Z0-9][a-zA-Z0-9._/:+\[\]\-]*$/ : /^[a-zA-Z0-9][a-zA-Z0-9._/:+\-]*$/).test(model))) throw new Error('Некорректный идентификатор модели.');
     if (typeof effort !== 'string' || effort.length > 64 || (effort && !/^[a-zA-Z0-9_-]+$/.test(effort))) throw new Error('Некорректный уровень рассуждений.');
     if (!['inherited', 'auto', 'read-only', 'workspace-write', 'danger-full-access'].includes(access)) throw new Error('Неизвестный режим доступа.');
     const terminal = { threadId, child: null, paused: false };
@@ -398,7 +430,7 @@ export class WindowSession {
       terminal.paused = true;
       this.stop();
       const terminalGeneration = this.generation;
-      const child = this.launchTerminal({ executable, cwd, threadId, model, effort, access });
+      const child = this.launchTerminal({ executable, cwd, threadId, model, effort, access, ...(provider === 'claude' ? { provider } : {}) });
       terminal.child = child;
       return await new Promise((resolve, reject) => {
         let settled = false;

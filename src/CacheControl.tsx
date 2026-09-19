@@ -1,3 +1,4 @@
+import { useAgentName } from './AgentContext';
 import { useEffect, useRef } from 'react';
 import { Timer, RefreshCw } from 'lucide-react';
 import { useCacheKeepAlive, type CacheSession } from './useCacheKeepAlive';
@@ -9,6 +10,7 @@ const clock = (milliseconds: number) => {
 };
 
 export default function CacheControl({ session, tokens, active = true }: { session: CacheSession; tokens: any; active?: boolean }) {
+  const engineName = useAgentName();
   const panel = useRef<HTMLDetailsElement>(null);
   const trigger = useRef<HTMLElement>(null);
   const cache = useCacheKeepAlive(session);
@@ -50,10 +52,10 @@ export default function CacheControl({ session, tokens, active = true }: { sessi
       onBlur={event => event.currentTarget.removeAttribute('data-dismissed-focus')}
       onKeyDown={event => { if (event.key !== 'Escape') event.currentTarget.removeAttribute('data-dismissed-focus'); }}><Timer size={13} /><span className="cache-countdown">{title}</span>{cache.enabled && <span className="cache-auto">Автопинг</span>}</summary>
     <div className="cache-settings">
-      <p className="cache-explanation">Это оценка по последнему ответу Codex. Провайдер не сообщает точный срок и может очистить кэш раньше.</p>
+      <p className="cache-explanation">Это оценка по последнему ответу {engineName}. Провайдер не сообщает точный срок и может очистить кэш раньше.</p>
       {session.activityAt !== null && <p className="cache-explanation cache-last-response">Последний ответ: <time dateTime={new Date(session.activityAt).toISOString()}>{new Date(session.activityAt).toLocaleString('ru-RU')}</time>. В истории используется время завершения запроса.</p>}
       <div className="cache-metrics">{valid ? <><span>Без кэша: {formatTokens(last.inputTokens - last.cachedInputTokens)}</span><span>Из кэша: {formatTokens(last.cachedInputTokens)}</span>{writing !== null && <span>Запись кэша: {formatTokens(writing)}</span>}</> : <span>Токены кэша: данных пока нет</span>}</div>
-      <div className="cache-metrics-note">Входные токены последнего запроса по данным Codex. «Без кэша» включает запись нового кэша, если она учитывается провайдером.</div>
+      <div className="cache-metrics-note">Входные токены последнего запроса по данным {engineName}. «Без кэша» включает запись нового кэша, если она учитывается провайдером.</div>
       <div className="cache-options">
         <label>Срок кэша, минут<input aria-label="Срок кэша, минут" type="number" min="2" max="1440" step="1" value={cache.minutes} onChange={event => cache.changeMinutes(event.currentTarget.valueAsNumber)} /></label>
         <label className="cache-enable"><input aria-label="Автопинг кэша" type="checkbox" checked={cache.enabled} disabled={!session.threadId || session.connection !== 'ready' || !cache.message.trim()} onChange={event => cache.toggle(event.target.checked)} />Автопинг за 1 минуту до срока</label>

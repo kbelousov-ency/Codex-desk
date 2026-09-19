@@ -11,12 +11,14 @@ import { mergeHistoricalTurnWork } from './turn-work';
 import { errorText, folderName } from './useCodex';
 import './archive-view.css';
 import { readScrollAnchor, restoreScrollAnchor } from './scroll-anchor';
+import { useMessageJump, type MessageJump } from './useMessageJump';
 
-export default function ArchiveView({ thread, active, initialScrollTop, initialScrollAnchor, workspace }: { thread: Thread; active: boolean; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; workspace: WorkspaceControls }) {
+export default function ArchiveView({ thread, active, initialScrollTop, initialScrollAnchor, workspace, jump }: { thread: Thread; active: boolean; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; workspace: WorkspaceControls; jump?: MessageJump }) {
   const [items, setItems] = useState<Item[]>([]);
   const [turnWork, setTurnWork] = useState<Record<string, TurnWork>>({});
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
@@ -36,10 +38,13 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
       setItems(previous => next ? [...page.items.filter(item => !previous.some(old => old.id === item.id)), ...previous] : page.items);
       setTurnWork(previous => mergeHistoricalTurnWork(next ? previous : {}, page.turns || []));
       setCursor(page.nextCursor);
+      setLoaded(true);
     } catch (e) { if (request === requestRef.current) setError(errorText(e)); }
     finally { if (request === requestRef.current) setLoading(false); }
   };
   useEffect(() => { void load(); return () => { requestRef.current++; }; }, [thread.id]);
+  useMessageJump({ jump, active, loading, ready: loaded && !error, items, hasEarlier: Boolean(cursor), loadEarlier: () => { if (cursor) void load(cursor); }, container: chatRef,
+    onJump: () => { restoredScroll.current = true; }, onMissing: () => setError('Сообщение не найдено в доступной истории архива.') });
   useLayoutEffect(() => workspace.registerUpdateCapture?.(sessionId, () => ({
     archivedThread: { id: thread.id, cwd: thread.cwd, name: thread.name }, draft: '', attachments: [], scrollTop: savedScroll.current, scrollAnchor: scrollAnchor.current,
   })), [workspace.registerUpdateCapture, sessionId, thread.id, thread.cwd, thread.name]);
@@ -87,7 +92,10 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
         {cursor && !showSearch && <button className="secondary-button load-earlier" disabled={loading} onClick={() => void load(cursor)}>Загрузить предыдущие сообщения</button>}
         {loading && <div className="loading-chat"><LoaderCircle size={16} className="spin" />Загружаем архивный диалог…</div>}
         {error && <div className="alert error-alert" role="alert"><span>{error}</span><button className="text-button" onClick={() => void load()}><RefreshCw size={13} />Повторить</button></div>}
-        <ChatSearch items={items} turnWork={turnWork} open={showSearch} active={active} onClose={() => { setShowSearch(false); searchButtonRef.current?.focus({ preventScroll: true }); }} hasEarlier={Boolean(cursor)} loading={loading} onLoadEarlier={() => { if (cursor) void load(cursor); }} />
+        <ChatSearch items={items} turnWork={turnWork} open={showSearch} active={active} onClose={() => { setShowSearch(false); searchButtonRef.current?.focus({ preventScroll: true }); }} hasEarlier={Boolean(cursor)} loading={loading} onLoadEarlier={() => { if (cursor) void load(cursor); }} onBookmark={async item => {
+          const excerpt = item.type === 'userMessage' ? (item.content || []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n') : item.text || '';
+          await window.codex.saveBookmark({ provider: 'codex', cwd: thread.cwd || '', threadId: thread.id, itemId: item.id, turnId: item.turnId, threadName: (thread.name || 'Архивный диалог').replace(/\s+/g, ' ').slice(0, 500), excerpt: excerpt.slice(0, 4000), archived: true });
+        }} />
         {!loading && !error && !items.length && <p className="muted">В этом диалоге нет сообщений.</p>}
       </div></div>
       <div className="composer-area"><UpdateNotice /></div>

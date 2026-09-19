@@ -5,6 +5,7 @@ import Markdown from './Markdown';
 import { activityLabel, Diff } from './Panels';
 import { availableReasoning, workDuration } from './conversation-items';
 import { useBridge } from './BridgeContext';
+import { useAgentName } from './AgentContext';
 
 const terminalStatuses = new Set(['completed', 'failed', 'interrupted', 'cancelled', 'canceled', 'disconnected']);
 
@@ -53,8 +54,9 @@ export default function WorkLog({ turnId, items, turn, hasAnswer, searchable = f
 }
 
 function WorkItem({ item, running, searchable }: { item: Item; running: boolean; searchable: boolean }) {
-  if (item.type === 'reasoning') return <div className="work-log-row work-reasoning" data-item-id={item.id}><Brain size={14} aria-label="Пояснения Codex" /><Markdown>{availableReasoning(item)}</Markdown></div>;
-  if (item.type === 'agentMessage') return <div className="work-log-row work-commentary" data-item-id={item.id}><MessageSquare size={14} aria-label="Комментарий Codex" /><Markdown>{item.text || ''}</Markdown></div>;
+  const engineName = useAgentName();
+  if (item.type === 'reasoning') return <div className="work-log-row work-reasoning" data-item-id={item.id}><Brain size={14} aria-label={`Пояснения ${engineName}`} /><Markdown>{availableReasoning(item)}</Markdown></div>;
+  if (item.type === 'agentMessage') return <div className="work-log-row work-commentary" data-item-id={item.id}><MessageSquare size={14} aria-label={`Комментарий ${engineName}`} /><Markdown>{item.text || ''}</Markdown></div>;
   if (item.type === 'plan') return <div className="work-log-row work-plan" data-item-id={item.id}><ListChecks size={14} aria-label="План" /><Markdown>{item.text || ''}</Markdown></div>;
   return <ToolRow item={item} allowRunning={running} searchable={searchable} />;
 }

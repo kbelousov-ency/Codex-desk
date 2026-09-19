@@ -8,7 +8,7 @@ export type ComposerOption = { value: string; label: string };
 
 export default function ComposerSelect({ label, value, options, icon, disabled, active = true, kind, onChange, openSignal = 0 }: {
   label: string; value: string; options: ComposerOption[]; icon: ReactNode;
-  disabled: boolean; active?: boolean; kind: 'model' | 'effort'; onChange(value: string): void; openSignal?: number;
+  disabled: boolean; active?: boolean; kind: 'provider' | 'model' | 'effort'; onChange(value: string): void; openSignal?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
@@ -99,6 +99,7 @@ export default function ComposerSelect({ label, value, options, icon, disabled, 
     }}>{icon}<span>{current}</span><ChevronDown size={11} className={visible ? 'composer-chevron-open' : ''} /></button>
     {visible && createPortal(<div ref={menu} id={id} role="listbox" aria-label={label} className={`composer-select-menu ${kind}-menu`} style={position}>
       <div className="composer-menu-heading" aria-hidden="true">{icon}<span>{label}</span></div>
+      {kind === 'provider' && <p className="composer-provider-note">Другой агент откроется в новой вкладке. Этот диалог и черновик сохранятся.</p>}
       {options.map((option, index) => <div key={option.value} id={`${id}-${index}`} role="option" aria-selected={option.value === value} data-value={option.value} className={`composer-select-option ${highlight === index ? 'highlighted' : ''}`} onPointerMove={() => setHighlight(index)} onPointerDown={event => event.preventDefault()} onClick={() => choose(index)}>
         <span>{option.label}</span>{option.value === value && <Check size={15} />}
       </div>)}

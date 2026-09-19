@@ -28,14 +28,15 @@ export function buildTerminalLaunch(options, systemRoot = process.env.SystemRoot
   const executable = absolutePath(options.executable, 'путь к Codex');
   if (path.win32.extname(executable).toLowerCase() !== '.exe') throw new Error('Нужен исполняемый файл Codex .exe.');
   const cwd = absolutePath(options.cwd, 'путь к папке');
-  const threadId = text(options.threadId, 'идентификатор диалога', 36);
+  const claude = options.provider === 'claude';
+  const threadId = text(claude ? options.threadId?.replace(/^claude:/, '') : options.threadId, 'идентификатор диалога', 36);
   if (!uuid.test(threadId)) throw new Error('Некорректный идентификатор диалога.');
   const access = options.access ?? 'inherited';
   if (!accessModes.has(access)) throw new Error('Неизвестный режим доступа.');
-  const codexArgs = ['resume', threadId, '--cd', cwd];
+  const codexArgs = claude ? ['--resume', threadId] : ['resume', threadId, '--cd', cwd];
   if (options.model) {
     const model = text(options.model, 'идентификатор модели', 256);
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._/:+\-]*$/.test(model)) throw new Error('Некорректный идентификатор модели.');
+    if (!(claude ? /^[a-zA-Z0-9][a-zA-Z0-9._/:+\[\]\-]*$/ : /^[a-zA-Z0-9][a-zA-Z0-9._/:+\-]*$/).test(model)) throw new Error('Некорректный идентификатор модели.');
     codexArgs.push('--model', model);
   }
   if (options.effort) {
@@ -43,12 +44,18 @@ export function buildTerminalLaunch(options, systemRoot = process.env.SystemRoot
     if (!/^[a-zA-Z0-9_-]+$/.test(effort)) throw new Error('Некорректный уровень рассуждений.');
     // Codex accepts an unquoted enum as a literal TOML fallback. This avoids the
     // native Windows PowerShell 5.1 argument binder stripping embedded quotes.
-    codexArgs.push('-c', `model_reasoning_effort=${effort}`);
+    if (claude) codexArgs.push('--effort', effort);
+    else codexArgs.push('-c', `model_reasoning_effort=${effort}`);
   }
   if (access !== 'inherited') {
-    codexArgs.push('--sandbox', access === 'auto' ? 'workspace-write' : access);
-    codexArgs.push('--ask-for-approval', access === 'danger-full-access' ? 'never' : 'on-request');
-    codexArgs.push('-c', `approvals_reviewer=${access === 'auto' ? 'auto_review' : 'user'}`);
+    if (claude) {
+      codexArgs.push('--permission-mode', access === 'danger-full-access' ? 'bypassPermissions' : access === 'auto' ? 'acceptEdits' : access === 'read-only' ? 'plan' : 'manual');
+      if (access === 'danger-full-access') codexArgs.push('--allow-dangerously-skip-permissions');
+    } else {
+      codexArgs.push('--sandbox', access === 'auto' ? 'workspace-write' : access);
+      codexArgs.push('--ask-for-approval', access === 'danger-full-access' ? 'never' : 'on-request');
+      codexArgs.push('-c', `approvals_reviewer=${access === 'auto' ? 'auto_review' : 'user'}`);
+    }
   }
   const script = `$ErrorActionPreference = 'Stop'
 $codexExitCode = 1

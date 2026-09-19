@@ -29,7 +29,7 @@ function gitEnvironment() {
   return { ...env, LC_ALL: 'C', LANG: 'C', GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1' };
 }
 
-async function git(context, args, { limit = GIT_OUTPUT_LIMIT, allowTruncated = false } = {}) {
+export async function git(context, args, { limit = GIT_OUTPUT_LIMIT, allowTruncated = false } = {}) {
   context.assertActive();
   const result = await new Promise((resolve, reject) => {
     const child = spawn('git', [...baseArgs, ...(context.filterArgs || []), ...args], {
@@ -59,7 +59,7 @@ async function git(context, args, { limit = GIT_OUTPUT_LIMIT, allowTruncated = f
   return result;
 }
 
-function requireSuccess(result) {
+export function requireSuccess(result) {
   if (result.code !== 0 && !result.truncated) {
     // Git diagnostics may contain control characters and local file contents;
     // show a bounded plain diagnostic, never shell commands or full dumps.
@@ -69,7 +69,7 @@ function requireSuccess(result) {
   return result;
 }
 
-async function contextFor(cwd, assertActive) {
+export async function contextFor(cwd, assertActive) {
   if (typeof cwd !== 'string' || !path.isAbsolute(cwd) || cwd.includes('\0')) throw new Error('Сначала выберите рабочую папку.');
   assertActive();
   let canonical;
@@ -121,7 +121,7 @@ function fields(record, count) {
   return values;
 }
 
-async function readStatus(context) {
+export async function readStatus(context) {
   const result = requireSuccess(await git(context, ['status', '--porcelain=v2', '-z', '--branch', '--no-ahead-behind', '--untracked-files=all', '--ignore-submodules=dirty', '--renames', '--', context.scope ? `${context.scope}/` : '.'], { allowTruncated: true }));
   const data = result.stdout.toString('utf8');
   // A killed process can leave an incomplete NUL record: never display it.
@@ -184,7 +184,7 @@ export async function getGitStatus({ cwd, assertActive = () => {} }) {
   return readStatus(context);
 }
 
-function checkedPath(value) {
+export function checkedPath(value) {
   if (typeof value !== 'string' || !value || value.length > 32768 || value.includes('\0') || path.isAbsolute(value) || path.win32.isAbsolute(value)) throw new Error('Некорректный путь файла Git.');
   // Backslashes are separators on Windows and valid literal filenames on Unix.
   if (process.platform === 'win32' && (value.includes('\\') || /[<>:"|?*\x01-\x1f]/.test(value))) throw new Error('Некорректный путь файла Git.');

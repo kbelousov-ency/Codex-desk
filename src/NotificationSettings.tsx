@@ -5,7 +5,7 @@ import './notifications.css';
 
 const eventOptions: { key: keyof NotificationPreferences; label: string }[] = [
   { key: 'completed', label: 'Завершение задач' },
-  { key: 'question', label: 'Вопросы Codex' },
+  { key: 'question', label: 'Вопросы агентов' },
   { key: 'approval', label: 'Запросы разрешений' },
   { key: 'error', label: 'Ошибки и потеря соединения' },
 ];

@@ -1,7 +1,10 @@
 export type Access = 'inherited' | 'auto' | 'read-only' | 'workspace-write' | 'danger-full-access';
-export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string };
+export type AgentProvider = 'codex' | 'claude';
+export type AgentCapabilities = { compact: boolean; steer: boolean; terminal: boolean; mcp: boolean; archive: boolean };
+export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string; provider?: AgentProvider };
 export type BridgeEvent = { type: 'notification' | 'serverRequest' | 'status' | 'diagnostic' | 'terminal' | 'mcp'; data: any };
 export type Attachment = { name: string; dataUrl: string; path?: string };
+export type ComposerFiles = { images: Attachment[]; paths: string[]; message?: string };
 export type QueuedMessage = { id: string; text: string; attachments: Attachment[]; state?: 'waiting' | 'uncertain' };
 export type MessageQueueState = { items: QueuedMessage[]; paused: boolean; reason?: string; threadId?: string; cwd?: string };
 export type PreservedDraft = { text: string; attachments: Attachment[] };
@@ -13,13 +16,13 @@ export type SessionAttentionEvent = { kind: NotificationKind; eventId: string };
 export type Item = { id: string; type: string; turnId?: string; complete?: boolean; [key: string]: any };
 // Internal timestamps are milliseconds; App Server turn timestamps are seconds.
 export type TurnWork = { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; answerStartedAt?: number };
-export type Thread = { id: string; name?: string; preview?: string; cwd?: string; updatedAt?: number; turns?: any[]; [key: string]: any };
+export type Thread = { id: string; name?: string; preview?: string; cwd?: string; updatedAt?: number; turns?: any[]; provider?: AgentProvider; [key: string]: any };
 export type ThreadAction = 'rename' | 'archive' | 'delete' | 'restore';
 export type ArchivedThreadPage = { thread: Thread; items: Item[]; turns: any[]; nextCursor: string | null };
 export type Request = { id: number | string; method: string; params: any };
 export type Model = { id: string; model: string; displayName: string; hidden?: boolean; isDefault?: boolean; defaultReasoningEffort: string; supportedReasoningEfforts: { reasoningEffort: string; description: string }[]; inputModalities?: string[] };
 
-export type SessionInfo = { id: string; cwd: string };
+export type SessionInfo = { id: string; cwd: string; provider?: AgentProvider };
 export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
 export type UpdateSnapshot = { version: 1; activeIndex: number; tabs: UpdateTabSnapshot[] };
 export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
@@ -30,21 +33,29 @@ export type DiagnosticsStatus = { enabled: boolean; directory: string | null; er
 export type RendererErrorReport = { kind: 'error' | 'unhandledrejection' | 'react'; name?: string; message?: string; stack?: string; componentStack?: string };
 export type ProjectFile = { name: string; path: string; type: 'directory' | 'file' | 'link' };
 export type ProjectFilePage = { path: string; entries: ProjectFile[]; nextCursor: number | null };
+export type ProjectSearchPage = { files: { path: string; name: string }[]; nextCursor: string | null; truncated?: boolean };
+export type ProjectFilePreview = { path: string; kind: 'text' | 'markdown' | 'image' | 'unsupported'; text?: string; dataUrl?: string; language?: string; truncated?: boolean; message?: string };
+export type HistoryTarget = { cwd: string; provider: AgentProvider; thread: Thread; itemId: string; turnId?: string; snippet?: string; excerpt?: string; archived?: boolean };
+export type HistorySearchPage = { matches: HistoryTarget[]; nextCursor: string | null; scannedThreads: number; scannedPages: number; warnings?: string[] };
+export type Bookmark = { id: string; provider: AgentProvider; cwd: string; threadId: string; itemId: string; turnId?: string; threadName: string; excerpt: string; label: string; createdAt: string; updatedAt: string; archived?: boolean };
 export type GitArea = 'staged' | 'unstaged' | 'untracked';
 export type GitEntry = { path: string; originalPath?: string; status: string; indexStatus: string; worktreeStatus: string; staged: boolean; unstaged: boolean; untracked: boolean; conflicted: boolean; submodule?: boolean };
 export type GitStatus = { available: boolean; reason?: 'not-repository' | 'git-unavailable' | 'bare'; root?: string; branch?: string; detached?: boolean; unborn?: boolean; head?: string; entries: GitEntry[]; truncated?: boolean; message?: string };
 export type GitDiff = { path: string; area: GitArea; diff: string; binary?: boolean; truncated?: boolean; message?: string };
+export type GitRollbackPreview = { previewId: string; path: string; diff: string; binary?: boolean; truncated?: boolean; message?: string; expiresAt: string; operation: 'restore' | 'undo' };
+export type GitRollbackRecord = { undoId: string; path: string; createdAt: string };
 export type McpServerSummary = { name: string; transport: 'http' | 'stdio'; address: string; enabled: boolean; headerNames: string[]; envNames: string[] };
 export type McpConfigInfo = { configPath: string; servers: McpServerSummary[] };
 export type McpImportPreview = { previewId: string; configPath: string; servers: (McpServerSummary & { exists: boolean })[]; conflicts: string[] };
 export type McpSaveResult = { configPath: string; backupPath: string | null; servers: string[]; message?: string };
 export type McpConnectionReport = { servers: { name: string; authStatus: string; status: string; toolCount: number }[]; message?: string };
 export interface CodexBridge {
-  start(options?: { cwd?: string }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string }>;
+  start(options?: { cwd?: string }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities }>;
   request(method: string, params?: any): Promise<any>;
   respond(id: number | string, result: any): Promise<void>;
   chooseDirectory(): Promise<string | null>;
   saveImages(images: Attachment[]): Promise<Attachment[]>;
+  chooseComposerFiles(options?: { imageSlots?: number; imagesSupported?: boolean }): Promise<ComposerFiles | null>;
   readAttachment(path: string): Promise<string | null>;
   onEvent(listener: (event: BridgeEvent) => void): () => void;
   getSettings(): Promise<Settings>;
@@ -52,8 +63,15 @@ export interface CodexBridge {
   openPath(path: string): Promise<void>;
   showPathMenu(path: string, options?: { askCodex?: boolean }): Promise<void | { action: 'askCodex'; path: string }>;
   listFiles(relativePath?: string, cursor?: number): Promise<ProjectFilePage>;
+  searchProjectFiles(options: { query: string; cursor?: string }): Promise<ProjectSearchPage>;
+  readProjectFile(options: { path: string }): Promise<ProjectFilePreview>;
   getGitStatus(): Promise<GitStatus>;
   getGitDiff(options: { path: string; area: GitArea }): Promise<GitDiff>;
+  previewGitRollback(options: { path: string }): Promise<GitRollbackPreview>;
+  applyGitRollback(options: { previewId: string }): Promise<GitRollbackRecord>;
+  listGitRollbacks(): Promise<GitRollbackRecord[]>;
+  previewUndoGitRollback(options: { undoId: string }): Promise<GitRollbackPreview>;
+  undoGitRollback(options: { previewId: string }): Promise<{ path: string }>;
   chooseExecutable(): Promise<string | null>;
   openTerminal(options: { threadId: string; model: string; effort: string; access: Access }): Promise<{ threadId: string }>;
   getMcpConfig(): Promise<McpConfigInfo>;
@@ -63,6 +81,11 @@ export interface CodexBridge {
   checkMcp(): Promise<McpConnectionReport>;
 }
 export interface WorkspaceBridge extends CodexBridge {
+  searchHistory(options: { query: string; cwd: string; provider: AgentProvider | 'all'; cursor?: string }): Promise<HistorySearchPage>;
+  resolveHistoryTarget(options: { cwd: string; provider: AgentProvider; threadId: string }): Promise<Thread>;
+  listBookmarks(options?: { cwd?: string; provider?: AgentProvider | 'all' }): Promise<Bookmark[]>;
+  saveBookmark(bookmark: Omit<Bookmark, 'id' | 'createdAt' | 'updatedAt' | 'label'> & { id?: string; label?: string }): Promise<Bookmark>;
+  removeBookmark(id: string): Promise<{ removed: boolean }>;
   getNotificationSettings(): Promise<NotificationSettingsInfo>;
   setNotificationSettings(settings: Partial<NotificationPreferences>): Promise<NotificationSettingsInfo>;
   setNotificationContext(context: { activeSessionId?: string }): Promise<void>;
@@ -91,7 +114,7 @@ export interface WorkspaceBridge extends CodexBridge {
   readArchivedThread(options: { threadId: string; cursor?: string }): Promise<ArchivedThreadPage>;
   openArchivedPath(options: { threadId: string; target: string; menu?: boolean }): Promise<void>;
   manageThread(options: { action: ThreadAction; threadId: string; cwd: string; name?: string }): Promise<{ thread?: Thread; affectedThreadIds?: string[] }>;
-  createSession(options?: { cwd?: string; fromSessionId?: string; settings?: Settings }): Promise<SessionInfo | null>;
+  createSession(options?: { cwd?: string; fromSessionId?: string; settings?: Settings; provider?: AgentProvider }): Promise<SessionInfo | null>;
   closeSession(id: string): Promise<void>;
   closeProject(cwd: string, options?: { force?: boolean }): Promise<{ projects: string[]; closedSessionIds: string[] }>;
   forSession(id: string): CodexBridge;

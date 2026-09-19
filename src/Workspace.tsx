@@ -7,14 +7,15 @@ import ProjectSidebar from './ProjectSidebar';
 import ArchiveView from './ArchiveView';
 import { BuildBadge } from './BuildInfo';
 import { errorText, folderName } from './useCodex';
-import type { Attachment, CodexBridge, MessageQueueState, PreservedDraft, ScrollAnchor, SessionAttentionEvent, SessionInfo, Settings, Thread, ThreadAction, UpdateSnapshot, UpdateStatus, UpdateTabSnapshot } from './types';
+import type { AgentProvider, Attachment, CodexBridge, HistoryTarget, MessageQueueState, PreservedDraft, ScrollAnchor, SessionAttentionEvent, SessionInfo, Settings, Thread, ThreadAction, UpdateSnapshot, UpdateStatus, UpdateTabSnapshot } from './types';
 import './nightly-update.css';
 import './workspace-state.css';
 import UpdateNotice, { UpdateNoticeContext } from './UpdateNotice';
 import { NotificationSettings } from './NotificationSettings';
 import './notifications.css';
+import HistoryLibrary from './HistoryLibrary';
 
-type Tab = SessionInfo & { bridge?: CodexBridge; initialThread?: Thread; archivedThread?: Thread; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; restoreSettings?: Settings; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
+type Tab = SessionInfo & { bridge?: CodexBridge; initialThread?: Thread; archivedThread?: Thread; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; restoreSettings?: Settings; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; jump?: { itemId: string; turnId?: string; key: number; excerpt?: string } };
 const sameFolder = (a: string, b: string) => a.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase() === b.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
 
 export default function Workspace() {
@@ -40,6 +41,7 @@ function TabbedWorkspace() {
   const [attention, setAttention] = useState<Record<string, SessionAttentionEvent>>({});
   const [showAttention, setShowAttention] = useState(false);
   const [showNotificationSettings, setShowNotificationSettings] = useState(false);
+  const [showLibrary, setShowLibrary] = useState(false);
   const focusedWindow = useRef(document.hasFocus());
   const attentionMenu = useRef<HTMLDivElement>(null);
   const attentionButton = useRef<HTMLButtonElement>(null);
@@ -85,8 +87,8 @@ function TabbedWorkspace() {
   projectsRef.current = projects;
   summariesRef.current = summaries;
   historiesRef.current = histories;
-  const updateState = useRef({ activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings });
-  updateState.current = { activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings };
+  const updateState = useRef({ activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings, showLibrary });
+  updateState.current = { activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings, showLibrary };
   const registerUpdateCapture = useCallback((id: string, capture: (persistent?: boolean) => UpdateTabSnapshot | null) => {
     updateCaptures.current.set(id, capture);
     return () => { if (updateCaptures.current.get(id) === capture) updateCaptures.current.delete(id); };
@@ -225,7 +227,7 @@ function TabbedWorkspace() {
       updateRequest.current = requestId;
       const prepare = async () => {
         const current = updateState.current;
-        if (current.starting || current.opening || current.closing || current.confirmClose || current.confirmCloseProject || current.actionDialog || current.showNotificationSettings || actionPending.current || pendingOpen.current) {
+        if (current.starting || current.opening || current.closing || current.confirmClose || current.confirmCloseProject || current.actionDialog || current.showNotificationSettings || current.showLibrary || actionPending.current || pendingOpen.current) {
           await window.codex.completeUpdatePrepare({ requestId, defer: true });
           updateRequest.current = null;
           return;
@@ -358,12 +360,13 @@ function TabbedWorkspace() {
     } catch (e) { if (request === archiveRequest.current) setArchiveError(errorText(e)); }
     finally { if (request === archiveRequest.current) setArchiveLoading(false); }
   };
-  const openArchive = (thread: Thread) => {
+  const openArchive = (thread: Thread, jump?: Tab['jump']) => {
     const id = `archive:${thread.id}`;
-    if (!tabsRef.current.some(tab => tab.id === id)) setTabs(previous => [...previous, { id, cwd: thread.cwd || '', archivedThread: thread }]);
+    if (!tabsRef.current.some(tab => tab.id === id)) setTabs(previous => [...previous, { id, cwd: thread.cwd || '', archivedThread: thread, jump }]);
+    else if (jump) setTabs(previous => previous.map(tab => tab.id === id ? { ...tab, jump } : tab));
     activate(id);
   };
-  const open = async (cwd?: string, initialThread?: Thread) => {
+  const open = async (cwd?: string, initialThread?: Thread, requestedProvider?: AgentProvider, jump?: Tab['jump']) => {
     if (pendingOpen.current || actionPending.current) return;
     if (cwd && initialThread) {
       const existing = tabsRef.current.find(tab => {
@@ -371,16 +374,18 @@ function TabbedWorkspace() {
         const threadId = state?.initialized ? state.threadId : state?.threadId || tab.initialThread?.id;
         return !tab.archivedThread && sameFolder(tab.cwd, cwd) && threadId === initialThread.id;
       });
-      if (existing) { activate(existing.id); return; }
+      if (existing) { if (jump) setTabs(previous => previous.map(tab => tab.id === existing.id ? { ...tab, jump } : tab)); activate(existing.id); return; }
     }
     pendingOpen.current = true; setOpening(true); setError('');
     let created: SessionInfo | null = null;
     try {
       const current = summariesRef.current[activeId];
       const source = tabsRef.current.find(tab => tab.id === activeId && !tab.archivedThread) || tabsRef.current.find(tab => !tab.archivedThread);
+      const provider = requestedProvider || initialThread?.provider || (initialThread?.id.startsWith('claude:') ? 'claude' : initialThread ? 'codex' : current?.settings.provider || source?.provider || 'codex');
       created = await window.codex.createSession({
         ...(cwd ? { cwd } : {}), ...(source ? { fromSessionId: source.id } : {}),
-        ...(current?.connection === 'ready' ? { settings: current.settings } : {}),
+        ...(requestedProvider || initialThread || provider === 'claude' ? { provider } : {}),
+        ...(current?.connection === 'ready' && (current.settings.provider || 'codex') === provider ? { settings: current.settings } : {}),
       });
       if (!created) return;
       // Adding a folder that is already open selects it without keeping a spare process.
@@ -388,7 +393,7 @@ function TabbedWorkspace() {
         const existing = tabsRef.current.find(tab => !tab.archivedThread && sameFolder(tab.cwd, created!.cwd));
         if (existing) { await window.codex.closeSession(created.id); created = null; setExpanded(previous => ({ ...previous, [projectKey(existing.cwd)]: true })); activate(existing.id); return; }
       }
-      const tab: Tab = { ...created, initialThread, bridge: window.codex.forSession(created.id) };
+      const tab: Tab = { ...created, initialThread, bridge: window.codex.forSession(created.id), jump };
       setTabs(previous => [...previous, tab]); setActiveId(tab.id);
       setProjects(previous => previous.some(folder => sameFolder(folder, tab.cwd)) ? previous : [...previous, tab.cwd]);
       setExpanded(previous => ({ ...previous, [projectKey(tab.cwd)]: true }));
@@ -518,6 +523,7 @@ function TabbedWorkspace() {
     document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key);
   }, [actionDialog]);
   const controls: WorkspaceControls = {
+    openLibrary: () => setShowLibrary(true),
     projects, opening: opening || actionBusy || Boolean(confirmCloseProject) || preparingUpdate || savingBeforeClose, expanded, histories, threadNames, searchRevision,
     archiveOpen, archiveThreads, archiveLoading, archiveError, archiveCursor, actionBusy: actionBusy || Boolean(confirmCloseProject) || preparingUpdate || savingBeforeClose,
     archiveThreadId: tabs.find(tab => tab.id === activeId)?.archivedThread?.id,
@@ -529,7 +535,7 @@ function TabbedWorkspace() {
     closeProject: requestCloseProject,
     toggleProject: cwd => setExpanded(previous => ({ ...previous, [projectKey(cwd)]: !previous[projectKey(cwd)] })),
     refreshProject: (cwd, cursor) => void loadProjectHistory(cwd, cursor),
-    newChat: cwd => void open(cwd), openThread: (cwd, thread) => void open(cwd, thread), report, registerUpdateCapture, onSessionStateChange, flushSessionState, onSessionAttention,
+    newChat: (cwd: string, provider?: AgentProvider) => void open(cwd, undefined, provider), openThread: (cwd, thread) => void open(cwd, thread), report, registerUpdateCapture, onSessionStateChange, flushSessionState, onSessionAttention,
   };
   const attentionTabs = tabs.filter(tab => !tab.archivedThread && (summaries[tab.id]?.pending || attention[tab.id]));
 
@@ -548,7 +554,7 @@ function TabbedWorkspace() {
               if (next >= 0) { event.preventDefault(); activate(tabs[next].id); document.getElementById(`tab-${tabs[next].id}`)?.focus(); }
             }}>
               {tab.archivedThread ? <Archive size={13} /> : state?.terminalOpen ? <Terminal size={13} /> : state?.busy ? <LoaderCircle size={13} className="spin" /> : <MessageSquare size={13} />}
-              <span className="session-tab-label"><strong>{folderName(tab.cwd)}</strong><span>{title}</span></span>
+              <span className="session-tab-label"><strong>{folderName(tab.cwd)}{(state?.settings.provider || tab.provider) === 'claude' ? ' · Claude' : ''}</strong><span>{title}</span></span>
               <span className={`tab-state ${state?.pending ? 'waiting' : state?.busy ? 'running' : state?.connection === 'error' ? 'error' : ''}`} aria-label={status} />
               {attention[tab.id] && <span className="tab-unread" aria-label={attention[tab.id].kind === 'completed' ? 'Непрочитанный результат' : 'Непрочитанное событие'} title={attention[tab.id].kind === 'completed' ? 'Новый результат' : 'Требует внимания'} />}
             </button>
@@ -580,7 +586,7 @@ function TabbedWorkspace() {
     </div>}
     <div className="workspace-views">
       {tabs.map(tab => <div className="session-view" id={`view-${tab.id}`} role="tabpanel" aria-labelledby={`tab-${tab.id}`} data-session-id={tab.id} hidden={activeId !== tab.id} key={tab.id}>
-        {tab.archivedThread ? <ArchiveView thread={tab.archivedThread} active={activeId === tab.id} initialScrollTop={tab.scrollTop} initialScrollAnchor={tab.scrollAnchor} workspace={controls} /> : <App bridge={tab.bridge} sessionId={tab.id} active={activeId === tab.id} initialThread={tab.initialThread} initialDraft={tab.draft} initialAttachments={tab.attachments} initialPreservedDraft={tab.preservedDraft} initialQueue={tab.queue} initialScrollTop={tab.scrollTop} initialScrollAnchor={tab.scrollAnchor} restoreSettings={tab.restoreSettings} workspace={controls} />}
+        {tab.archivedThread ? <ArchiveView thread={tab.archivedThread} active={activeId === tab.id} initialScrollTop={tab.scrollTop} initialScrollAnchor={tab.scrollAnchor} jump={tab.jump} workspace={controls} /> : <App bridge={tab.bridge} sessionId={tab.id} active={activeId === tab.id} initialThread={tab.initialThread} initialDraft={tab.draft} initialAttachments={tab.attachments} initialPreservedDraft={tab.preservedDraft} initialQueue={tab.queue} initialScrollTop={tab.scrollTop} initialScrollAnchor={tab.scrollAnchor} jump={tab.jump} restoreSettings={tab.restoreSettings} workspace={controls} />}
       </div>)}
       {!tabs.length && <div className="session-view folder-empty-view"><div className="app-shell panel-hidden">
         <aside className="sidebar"><div className="brand"><div className="brand-mark"><Terminal size={19} strokeWidth={2.4} /></div><span>codex<span className="brand-light"> desk</span></span><BuildBadge /></div><ProjectSidebar controls={controls} /><div className="sidebar-bottom"><div className="local-engine"><span className="status-dot" /><span>Локальный Codex CLI</span><span className="connection-label">OFF</span></div></div></aside>
@@ -612,6 +618,12 @@ function TabbedWorkspace() {
     </form></div>}
     {preparingUpdate && <div className="nightly-update-overlay" role="dialog" aria-modal="true" aria-labelledby="nightly-update-title" tabIndex={-1}><section><LoaderCircle size={24} className="spin" /><h2 id="nightly-update-title">Nightly обновляется…</h2><p>Сохраняем вкладки и перезапускаем приложение.</p></section></div>}
     {showNotificationSettings && <NotificationSettings onClose={() => setShowNotificationSettings(false)} />}
+    {showLibrary && <HistoryLibrary projects={projects} initialCwd={controls.activeCwd} onClose={() => setShowLibrary(false)} onOpen={(target: HistoryTarget) => {
+      setShowLibrary(false);
+      const jump = { itemId: target.itemId, turnId: target.turnId, key: Date.now(), excerpt: target.excerpt };
+      if (target.archived || target.thread.archived) openArchive(target.thread, jump);
+      else void open(target.cwd, target.thread, target.provider, jump);
+    }} />}
     {savingBeforeClose && !preparingUpdate && <div className="nightly-update-overlay" role="dialog" aria-modal="true" aria-labelledby="workspace-save-title" tabIndex={-1}><section><LoaderCircle size={24} className="spin" /><h2 id="workspace-save-title">Сохраняем рабочее место…</h2><p>Вкладки, черновики и очередь вернутся при следующем запуске.</p></section></div>}
   </div></UpdateNoticeContext.Provider>;
 }

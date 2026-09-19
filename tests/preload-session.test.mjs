@@ -76,6 +76,54 @@ test('Git readers keep file selection and staged area scoped to their session', 
   ]);
 });
 
+test('file previews retain session ownership while history and bookmarks use fixed workspace channels', async () => {
+  const { bridge, calls } = await fixture();
+  await bridge.forSession('a').searchProjectFiles({ query: 'readme', cursor: 'next' });
+  await bridge.forSession('b').readProjectFile({ path: 'src/main.ts' });
+  await bridge.searchHistory({ query: 'решение', cwd: 'project-a', provider: 'all' });
+  await bridge.resolveHistoryTarget({ cwd: 'project-a', provider: 'claude', threadId: 'claude:uuid' });
+  await bridge.listBookmarks({ cwd: 'project-b', provider: 'claude' });
+  await bridge.saveBookmark({ id: 'bookmark-id', label: 'Моя подпись' });
+  await bridge.removeBookmark('bookmark-id');
+  assert.deepEqual(calls, [
+    ['host:searchProjectFiles', { query: 'readme', cursor: 'next' }, 'a'],
+    ['host:readProjectFile', { path: 'src/main.ts' }, 'b'],
+    ['host:searchHistory', { query: 'решение', cwd: 'project-a', provider: 'all' }],
+    ['host:resolveHistoryTarget', { cwd: 'project-a', provider: 'claude', threadId: 'claude:uuid' }],
+    ['host:listBookmarks', { cwd: 'project-b', provider: 'claude' }],
+    ['host:saveBookmark', { id: 'bookmark-id', label: 'Моя подпись' }],
+    ['host:removeBookmark', 'bookmark-id'],
+  ]);
+  for (const key of ['searchHistory', 'resolveHistoryTarget', 'listBookmarks', 'saveBookmark', 'removeBookmark']) assert.equal(bridge.forSession('a')[key], undefined);
+});
+
+test('composer picker passes only selection preferences and the owning session', async () => {
+  const { bridge, calls } = await fixture();
+  await bridge.forSession('a').chooseComposerFiles({ imageSlots: 7, imagesSupported: false });
+  await bridge.forSession('b').chooseComposerFiles();
+  assert.deepEqual(calls, [
+    ['host:chooseComposerFiles', { imageSlots: 7, imagesSupported: false }, 'a'],
+    ['host:chooseComposerFiles', undefined, 'b'],
+  ]);
+});
+
+test('rollback preview, apply and undo retain session ownership without generic RPC', async () => {
+  const { bridge, calls } = await fixture();
+  const a = bridge.forSession('a');
+  await a.previewGitRollback({ path: 'src/пример.ts' });
+  await a.applyGitRollback({ previewId: 'preview' });
+  await a.listGitRollbacks();
+  await a.previewUndoGitRollback({ undoId: 'undo' });
+  await a.undoGitRollback({ previewId: 'undo-preview' });
+  assert.deepEqual(calls, [
+    ['host:previewGitRollback', { path: 'src/пример.ts' }, 'a'],
+    ['host:applyGitRollback', { previewId: 'preview' }, 'a'],
+    ['host:listGitRollbacks', 'a'],
+    ['host:previewUndoGitRollback', { undoId: 'undo' }, 'a'],
+    ['host:undoGitRollback', { previewId: 'undo-preview' }, 'a'],
+  ]);
+});
+
 test('preload listeners receive only their tab, root follows the default and unsubscribe is local', async () => {
   const { bridge, ipc } = await fixture();
   const aEvents = [], bEvents = [], rootEvents = [];

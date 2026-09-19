@@ -278,7 +278,7 @@ try {
   await view().getByText('Последняя страница истории', { exact: true }).waitFor();
   await view().getByRole('button', { name: 'Загрузить предыдущие сообщения', exact: true }).click();
   await view().getByText('Предыдущая страница истории', { exact: true }).waitFor();
-  assert.deepEqual((await view().locator('.assistant-message').allTextContents()).map(text => text.replace(/^Codex/, '').trim()), ['Предыдущая страница истории', 'Последняя страница истории'], 'Earlier page is prepended and overlapping items are deduplicated');
+  assert.deepEqual((await view().locator('.assistant-message .message-content').allTextContents()).map(text => text.trim()), ['Предыдущая страница истории', 'Последняя страница истории'], 'Earlier page is prepended and overlapping items are deduplicated');
   assert.deepEqual((await calls()).filter(call => call.method === 'readArchivedThread' && call.params.threadId === 'archived-pages').map(call => call.params), [{ threadId: 'archived-pages' }, { threadId: 'archived-pages', cursor: 'page-older' }]);
 
   // A successful archive is authoritative even if disposing its old transport fails.

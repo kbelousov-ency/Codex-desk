@@ -1,3 +1,4 @@
+import { useAgentName } from './AgentContext';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
@@ -8,7 +9,8 @@ import './token-usage.css';
 const format = (value: number | null) => value === null ? 'Нет данных' : value.toLocaleString('ru');
 const percent = (value: number | null) => value === null ? 'Нет данных' : `${value.toLocaleString('ru', { maximumFractionDigits: 1 })}%`;
 
-export default function TokenUsage({ tokens, active = true, sessionKey, openSignal = 0, canCompact = false, compacting = false, onCompact }: { tokens: unknown; active?: boolean; sessionKey: string; openSignal?: number; canCompact?: boolean; compacting?: boolean; onCompact?(): void }) {
+export default function TokenUsage({ tokens, active = true, sessionKey, openSignal = 0, canCompact = false, compactSupported = true, compacting = false, onCompact }: { tokens: unknown; active?: boolean; sessionKey: string; openSignal?: number; canCompact?: boolean; compactSupported?: boolean; compacting?: boolean; onCompact?(): void }) {
+  const engineName = useAgentName();
   const metrics = useMemo(() => getTokenMetrics(tokens), [tokens]);
   const [open, setOpen] = useState(false);
   const [pinned, setPinned] = useState(false);
@@ -83,13 +85,13 @@ export default function TokenUsage({ tokens, active = true, sessionKey, openSign
     }}>
       <header className="token-details-header"><div><strong>Использование токенов</strong><small>{pinned ? 'Закреплено' : 'Нажмите на счётчик, чтобы закрепить'}</small></div><button className="icon-button small" type="button" aria-label={pinned ? 'Открепить сведения о токенах' : 'Закрепить сведения о токенах'} aria-pressed={pinned} onClick={togglePin}>{pinned ? <PinOff size={14} /> : <Pin size={14} />}</button><button type="button" className="icon-button small" aria-label="Закрыть сведения о токенах" onClick={() => close(true)}><X size={15} /></button></header>
       <section className="token-details-section">
-        <p className="token-details-note">Счётчик под сообщением — <b>всего за последний запрос</b> по данным Codex. Это не размер файлов и не точный объём текущего контекста.</p>
+        <p className="token-details-note">Счётчик под сообщением — <b>всего за последний запрос</b> по данным {engineName}. Это не размер файлов и не точный объём текущего контекста.</p>
         <UsageBreakdown title="Последний запрос" name="last" data={metrics.last} />
       </section>
       <section className="token-details-section"><UsageBreakdown title="За весь диалог" name="total" data={metrics.total} /><p className="token-details-note">Накопленные расходы: один и тот же контекст может учитываться повторно в нескольких запросах.</p></section>
-      <section className="token-details-section" data-token-section="cache"><h3>Что входит в кэш</h3><p>«Из кэша» — входные токены повторно использованного префикса запроса. «Запись кэша» — токены, для которых провайдер сообщил создание новой записи. Это счётчики запросов, а не размер всего сохранённого кэша.</p><p>В префикс могут входить инструкции, история диалога и описания инструментов. <b>Разбивку по файлам, сообщениям, изображениям и инструкциям Codex не передаёт.</b> Определить их доли по этим данным нельзя.</p><p>Кэш сокращает повторную обработку входа; токены из кэша всё равно входят в запрос и занимают контекст.</p></section>
+      <section className="token-details-section" data-token-section="cache"><h3>Что входит в кэш</h3><p>«Из кэша» — входные токены повторно использованного префикса запроса. «Запись кэша» — токены, для которых провайдер сообщил создание новой записи. Это счётчики запросов, а не размер всего сохранённого кэша.</p><p>В префикс могут входить инструкции, история диалога и описания инструментов. <b>Разбивку по файлам, сообщениям, изображениям и инструкциям {engineName} не передаёт.</b> Определить их доли по этим данным нельзя.</p><p>Кэш сокращает повторную обработку входа; токены из кэша всё равно входят в запрос и занимают контекст.</p></section>
       <section className="token-details-section" data-token-section="context"><h3>Контекст модели</h3><dl><Metric name="Окно контекста" value={metrics.modelContextWindow} field="window" /><div className="token-metric" data-token-field="context-share"><dt>Вход последнего запроса / окно</dt><dd>{percent(metrics.lastInputContextPercent)}</dd></div></dl><p className="token-details-note">Сопоставление последнего входа с лимитом модели. Оно не учитывает последующие изменения диалога.</p></section>
-      <section className="token-details-section"><button type="button" className="secondary-button token-compact-action" aria-label="Сжать контекст" disabled={!canCompact || compacting} onClick={() => { cancelClose(); pinRef.current = true; setPinned(true); onCompact?.(); }}>{compacting ? <LoaderCircle size={14} className="spin" /> : <Minimize2 size={14} />}{compacting ? 'Сжимаем контекст…' : 'Сжать контекст'}<code>/compact</code></button></section>
+      <section className="token-details-section"><button type="button" className="secondary-button token-compact-action" aria-label="Сжать контекст" title={!compactSupported ? `Сжатие ${engineName} из приложения пока недоступно` : undefined} disabled={!compactSupported || !canCompact || compacting} onClick={() => { cancelClose(); pinRef.current = true; setPinned(true); onCompact?.(); }}>{compacting ? <LoaderCircle size={14} className="spin" /> : <Minimize2 size={14} />}{compacting ? 'Сжимаем контекст…' : 'Сжать контекст'}<code>/compact</code></button></section>
     </div>, document.body)}
   </>;
 }

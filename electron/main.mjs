@@ -10,6 +10,12 @@ import { openLink, showLocalPathMenu } from './file-links.mjs';
 import { listProjectThreads } from './project-history.mjs';
 import { listProjectFiles } from './project-files.mjs';
 import { getGitStatus, getGitDiff } from './git-reader.mjs';
+import { GitRollbackService } from './git-rollback.mjs';
+import { prepareComposerFiles } from './composer-files.mjs';
+import { ClaudeHistory } from './claude-history.mjs';
+import { HistorySearch } from './history-search.mjs';
+import { BookmarkStore } from './bookmarks.mjs';
+import { searchProjectFiles, readProjectFile } from './file-viewer.mjs';
 import { ThreadActionCoordinator, ThreadManagement } from './thread-management.mjs';
 import { McpConfigService } from './mcp-service.mjs';
 import { readAttachment, hydrateAttachmentPreviews } from './attachments.mjs';
@@ -57,6 +63,16 @@ const threadActions = new ThreadActionCoordinator();
 const settingsStore = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'));
 const workspaceStore = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
 const notificationSettings = new NotificationSettingsStore(path.join(app.getPath('userData'), 'notifications.json'));
+const claudeHistory = new ClaudeHistory();
+const bookmarks = new BookmarkStore(app.getPath('userData'));
+const gitRollback = new GitRollbackService({ directory: path.join(app.getPath('userData'), 'git-rollback') });
+const rollbackPreviews = new Map();
+const rollbackReservations = new Set();
+const rollbackJobs = new Set();
+const pathsOverlap = (left, right) => {
+  const a = path.resolve(left || '').toLowerCase(), b = path.resolve(right || '').toLowerCase();
+  return a === b || a.startsWith(b + path.sep) || b.startsWith(a + path.sep);
+};
 let quitting = false;
 let settingsFlushed = false;
 let operationSequence = 0;
@@ -87,7 +103,7 @@ const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:compl
 const projectKey = cwd => process.platform === 'win32' ? path.resolve(cwd).toLowerCase() : path.resolve(cwd);
 
 function updateBusy() {
-  if (quitting || pendingOperations || updateStorageBusy || windows.size !== 1 || threadActions.locks.size) return true;
+  if (quitting || pendingOperations || updateStorageBusy || rollbackReservations.size || windows.size !== 1 || threadActions.locks.size) return true;
   return [...windows.values()].some(record => record.diagnosticsExport || [...record.sessions.values()].some(session =>
     session.terminal || session.mcpRefreshing || session.pendingBoots || session.pendingMutations || session.requests.size || session.activeThreadTurns.size || session.compactingThreads.size));
 }
@@ -162,6 +178,10 @@ function handle(channel, argumentCount, fn) {
     let scoped;
     try { scoped = sessionForEvent(windows, event, args[count]); }
     catch (error) { diagnostics.error('ipc.failed', error, { channel, windowId: event.sender.id }); throw error; }
+    if ([...rollbackReservations].some(cwd => pathsOverlap(cwd, scoped.session.currentCwd))) {
+      const safe = channel === 'host:getGitStatus' || channel === 'host:getGitDiff' || channel === 'host:listGitRollbacks' || channel === 'host:getSettings' || channel === 'host:readAttachment' || channel === 'host:listFiles';
+      if (!safe) throw new Error('Дождитесь завершения отката файла.');
+    }
     if (scoped.closingProjects?.has(projectKey(scoped.session.currentCwd)) || (channel === 'codex:start' && scoped.closingProjects?.size)) throw new Error('Проект закрывается.');
     return traced(channel, event, { sessionId: diagnostics.id(scoped.sessionId), projectId: diagnostics.id(scoped.session.currentCwd),
       ...(channel === 'codex:request' ? { method: args[0] } : {}),
@@ -172,6 +192,7 @@ function handle(channel, argumentCount, fn) {
 function workspaceHandle(channel, fn) {
   ipcMain.handle(channel, (event, ...args) => {
     const record = windowForEvent(windows, event);
+    if (rollbackReservations.size && ['host:createSession', 'host:closeSession', 'host:closeProject', 'host:manageThread'].includes(channel)) throw new Error('Дождитесь завершения отката файла.');
     return traced(channel, event, {}, () => fn(record, event, ...args));
   });
 }
@@ -182,10 +203,11 @@ function addSession(record, settings) {
   const id = randomUUID();
   const session = new WindowSession({
     settings,
+    attachmentsDirectory: channelPaths.attachmentsDirectory, claudeHistory,
     diagnostics,
     diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(id) },
     threadActions,
-    persistSettings: patch => Promise.all([settingsStore.update(patch), ...(patch.cwd ? [workspaceStore.addProject(patch.cwd)] : [])]),
+    persistSettings: patch => Promise.all([settingsStore.updateProvider(settings.provider || 'codex', patch), ...(patch.cwd ? [workspaceStore.addProject(patch.cwd)] : [])]),
     send: (type, data) => {
       const win = record.window;
       if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
@@ -196,7 +218,7 @@ function addSession(record, settings) {
   record.sessions.set(id, session);
   record.defaultSessionId ??= id;
   diagnostics.record('info', 'session.created', { windowId: record.window.webContents.id, sessionId: diagnostics.id(id), projectId: diagnostics.id(session.currentCwd) });
-  return { id, cwd: session.currentCwd };
+  return { id, cwd: session.currentCwd, ...(settings.provider ? { provider: settings.provider } : {}) };
 }
 
 function installHandlers() {
@@ -285,7 +307,7 @@ function installHandlers() {
     notifications.dismissSession(windows.get(window.webContents.id), sessionId);
     return result;
   });
-  const mcpConfig = session => { session.mcpConfigService ??= new McpConfigService(session); return session.mcpConfigService.manager; };
+  const mcpConfig = session => { if (session.settings.provider === 'claude') throw new Error('MCP Claude Code управляется через его CLI.'); session.mcpConfigService ??= new McpConfigService(session); return session.mcpConfigService.manager; };
   handle('host:getMcpConfig', 0, ({ session }) => mcpConfig(session).list());
   handle('host:previewMcpImport', 1, ({ session }, text) => mcpConfig(session).preview(text));
   handle('host:saveMcpImport', 1, ({ session }, options) => mcpConfig(session).save(options));
@@ -296,13 +318,13 @@ function installHandlers() {
   handle('codex:respond', 2, ({ session }, id, result) => session.respond(id, result));
   workspaceHandle('host:getWorkspace', async record => {
     const workspace = await workspaceStore.snapshot();
-    return { ...workspace, sessions: [...record.sessions].map(([id, session]) => ({ id, cwd: session.currentCwd })), ...(record.restoration ? { restore: record.restoration } : {}) };
+    return { ...workspace, sessions: [...record.sessions].map(([id, session]) => ({ id, cwd: session.currentCwd, ...(session.settings.provider ? { provider: session.settings.provider } : {}) })), ...(record.restoration ? { restore: record.restoration } : {}) };
   });
   const management = (record, event) => {
     record.management ??= new ThreadManagement({
       coordinator: threadActions,
-      getSessions: () => [...windows.values()].flatMap(item => [...item.sessions.values()]),
-      getSettings: () => settingsStore.snapshot(),
+      getSessions: () => [...windows.values()].flatMap(item => [...item.sessions.values()].filter(session => session.settings.provider !== 'claude')),
+      getSettings: () => settingsStore.snapshotProvider('codex'),
       createSession: settings => new WindowSession({ settings, diagnostics, diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(randomUUID()) } }),
       assertActive: () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); },
       onRestore: async cwd => {
@@ -313,6 +335,99 @@ function installHandlers() {
     });
     return record.management;
   };
+  const registeredProject = async (record, event, cwd) => {
+    const canonical = await directoryPath(cwd);
+    windowForEvent(windows, event);
+    const saved = await workspaceStore.snapshot();
+    const projects = await Promise.all(saved.projects.map(project => directoryPath(project).catch(() => null)));
+    windowForEvent(windows, event);
+    if (!projects.some(project => project && projectKey(project) === projectKey(canonical))) throw new Error('Папка не добавлена в рабочую область.');
+    return canonical;
+  };
+  workspaceHandle('host:searchHistory', async (record, event, options) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['query', 'cwd', 'provider', 'cursor'].includes(key))) throw new Error('Некорректный поиск истории.');
+    const cwd = await registeredProject(record, event, options.cwd);
+    const store = management(record, event);
+    record.historySearch ??= new HistorySearch({
+      listThreads: async ({ cwd, provider, cursor, limit }) => {
+        if (provider === 'claude') return claudeHistory.list({ cwd, cursor, limit });
+        let page = { cursor: cursor || undefined, archived: false };
+        if (cursor?.startsWith('search:')) {
+          page = JSON.parse(Buffer.from(cursor.slice(7), 'base64url').toString('utf8'));
+        }
+        return store.enqueue(async request => {
+          const result = await request('thread/list', { cwd, limit, archived: page.archived, sortKey: 'updated_at', sourceKinds: ['appServer', 'cli', 'vscode'], ...(page.cursor ? { cursor: page.cursor } : {}) });
+          const next = result.nextCursor ? { cursor: result.nextCursor, archived: page.archived } : !page.archived ? { archived: true } : null;
+          return { data: (result.data || []).filter(thread => !thread.cwd || projectKey(thread.cwd) === projectKey(cwd)).map(thread => ({ ...thread, cwd, provider: 'codex', archived: page.archived })), nextCursor: next ? `search:${Buffer.from(JSON.stringify(next)).toString('base64url')}` : null };
+        });
+      },
+      readThread: async ({ cwd, provider, thread, cursor }) => {
+        if (provider === 'claude') return claudeHistory.read({ cwd, threadId: thread.id });
+        return store.enqueue(async request => {
+          const info = await request('thread/read', { threadId: thread.id, includeTurns: false });
+          if (info.thread?.id !== thread.id || (info.thread.cwd && projectKey(info.thread.cwd) !== projectKey(cwd))) throw new Error('Диалог перемещён в другую папку.');
+          if (info.thread.historyMode === 'paginated') {
+            const page = await request('thread/items/list', { threadId: thread.id, limit: 100, sortDirection: 'desc', ...(cursor ? { cursor } : {}) });
+            return { thread: { ...info.thread, archived: thread.archived }, items: (page.data || []).map(entry => ({ ...entry.item, turnId: entry.turnId })), nextCursor: page.nextCursor || null };
+          }
+          const result = await request('thread/read', { threadId: thread.id, includeTurns: true });
+          return { thread: { ...result.thread, archived: thread.archived } };
+        });
+      },
+    });
+    const page = await record.historySearch.search({ ...options, cwd });
+    windowForEvent(windows, event);
+    return page;
+  });
+  workspaceHandle('host:listBookmarks', async (_record, _event, options = {}) => bookmarks.list(options));
+  workspaceHandle('host:resolveHistoryTarget', async (record, event, options) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options)
+      || Object.keys(options).some(key => !['cwd', 'provider', 'threadId'].includes(key))
+      || !['codex', 'claude'].includes(options.provider) || typeof options.threadId !== 'string') throw new Error('Некорректная ссылка на сообщение.');
+    const nativeId = options.provider === 'claude' ? options.threadId.replace(/^claude:/, '') : options.threadId;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nativeId)
+      || (options.provider === 'claude' && !options.threadId.startsWith('claude:'))) throw new Error('Диалог принадлежит другому агенту или ссылка повреждена.');
+    const cwd = await registeredProject(record, event, options.cwd);
+    if (options.provider === 'claude') {
+      let result;
+      try { result = await claudeHistory.read({ cwd, threadId: options.threadId, includeTurns: false }); }
+      catch { throw new Error('Не удалось открыть исходный диалог Claude. Он мог быть удалён или стать недоступным. Сохранённая закладка остаётся в библиотеке.'); }
+      windowForEvent(windows, event);
+      return { ...result.thread, provider: 'claude', archived: false };
+    }
+    return management(record, event).enqueue(async request => {
+      let result;
+      try { result = await request('thread/read', { threadId: options.threadId, includeTurns: false }); }
+      catch { throw new Error('Не удалось открыть исходный диалог Codex. Он мог быть удалён или стать недоступным. Сохранённая закладка остаётся в библиотеке.'); }
+      const thread = result?.thread;
+      if (thread?.id !== options.threadId) throw new Error('Исходный диалог не найден. Сохранённая закладка остаётся в библиотеке.');
+      if (!thread.cwd || projectKey(thread.cwd) !== projectKey(cwd)) throw new Error('Диалог теперь находится в другой папке. Откройте его через историю этой папки.');
+      // Native Thread metadata has no archived flag. Query membership instead of
+      // trusting a stale bookmark or deriving state from an internal file path.
+      let cursor;
+      const cursors = new Set();
+      for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+        const page = await request('thread/list', { cwd, archived: true, limit: 100, sortKey: 'updated_at', modelProviders: [],
+          sourceKinds: ['appServer', 'cli', 'vscode', 'exec', 'subAgent', 'subAgentReview', 'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther', 'unknown'],
+          ...(cursor ? { cursor } : {}) });
+        if ((page.data || []).some(candidate => candidate.id === thread.id)) return { ...thread, provider: 'codex', archived: true };
+        cursor = page.nextCursor;
+        if (!cursor) return { ...thread, provider: 'codex', archived: false };
+        if (typeof cursor !== 'string' || cursor.length > 16384 || cursors.has(cursor)) throw new Error('Не удалось проверить состояние архива: Codex повторил страницу. Повторите открытие.');
+        cursors.add(cursor);
+      }
+      throw new Error('Архив проекта слишком велик для проверки ссылки. Откройте диалог через список истории или архива.');
+    });
+  });
+  workspaceHandle('host:saveBookmark', async (record, event, value) => {
+    if (!value || typeof value !== 'object') throw new Error('Некорректная закладка.');
+    // Editing an app-owned snapshot still works after its project was removed.
+    // The store verifies that an existing id keeps exactly the same source.
+    if (value.id !== undefined) return bookmarks.save(value);
+    const cwd = await registeredProject(record, event, value.cwd);
+    return bookmarks.save({ ...value, cwd });
+  });
+  workspaceHandle('host:removeBookmark', (_record, _event, id) => bookmarks.remove(id));
   workspaceHandle('host:listArchivedThreads', (record, event, cursor) => management(record, event).listArchivedThreads(cursor));
   workspaceHandle('host:searchThreads', (record, event, options) => management(record, event).searchThreads(options));
   workspaceHandle('host:readArchivedThread', async (record, event, options) => {
@@ -329,15 +444,23 @@ function installHandlers() {
     if (options?.menu) return showLocalPathMenu({ ...params, Menu, window: record.window });
     return openLink(params);
   });
-  workspaceHandle('host:listProjectThreads', (record, event, cwd, cursor) => {
+  workspaceHandle('host:listProjectThreads', async (record, event, cwd, cursor) => {
     const assertWindow = () => {
       if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.');
     };
-    return listProjectThreads({
-      record, workspaceStore, cwd, cursor, assertWindow,
+    let paging;
+    if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursor.length > 32768)) throw new Error('Некорректная страница истории.');
+    if (typeof cursor === 'string' && cursor.startsWith('desk:')) {
+      try { paging = JSON.parse(Buffer.from(cursor.slice(5), 'base64url').toString('utf8')); } catch { throw new Error('Некорректная страница истории.'); }
+      if (!paging || paging.cwd !== cwd || (paging.codex !== null && typeof paging.codex !== 'string') || (paging.claude !== null && typeof paging.claude !== 'string')) throw new Error('Некорректная страница истории.');
+    }
+    const defaults = await settingsStore.snapshot(); assertWindow();
+    const includeClaude = Boolean(paging || defaults.providers?.claude || [...record.sessions.values()].some(session => session.settings.provider === 'claude'));
+    const codexRead = paging?.codex === null ? Promise.resolve({ data: [], nextCursor: null }) : listProjectThreads({
+      record, workspaceStore, cwd, cursor: paging?.codex || cursor, assertWindow,
       createHistorySession: async folder => {
         if (!record.historySession) {
-          const settings = await settingsStore.snapshot();
+          const settings = await settingsStore.snapshotProvider('codex');
           assertWindow();
           // A single read-only connection also serves history when no tabs are
           // open. It never publishes events or changes persisted cwd/settings.
@@ -346,17 +469,35 @@ function installHandlers() {
         return record.historySession;
       },
     });
+    // Attach the rejection handler before any independent folder checks await.
+    const codexOutcome = codexRead.then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason }));
+    if (!includeClaude) return codexRead;
+    const folder = await directoryPath(cwd); assertWindow();
+    const workspace = await workspaceStore.snapshot(); assertWindow();
+    if (!workspace.projects.some(project => projectKey(project) === projectKey(folder))) throw new Error('Папка не добавлена в рабочую область.');
+    const [codexPage, claudePage] = await Promise.all([codexOutcome, Promise.allSettled([paging?.claude === null ? Promise.resolve({ data: [], nextCursor: null }) : claudeHistory.list({ cwd: folder, cursor: paging?.claude || undefined, limit: 40 })]).then(([page]) => page)]);
+    assertWindow();
+    if (codexPage.status === 'rejected' && claudePage.status === 'rejected') throw codexPage.reason;
+    const a = codexPage.status === 'fulfilled' ? codexPage.value : { data: [], nextCursor: null };
+    const b = claudePage.status === 'fulfilled' ? claudePage.value : { data: [], nextCursor: null };
+    const next = a.nextCursor || b.nextCursor ? `desk:${Buffer.from(JSON.stringify({ cwd, codex: a.nextCursor || null, claude: b.nextCursor || null })).toString('base64url')}` : null;
+    return { data: [...a.data, ...b.data].sort((x, y) => (y.updatedAt || 0) - (x.updatedAt || 0)), nextCursor: next };
   });
   workspaceHandle('host:createSession', async (record, event, options = {}) => {
     if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Некорректные параметры сессии.');
     const sourceId = options.fromSessionId ?? record.defaultSessionId;
     const source = sourceId == null ? null : sessionForEvent(windows, event, sourceId).session;
-    const snapshot = source ? source.getSettings() : await settingsStore.snapshot();
+    if (options.provider !== undefined && !['codex', 'claude'].includes(options.provider)) throw new Error('Неизвестный агент.');
+    const provider = options.provider || source?.settings.provider || 'codex';
+    const sameProvider = provider === (source?.settings.provider || 'codex');
+    const snapshot = source && sameProvider ? source.getSettings() : await settingsStore.snapshotProvider(provider);
     const effective = cleanSettings(options.settings);
     const settings = { ...snapshot };
+    if (provider === 'claude' || options.provider) settings.provider = provider;
     for (const key of ['model', 'effort', 'access']) {
-      if (effective[key] !== undefined) settings[key] = effective[key];
+      if (sameProvider && effective[key] !== undefined) settings[key] = effective[key];
     }
+    if (provider === 'claude' && settings.access === 'danger-full-access') settings.access = 'workspace-write';
     let selected = options.cwd;
     if (selected === undefined) {
       const result = await dialog.showOpenDialog(record.window, { title: 'Добавить рабочую папку', defaultPath: source?.currentCwd || snapshot.cwd, properties: ['openDirectory', 'createDirectory'] });
@@ -409,10 +550,27 @@ function installHandlers() {
     return result.canceled ? null : result.filePaths[0];
   });
   handle('host:chooseExecutable', 0, async ({ window, session }) => {
-    const result = await dialog.showOpenDialog(window, { title: 'Выберите codex.exe', properties: ['openFile'], filters: [{ name: 'Codex', extensions: process.platform === 'win32' ? ['exe'] : ['*'] }] });
+    const claude = session.settings.provider === 'claude';
+    const result = await dialog.showOpenDialog(window, { title: claude ? 'Выберите claude.exe' : 'Выберите codex.exe', properties: ['openFile'], filters: [{ name: claude ? 'Claude Code' : 'Codex', extensions: process.platform === 'win32' ? ['exe'] : ['*'] }] });
     if (result.canceled) return null;
     await session.setSettings({ executable: result.filePaths[0] });
     return result.filePaths[0];
+  });
+  handle('host:chooseComposerFiles', 1, async ({ window, session }, options = {}) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['imageSlots', 'imagesSupported'].includes(key)) || (options.imageSlots !== undefined && (!Number.isInteger(options.imageSlots) || options.imageSlots < 0 || options.imageSlots > 10)) || (options.imagesSupported !== undefined && typeof options.imagesSupported !== 'boolean')) throw new Error('Некорректные параметры выбора файлов.');
+    if (session.composerPicker) throw new Error('Окно выбора файлов уже открыто.');
+    const generation = session.generation, cwd = session.currentCwd;
+    const assertActive = () => { session.assertActive(generation); if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Выберите файлы снова.'); };
+    session.composerPicker = true;
+    try {
+      const selected = await dialog.showOpenDialog(window, {
+        title: 'Добавить файлы в сообщение', defaultPath: cwd, properties: ['openFile', 'multiSelections'],
+        filters: [{ name: 'Все файлы', extensions: ['*'] }, { name: 'Изображения', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }],
+      });
+      assertActive();
+      if (selected.canceled || !selected.filePaths.length) return null;
+      return await prepareComposerFiles(selected.filePaths, { ...options, assertActive });
+    } finally { session.composerPicker = false; }
   });
   handle('host:saveImages', 1, async (_record, images) => {
     if (!Array.isArray(images) || images.length > 12) throw new Error('Можно прикрепить до 12 изображений.');
@@ -443,6 +601,18 @@ function installHandlers() {
       if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Обновите дерево файлов.');
     } });
   });
+  const viewerContext = session => {
+    const generation = session.generation, cwd = session.currentCwd;
+    return { cwd, assertActive: () => { session.assertActive(generation); if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Откройте файл снова.'); } };
+  };
+  handle('host:searchProjectFiles', 1, ({ session }, options) => {
+    if (!options || typeof options !== 'object' || Object.keys(options).some(key => !['query', 'cursor'].includes(key))) throw new Error('Некорректный поиск файла.');
+    return searchProjectFiles({ ...options, ...viewerContext(session) });
+  });
+  handle('host:readProjectFile', 1, ({ session }, options) => {
+    if (!options || typeof options !== 'object' || Object.keys(options).some(key => key !== 'path')) throw new Error('Некорректный путь файла.');
+    return readProjectFile({ ...options, ...viewerContext(session) });
+  });
   const gitContext = session => {
     const generation = session.generation;
     const cwd = session.currentCwd;
@@ -456,6 +626,53 @@ function installHandlers() {
     if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['path', 'area'].includes(key))) throw new Error('Некорректный запрос сравнения Git.');
     return getGitDiff({ ...options, ...gitContext(session) });
   });
+  const rollbackOption = (value, key) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 || typeof value[key] !== 'string' || !value[key] || value[key].length > 32768) throw new Error('Некорректный запрос отката.');
+    return value[key];
+  };
+  const ensureRollbackIdle = session => {
+    if (session.settings.access === 'read-only') throw new Error('В режиме «Только чтение» откат недоступен.');
+    for (const record of windows.values()) for (const other of record.sessions.values()) {
+      if (!pathsOverlap(other.currentCwd, session.currentCwd)) continue;
+      if (other.terminal || other.mcpRefreshing || other.pendingBoots || other.pendingMutations || other.requests.size || other.activeThreadTurns.size || other.compactingThreads.size) throw new Error('Завершите задачи, запросы разрешений и работу в терминале этого проекта перед откатом.');
+    }
+  };
+  const rollbackContext = session => {
+    const context = gitContext(session);
+    return { ...context, assertActive: () => { context.assertActive(); ensureRollbackIdle(session); } };
+  };
+  const rememberRollbackPreview = (session, value) => {
+    const now = Date.now();
+    for (const [id, preview] of rollbackPreviews) if (Date.parse(preview.expiresAt) <= now || preview.session.disposed) rollbackPreviews.delete(id);
+    rollbackPreviews.set(value.previewId, { session, generation: session.generation, cwd: session.currentCwd, operation: value.operation, expiresAt: value.expiresAt });
+    while (rollbackPreviews.size > 100) rollbackPreviews.delete(rollbackPreviews.keys().next().value);
+    return value;
+  };
+  handle('host:previewGitRollback', 1, async ({ session }, options) => {
+    const context = rollbackContext(session); context.assertActive();
+    const value = await gitRollback.preview({ ...context, path: rollbackOption(options, 'path') });
+    context.assertActive(); return rememberRollbackPreview(session, value);
+  });
+  handle('host:previewUndoGitRollback', 1, async ({ session }, options) => {
+    const context = rollbackContext(session); context.assertActive();
+    const value = await gitRollback.previewUndo({ ...context, undoId: rollbackOption(options, 'undoId') });
+    context.assertActive(); return rememberRollbackPreview(session, value);
+  });
+  handle('host:listGitRollbacks', 0, ({ session }) => gitRollback.list(gitContext(session)));
+  const applyRollback = (session, options, operation) => {
+    const previewId = rollbackOption(options, 'previewId');
+    const preview = rollbackPreviews.get(previewId);
+    if (!preview || preview.session !== session || preview.generation !== session.generation || preview.cwd !== session.currentCwd || preview.operation !== operation || Date.parse(preview.expiresAt) <= Date.now()) throw new Error('Предпросмотр устарел или относится к другому диалогу. Откройте его снова.');
+    const context = rollbackContext(session); context.assertActive();
+    if ([...rollbackReservations].some(cwd => pathsOverlap(cwd, context.cwd))) throw new Error('В проекте уже выполняется откат.');
+    rollbackPreviews.delete(previewId);
+    rollbackReservations.add(context.cwd);
+    const job = Promise.resolve().then(() => operation === 'restore' ? gitRollback.apply({ ...context, previewId }) : gitRollback.applyUndo({ ...context, previewId })).finally(() => { rollbackReservations.delete(context.cwd); rollbackJobs.delete(job); });
+    rollbackJobs.add(job);
+    return job;
+  };
+  handle('host:applyGitRollback', 1, ({ session }, options) => applyRollback(session, options, 'restore'));
+  handle('host:undoGitRollback', 1, ({ session }, options) => applyRollback(session, options, 'undo'));
   // Older callers supply (target, sessionId); options occupy the new second slot.
   handle('host:showPathMenu', args => args.length < 3 && typeof args[1] === 'string' ? 1 : 2, ({ session, window }, target, options) => {
     const generation = session.generation;
@@ -510,6 +727,7 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
   win.webContents.on('preload-error', (_event, _preloadPath, error) => diagnostics.error('window.preloadError', error, { windowId: contentsId }));
   win.on('unresponsive', () => diagnostics.record('warn', 'window.unresponsive', { windowId: contentsId }));
   win.webContents.on('render-process-gone', (_event, details) => {
+    record.historySearch?.dispose(); record.historySearch = null;
     record.rendererGone = true;
     notifications.closeWindow(record);
     workspaceSave.cancel(record);
@@ -525,12 +743,13 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
     event.preventDefault();
     if (record.workspaceClosing) return;
     record.workspaceClosing = true;
-    void workspaceSave.request(record).then(() => workspaceState.flush()).finally(() => {
+    void workspaceSave.request(record).then(async () => { await Promise.allSettled([...rollbackJobs]); await workspaceState.flush(); await bookmarks.flush(); }).finally(() => {
       record.closeReady = true;
       if (!win.isDestroyed()) win.close();
     });
   });
   win.on('closed', () => {
+    record.historySearch?.dispose();
     notifications.closeWindow(record);
     workspaceSave.cancel(record);
     if (updatePreparation?.record === record) updatePreparation.reject(new Error('Окно закрыто во время обновления.'));
@@ -602,13 +821,15 @@ else {
         record.workspaceClosing = true;
         return record.closeReady ? undefined : workspaceSave.request(record);
       }));
+      await Promise.allSettled([...rollbackJobs]);
       for (const record of records) {
+        record.historySearch?.dispose();
         notifications.closeWindow(record);
         for (const session of record.sessions.values()) session.dispose();
         record.historySession?.dispose();
         record.management?.dispose();
       }
-      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), closeUpdater]);
+      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), bookmarks.flush(), closeUpdater]);
       diagnostics.record('info', 'app.quit');
       await diagnostics.flush();
       settingsFlushed = true; app.quit();

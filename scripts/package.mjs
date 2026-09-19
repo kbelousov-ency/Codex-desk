@@ -28,10 +28,18 @@ try {
     await checkedTree(root, path.join(root, 'node_modules', '@iarna', 'toml'));
     await mkdir(path.join(stage, 'node_modules', '@iarna'), { recursive: true });
     await cp(path.join(root, 'node_modules', '@iarna', 'toml'), path.join(stage, 'node_modules', '@iarna', 'toml'), { recursive: true });
+    // Only the self-contained SDK history reader is packaged. Claude execution
+    // uses the user's installed CLI; no optional SDK binaries are shipped.
+    const claudeSdk = path.join(root, 'node_modules', '@anthropic-ai', 'claude-agent-sdk');
+    await checkedTree(root, claudeSdk);
+    const stagedSdk = path.join(stage, 'node_modules', '@anthropic-ai', 'claude-agent-sdk');
+    await mkdir(stagedSdk, { recursive: true });
+    for (const file of ['sdk.mjs', 'README.md']) await cp(path.join(claudeSdk, file), path.join(stagedSdk, file));
+    await writeFile(path.join(stagedSdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.278', type: 'module', main: 'sdk.mjs', exports: './sdk.mjs' }));
     await writeFile(path.join(stage, 'package.json'), JSON.stringify({
       name: manifest.name, version: manifest.version, description: manifest.description,
       private: true, type: manifest.type, main: manifest.main,
-      dependencies: { '@iarna/toml': manifest.dependencies['@iarna/toml'] },
+      dependencies: { '@iarna/toml': manifest.dependencies['@iarna/toml'], '@anthropic-ai/claude-agent-sdk': manifest.dependencies['@anthropic-ai/claude-agent-sdk'] },
     }, null, 2));
     const checksums = await fileChecksums(root, stage, new Set(['electron/build-info.json']));
     const buildId = createHash('sha256').update(JSON.stringify(checksums)).digest('hex');

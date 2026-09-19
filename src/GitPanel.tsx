@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AlertTriangle, FileCode2, GitBranch, LoaderCircle, RefreshCw, Search } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { AlertTriangle, FileCode2, GitBranch, LoaderCircle, RefreshCw, RotateCcw, Search } from 'lucide-react';
 import { useBridge } from './BridgeContext';
 import { DiffReview } from './DiffReview';
 import type { ReviewSelection } from './DiffReview';
-import type { GitArea, GitEntry, GitStatus } from './types';
+import { GitRollback } from './GitRollback';
+import type { RollbackTarget } from './GitRollback';
+import type { CodexBridge, GitArea, GitEntry, GitRollbackRecord, GitStatus } from './types';
 import './git-panel.css';
 
 const names = { M: 'Изменён', A: 'Добавлен', D: 'Удалён', R: 'Переименован', C: 'Скопирован', T: 'Тип изменён', U: 'Конфликт', '?': 'Новый файл' };
@@ -14,7 +16,7 @@ const sections: { label: string; area: GitArea; accepts(entry: GitEntry): boolea
   { label: 'Новые файлы', area: 'untracked', accepts: entry => entry.untracked },
 ];
 
-export default function GitPanel({ cwd, active, refreshKey, onReviewChange }: { cwd: string; active: boolean; refreshKey?: unknown; onReviewChange?(open: boolean): void }) {
+export default function GitPanel({ cwd, active, refreshKey, onReviewChange, mutationsAllowed = true }: { cwd: string; active: boolean; refreshKey?: unknown; onReviewChange?(open: boolean): void; mutationsAllowed?: boolean }) {
   const bridge = useBridge();
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -22,6 +24,11 @@ export default function GitPanel({ cwd, active, refreshKey, onReviewChange }: { 
   const [query, setQuery] = useState('');
   const [opening, setOpening] = useState<string | null>(null);
   const [review, setReview] = useState<ReviewSelection | null>(null);
+  const [rollback, setRollback] = useState<(RollbackTarget & { bridge: CodexBridge; cwd: string }) | null>(null);
+  const [rollbacks, setRollbacks] = useState<GitRollbackRecord[]>([]);
+  const [historyError, setHistoryError] = useState('');
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [success, setSuccess] = useState('');
   const [stale, setStale] = useState(false);
   const [checkedAt, setCheckedAt] = useState('');
   const generation = useRef(0);
@@ -33,6 +40,14 @@ export default function GitPanel({ cwd, active, refreshKey, onReviewChange }: { 
     if (!activeRef.current || !cwd) return;
     const version = generation.current, serial = ++request.current;
     ++diffRequest.current; setOpening(null); setLoading(true); setError(''); setStale(true);
+    if (bridge.listGitRollbacks) {
+      setHistoryLoading(true); setHistoryError('');
+      void bridge.listGitRollbacks().then(next => {
+        if (generation.current === version && serial === request.current && activeRef.current) setRollbacks(next);
+      }).catch(cause => {
+        if (generation.current === version && serial === request.current && activeRef.current) setHistoryError(cause instanceof Error ? cause.message : String(cause));
+      }).finally(() => { if (generation.current === version && serial === request.current) setHistoryLoading(false); });
+    }
     try {
       if (!bridge.getGitStatus) throw new Error('Просмотр Git доступен после обновления приложения.');
       const next = await bridge.getGitStatus();
@@ -43,14 +58,19 @@ export default function GitPanel({ cwd, active, refreshKey, onReviewChange }: { 
     } finally { if (generation.current === version && serial === request.current) setLoading(false); }
   }, [bridge, cwd]);
   useEffect(() => {
-    generation.current++; setStatus(null); setReview(null); setQuery(''); setError(''); setCheckedAt('');
+    generation.current++; setStatus(null); setReview(null); setRollback(null); setRollbacks([]); setHistoryError(''); setHistoryLoading(false); setSuccess(''); setQuery(''); setError(''); setCheckedAt('');
     return () => { generation.current++; };
   }, [bridge, cwd]);
   useEffect(() => {
     if (active) void load();
-    else { request.current++; diffRequest.current++; setLoading(false); setOpening(null); setReview(null); }
+    else { request.current++; diffRequest.current++; setLoading(false); setHistoryLoading(false); setOpening(null); setReview(null); setRollback(null); }
   }, [active, load, refreshKey]);
-  useEffect(() => { onReviewChange?.(Boolean(active && review)); return () => onReviewChange?.(false); }, [review, active, onReviewChange]);
+  const rollbackVisible = Boolean(active && rollback && rollback.bridge === bridge && rollback.cwd === cwd);
+  useLayoutEffect(() => { onReviewChange?.(Boolean(active && review) || rollbackVisible); return () => onReviewChange?.(false); }, [review, active, rollbackVisible, onReviewChange]);
+  const startRollback = (target: RollbackTarget) => {
+    if (!activeRef.current || !mutationsAllowed || stale || loading || opening || rollback) return;
+    setSuccess(''); setRollback({ ...target, bridge, cwd });
+  };
   const compare = async (entry: GitEntry, area: GitArea, label: string) => {
     if (!activeRef.current || stale || loading || opening) return;
     const version = generation.current, serial = ++diffRequest.current;
@@ -77,6 +97,7 @@ export default function GitPanel({ cwd, active, refreshKey, onReviewChange }: { 
     <div className="git-heading"><GitBranch size={15} /><div><strong>{status?.available ? status.detached ? 'Без ветки' : status.branch || 'Ветка не определена' : 'Git проекта'}</strong><small>{status?.available && (status.unborn ? 'Первый коммит ещё не создан' : status.detached ? status.head?.slice(0, 10) : status.root)}</small></div><button type="button" className="icon-button" aria-label="Обновить Git" title="Обновить Git" disabled={loading || !cwd} onClick={() => void load()}><RefreshCw size={14} className={loading ? 'spin' : ''} /></button></div>
     {loading && <p className="git-status-note" role="status"><LoaderCircle className="spin" size={13} />Читаем состояние Git…</p>}
     {error && <div className="git-error" role="alert"><span>{error}</span><button type="button" className="text-button" disabled={loading} onClick={() => void load()}>Повторить</button></div>}
+    {success && <p className="git-rollback-success" role="status">{success}</p>}
     {status && stale && <p className="git-status-note">Показан предыдущий список. Обновите Git перед сравнением.</p>}
     {!loading && status && !status.available && <div className="git-empty"><GitBranch size={25} /><p>{status.reason === 'git-unavailable' ? 'Git не найден. Установите Git и откройте приложение снова.' : status.reason === 'bare' ? 'У этого репозитория нет рабочей папки.' : 'В этой папке нет репозитория Git.'}</p></div>}
     {status?.available && <>
@@ -89,14 +110,23 @@ export default function GitPanel({ cwd, active, refreshKey, onReviewChange }: { 
         if (!entries.length) return null;
         return <section className="git-group" key={section.label} aria-label={section.label}><h3>{section.label}<span>{entries.length}</span></h3>{entries.map(entry => {
           const code = section.area === 'staged' ? entry.indexStatus : entry.untracked ? '?' : entry.worktreeStatus;
-          return <button key={entry.path} type="button" className={`git-file ${entry.conflicted ? 'conflict' : ''}`} aria-label={`Сравнить ${entry.path} — ${section.label}`} disabled={loading || stale || Boolean(opening)} onClick={() => void compare(entry, section.area, section.label)}>
+          const canRollback = section.area === 'unstaged' && !entry.conflicted && !entry.untracked && !entry.submodule && !entry.originalPath && !['R', 'C', 'T'].includes(entry.indexStatus) && ['M', 'D'].includes(entry.worktreeStatus);
+          return <div className="git-file-row" key={entry.path}><button type="button" className={`git-file ${entry.conflicted ? 'conflict' : ''}`} aria-label={`Сравнить ${entry.path} — ${section.label}`} disabled={loading || stale || Boolean(opening)} onClick={() => void compare(entry, section.area, section.label)}>
             {opening === `${section.area}:${entry.path}` ? <LoaderCircle className="spin" size={14} /> : entry.conflicted ? <AlertTriangle size={14} /> : <FileCode2 size={14} />}
             <span><strong>{entry.path}</strong><small>{entry.originalPath ? `${entry.originalPath} → ` : ''}{entry.conflicted ? 'Конфликт' : entry.submodule ? 'Подмодуль' : names[code as keyof typeof names] || 'Изменён'}</small></span><b aria-hidden="true">{entry.conflicted ? '!' : code === '.' ? 'M' : code}</b>
-          </button>;
+          </button>{canRollback && typeof bridge.previewGitRollback === 'function' && <button type="button" className="git-rollback-action" aria-label={`Откатить ${entry.path}`} title={mutationsAllowed ? 'Откатить неподготовленные изменения — сначала предпросмотр' : 'Дождитесь завершения задач и закройте терминал'} disabled={loading || stale || Boolean(opening) || !mutationsAllowed} onClick={() => startRollback({ path: entry.path })}><RotateCcw size={14} /></button>}</div>;
         })}</section>;
       })}
-      <p className="git-status-note">{checkedAt && `Обновлено в ${checkedAt}. `}Состояние файлов выбранной папки; операции Git здесь только читают данные.</p>
+      <p className="git-status-note">{checkedAt && `Обновлено в ${checkedAt}. `}Состояние файлов выбранной папки. Откат неподготовленных изменений доступен после предпросмотра.</p>
+      {!mutationsAllowed && <p className="git-status-note">Откат доступен после завершения задач и закрытия терминала.</p>}
+      {typeof bridge.listGitRollbacks === 'function' && <section className="git-rollback-history" aria-label="Недавние откаты"><h3>Недавние откаты</h3>
+        {historyLoading && <p className="git-status-note" role="status">Читаем сохранённые откаты…</p>}
+        {historyError && <div className="git-error" role="alert">{historyError}<button type="button" className="text-button" disabled={loading || historyLoading} onClick={() => void load()}>Обновить откаты</button></div>}
+        {!historyLoading && !historyError && !rollbacks.length && <p className="git-status-note">Здесь можно отменить откат файла, в том числе после перезапуска.</p>}
+        {rollbacks.map(record => <div key={record.undoId} className="git-rollback-record"><div><strong>{record.path}</strong><small>{new Date(record.createdAt).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></div><button type="button" aria-label={`Отменить откат ${record.path}`} title="Вернуть изменения из резервной копии — сначала предпросмотр" disabled={!mutationsAllowed || loading || historyLoading || stale || Boolean(historyError) || Boolean(opening)} onClick={() => startRollback({ path: record.path, undoId: record.undoId })}><RotateCcw size={12} />Отменить</button></div>)}
+      </section>}
     </>}
     {review && active && <DiffReview selection={review} onClose={() => setReview(null)} onOpen={path => bridge.openPath(path)} />}
+    {rollbackVisible && rollback && <GitRollback target={rollback} mutationsAllowed={mutationsAllowed} onClose={() => setRollback(null)} onComplete={message => { setRollback(null); setSuccess(message); void load(); }} />}
   </div>;
 }

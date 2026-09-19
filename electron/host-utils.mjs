@@ -42,6 +42,23 @@ export async function findCodex(preferred) {
   throw new Error('Codex не найден. Установите Codex CLI или выберите codex.exe в настройках подключения.');
 }
 
+export async function findClaude(preferred) {
+  if (preferred) {
+    if (!path.isAbsolute(preferred) || (process.platform === 'win32' && path.extname(preferred).toLowerCase() !== '.exe')) throw new Error('Выберите установленный claude.exe.');
+    await access(preferred); return preferred;
+  }
+  const candidates = [path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude')];
+  try {
+    const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', ['claude'], { windowsHide: true, timeout: 5000 });
+    candidates.push(...stdout.trim().split(/\r?\n/).filter(Boolean));
+  } catch { /* Native home installation remains available without PATH. */ }
+  for (const candidate of candidates) {
+    if (process.platform === 'win32' && !candidate.toLowerCase().endsWith('.exe')) continue;
+    try { if ((await stat(candidate)).isFile()) return candidate; } catch { /* Try another known executable. */ }
+  }
+  throw new Error('Claude Code не найден. Установите Claude Code CLI и войдите в него, либо выберите claude.exe в настройках подключения.');
+}
+
 export function decodeImage(image) {
   if (!image || typeof image.dataUrl !== 'string') throw new Error('Некорректное изображение.');
   const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]*={0,2})$/.exec(image.dataUrl);

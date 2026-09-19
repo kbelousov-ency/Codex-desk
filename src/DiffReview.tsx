@@ -1,3 +1,4 @@
+import { useAgentName } from './AgentContext';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDown, ArrowUp, Columns2, FileCode2, Rows3, X } from 'lucide-react';
@@ -40,6 +41,7 @@ export function ReviewDiff({ text, mode = 'unified', expanded = false, beforeLab
 export type ReviewSelection = { title: string; path?: string; edits: FileEdit[]; source?: 'git'; description?: string; message?: string; beforeLabel?: string; afterLabel?: string };
 
 export function DiffReview({ selection, onClose, onOpen }: { selection: ReviewSelection; onClose(): void; onOpen(path: string): Promise<void> }) {
+  const engineName = useAgentName();
   const [mode, setMode] = useState<'split' | 'unified'>('split');
   const [fragment, setFragment] = useState(-1);
   const [error, setError] = useState('');
@@ -84,7 +86,7 @@ export function DiffReview({ selection, onClose, onOpen }: { selection: ReviewSe
       {selection.message && <div className="diff-review-message" role="status">{selection.message}</div>}
       <div ref={container} className="diff-review-body">{selection.edits.map((edit, index) => <section key={edit.key} className="diff-review-patch">
         <div className="diff-review-patch-title"><strong>{selection.source === 'git' ? selection.description || 'Git' : `Правка ${index + 1}`}</strong><span>{changeStatus(edit)}</span></div>
-        {edit.diff ? <ReviewDiff text={edit.diff} mode={mode} expanded beforeLabel={selection.beforeLabel} afterLabel={selection.afterLabel} /> : <p className="diff-number-note">{selection.source === 'git' ? selection.message || 'Текстовых изменений нет.' : 'Diff не предоставлен Codex.'}</p>}
+        {edit.diff ? <ReviewDiff text={edit.diff} mode={mode} expanded beforeLabel={selection.beforeLabel} afterLabel={selection.afterLabel} /> : <p className="diff-number-note">{selection.source === 'git' ? selection.message || 'Текстовых изменений нет.' : `Diff не предоставлен ${engineName}.`}</p>}
       </section>)}</div>
       <footer className="diff-review-footer">{selection.source === 'git' ? 'Снимок Git на момент открытия. Изменение файлов после чтения отразится при следующем открытии сравнения.' : 'Полученные правки из диалога. Показаны изменённые фрагменты; файл на диске мог измениться позже.'}</footer>
     </section>

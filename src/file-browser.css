@@ -5,6 +5,8 @@
 .file-browser-header strong { color: var(--text, #e1e8e4); font-size: 12px; font-weight: 600; }
 .file-browser-header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--text-muted, #7d9187); }
 .tree-file-list { padding: 0; margin: 0; list-style: none; }
+.tree-file-list>li:has(>.tree-file-preview){position:relative;padding-right:27px}
+.tree-file-preview{position:absolute;right:0;top:4px;display:grid;place-items:center;width:25px;height:24px;color:#89a492;border-radius:4px}.tree-file-preview:hover{background:#2b3c30;color:#d5eadc}
 .tree-file-row { width: 100%; min-width: 0; min-height: 31px; display: flex; align-items: center; gap: 7px; padding: 6px 6px 6px calc(3px + var(--tree-depth, 0) * 13px); border: 0; border-radius: 5px; background: transparent; color: var(--text-secondary, #a5b7ad); text-align: left; font-size: 12px; cursor: pointer; }
 .tree-file-row:hover { background: #222b26; color: #e1e8e4; }
 .tree-file-row:focus-visible { outline: 1px solid #aecfc0; outline-offset: -1px; background: #222b26; }

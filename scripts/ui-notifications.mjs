@@ -261,7 +261,7 @@ try {
   assert.equal(await settings().getByRole('checkbox', { name: 'Завершение задач', exact: true }).isChecked(), false);
   await settings().getByRole('checkbox', { name: 'Уведомления Windows', exact: true }).uncheck();
   await page.waitForFunction(() => window.__notifications.settings.enabled === false);
-  assert.equal(await settings().getByRole('checkbox', { name: 'Вопросы Codex', exact: true }).isDisabled(), true);
+  assert.equal(await settings().getByRole('checkbox', { name: 'Вопросы агентов', exact: true }).isDisabled(), true);
   await page.keyboard.press('Escape');
   await event('a', 'begin', ['disabled-question-a']);
   await event('a', 'request', ['disabled-question', 'item/tool/requestUserInput', { questions: [] }]);

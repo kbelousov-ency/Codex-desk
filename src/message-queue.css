@@ -12,6 +12,7 @@
 .queue-reason { margin: 7px 0 0; color: var(--muted, #bbb); }
 .queue-edit textarea { box-sizing: border-box; width: 100%; resize: vertical; border: 1px solid var(--border, #45464f); border-radius: 6px; padding: 8px; color: inherit; background: #18191e; font: inherit; }
 .composer { container: composer / inline-size; }
+.provider-history-label { font-size: 8px; color: #c4a68b; padding: 0 6px; }
 .composer .composer-toolbar { gap: 12px; }
 .composer .composer-tools { flex-wrap: nowrap; flex: 0 1 auto; }
 .composer .composer-actions { display: flex; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 6px; margin-left: auto; }

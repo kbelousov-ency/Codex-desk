@@ -17,6 +17,7 @@ function thread(value) {
   const id = text(value.id, 256);
   if (!id) throw new Error("Нет идентификатора диалога.");
   return { id, ...(typeof value.name === 'string' ? { name: value.name.slice(0, 300) } : {}),
+    ...(value.provider === 'claude' || id.startsWith('claude:') ? { provider: 'claude' } : {}),
     ...(typeof value.cwd === 'string' ? { cwd: text(value.cwd, 4096) } : {}),
     ...(['paginated', 'legacy'].includes(value.historyMode) ? { historyMode: value.historyMode } : {}) };
 }
@@ -95,6 +96,8 @@ export function captureUpdateCheckpoint(snapshot, sessions) {
     if (!session || session.disposed) throw new Error("Сессия снимка закрыта.");
     const settings = { ...cleanSettings(session.getSettings()), ...cleanSettings(tab.settings), cwd: session.currentCwd };
     settings.executable = session.getSettings().executable;
+    if (session.getSettings().provider) settings.provider = session.getSettings().provider;
+    else delete settings.provider;
     if (settings.access && !modes.has(settings.access)) throw new Error("Некорректный режим снимка.");
     const selected = thread(tab.thread);
     if (selected) selected.cwd = session.currentCwd;

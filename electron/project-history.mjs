@@ -19,11 +19,11 @@ export async function listProjectThreads({ record, workspaceStore, cwd, cursor, 
   const registered = projects.find(project => project !== null && directoryKey(project) === directoryKey(requested));
   if (!registered) throw new Error('Папка не добавлена в рабочую область.');
 
-  const ready = [...record.sessions].filter(([, session]) => !session.disposed && !session.terminal && session.client && session.bootstrap);
+  const ready = [...record.sessions].filter(([, session]) => session.settings?.provider !== 'claude' && !session.disposed && !session.terminal && session.client && session.bootstrap);
   const selected = ready.find(([, session]) => session.currentCwd && directoryKey(session.currentCwd) === directoryKey(registered))
     ?? ready[0] ?? [record.defaultSessionId, record.sessions.get(record.defaultSessionId)];
   let [id, session] = selected;
-  if (!session || session.disposed || session.terminal) {
+  if (!session || session.settings?.provider === 'claude' || session.disposed || session.terminal) {
     session = await createHistorySession(registered);
     id = null;
     assertWindow();

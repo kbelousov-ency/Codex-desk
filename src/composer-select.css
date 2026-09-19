@@ -1,4 +1,11 @@
 .composer-picker{min-width:0;max-width:100%}
+.composer-provider-note{margin:4px 10px 8px;font-size:11px;line-height:1.6;color:#9caf9f}
+.composer-select-trigger.provider-select{color:#cfbaab;background:#332d29}
+.composer-select-trigger.provider-select>span{max-width:80px}
+.settings-provider-summary{padding:0 0 14px;border-bottom:1px solid #37423b;margin-bottom:14px}
+.settings-provider-summary p{font-size:12px;line-height:1.6;color:#99aaa0;margin:7px 0 0}
+@container composer (max-width:600px){.composer .composer-select-trigger.provider-select>span{max-width:52px}.composer .composer-select-trigger.provider-select>svg:first-child{display:none}}
+@container composer (max-width:430px){.composer .composer-select-trigger.provider-select>span{max-width:43px}.composer .composer-select-trigger.model-select>span{max-width:58px}.composer .composer-select-trigger.effort-select>span{max-width:38px}.composer .composer-toolbar{gap:5px}.composer .composer-tools{gap:2px}.composer .composer-action{padding:0 6px}}
 .composer-select-trigger.select-chip{border:1px solid transparent;min-height:30px;padding:5px 8px;gap:7px;border-radius:7px;cursor:pointer;max-width:100%;color:#b7cdbf}
 .composer-select-trigger>span{min-width:0;max-width:145px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;line-height:1.5;text-align:left}
 .composer-select-trigger.effort-select>span{max-width:120px}

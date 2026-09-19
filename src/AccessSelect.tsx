@@ -1,17 +1,24 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { Check, ChevronDown, Hand, Shield, ShieldAlert, ShieldCheck, type LucideIcon } from 'lucide-react';
-import type { Access } from './types';
+import type { Access, AgentProvider } from './types';
+import { agentName } from './AgentContext';
 import './access-select.css';
 
-const modes: { value: Access; label: string; description: string; icon: LucideIcon }[] = [
+const codexModes: { value: Access; label: string; description: string; icon: LucideIcon }[] = [
   { value: 'workspace-write', label: 'Спрашивать разрешение', description: 'Запрашивать разрешение на изменения вне проекта и доступ к сети', icon: Hand },
   { value: 'auto', label: 'Одобрять за меня', description: 'Автоматически проверять запросы на дополнительный доступ', icon: ShieldCheck },
   { value: 'danger-full-access', label: 'Полный доступ', description: 'Доступ к файлам и сети без запросов подтверждения', icon: ShieldAlert },
 ];
 
-export default function AccessSelect({ value, disabled, active = true, onChange, openSignal = 0 }: {
-  value: Access; disabled: boolean; active?: boolean; onChange(value: Access): void; openSignal?: number;
+export default function AccessSelect({ value, disabled, active = true, onChange, openSignal = 0, provider = 'codex' }: {
+  value: Access; disabled: boolean; active?: boolean; onChange(value: Access): void; openSignal?: number; provider?: AgentProvider;
 }) {
+  const engineName = agentName(provider);
+  const modes = provider === 'claude' ? [
+    { value: 'workspace-write' as Access, label: 'Спрашивать разрешение', description: 'Обычные подтверждения инструментов Claude Code', icon: Hand },
+    { value: 'auto' as Access, label: 'Разрешать правки', description: 'Автоматически разрешать редактирование файлов; остальные инструменты проверяет Claude Code', icon: ShieldCheck },
+    codexModes[2],
+  ] : codexModes;
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const root = useRef<HTMLDivElement>(null);
@@ -20,7 +27,7 @@ export default function AccessSelect({ value, disabled, active = true, onChange,
   const selectedIndex = modes.findIndex(mode => mode.value === value);
   const selected = Math.max(0, selectedIndex);
   const currentMode = modes[selectedIndex];
-  const label = currentMode?.label ?? (value === 'read-only' ? 'Только чтение' : 'Как в Codex');
+  const label = currentMode?.label ?? (value === 'read-only' ? (provider === 'claude' ? 'Планирование' : 'Только чтение') : `Как в ${engineName}`);
   const ModeIcon = currentMode?.icon ?? Shield;
   const visible = open && !disabled && active;
   useEffect(() => { if (openSignal && active && !disabled) { trigger.current?.focus(); setHighlight(selected); setOpen(true); } }, [openSignal]);
@@ -53,7 +60,7 @@ export default function AccessSelect({ value, disabled, active = true, onChange,
       } else if (visible && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); choose(highlight); }
     }}><ModeIcon size={13} aria-hidden="true" /><span>{label}</span><ChevronDown size={11} aria-hidden="true" className={visible ? 'access-chevron-open' : ''} /></button>
     {visible && <div className="access-menu">
-      <div className="access-menu-header">Как подтверждать действия Codex?</div>
+      <div className="access-menu-header">Как подтверждать действия {engineName}?</div>
       {!currentMode && <p id={`${id}-legacy`} className="access-current-note"><strong>Сейчас: {label}</strong><span>Текущий режим сохраняется до выбора одного из вариантов.</span></p>}
       <div id={id} role="listbox" aria-label="Выберите режим доступа" aria-describedby={!currentMode ? `${id}-legacy` : undefined}>
         {modes.map((mode, index) => <div role="option" aria-selected={value === mode.value} id={`${id}-${index}`} data-value={mode.value} key={mode.value} className={`access-option ${highlight === index ? 'highlighted' : ''} ${mode.value === 'danger-full-access' ? 'danger-option' : ''}`} onPointerMove={() => setHighlight(index)} onPointerDown={event => event.preventDefault()} onClick={() => choose(index)}>

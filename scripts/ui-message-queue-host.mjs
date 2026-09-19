@@ -88,7 +88,7 @@ try {
   fixturePid = (await log()).find(entry => entry.type === 'spawn').pid;
   await composer().fill('Начни задачу fixture'); await composer().press('Enter');
   await steer().waitFor();
-  await waitFor(async () => await composer().inputValue() === '' && await view().getByRole('button', { name: 'Прикрепить изображения', exact: true }).isEnabled(), 'initial send acknowledgement');
+  await waitFor(async () => await composer().inputValue() === '' && await view().getByRole('button', { name: 'Добавить файлы', exact: true }).isEnabled(), 'initial send acknowledgement');
   await view().locator('input[type="file"]').setInputFiles({ name: 'steer.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE1sAAAAASUVORK5CYII=', 'base64') });
   await view().getByRole('button', { name: 'Удалить steer.png', exact: true }).waitFor();
   await composer().fill('Учти изображение и старый формат'); await steer().click();

@@ -9,6 +9,7 @@ function forSession(sessionId) {
     chooseDirectory: () => ipcRenderer.invoke('host:chooseDirectory', sessionId),
     chooseExecutable: () => ipcRenderer.invoke('host:chooseExecutable', sessionId),
     saveImages: (images) => ipcRenderer.invoke('host:saveImages', images, sessionId),
+    chooseComposerFiles: (options) => ipcRenderer.invoke('host:chooseComposerFiles', options, sessionId),
     readAttachment: (path) => ipcRenderer.invoke('host:readAttachment', path, sessionId),
     getSettings: () => ipcRenderer.invoke('host:getSettings', sessionId),
     setSettings: (settings) => ipcRenderer.invoke('host:setSettings', settings, sessionId),
@@ -23,8 +24,15 @@ function forSession(sessionId) {
       ? ipcRenderer.invoke('host:showPathMenu', path, sessionId)
       : ipcRenderer.invoke('host:showPathMenu', path, options, sessionId),
     listFiles: (path, cursor) => ipcRenderer.invoke('host:listFiles', path, cursor, sessionId),
+    searchProjectFiles: (options) => ipcRenderer.invoke('host:searchProjectFiles', options, sessionId),
+    readProjectFile: (options) => ipcRenderer.invoke('host:readProjectFile', options, sessionId),
     getGitStatus: () => ipcRenderer.invoke('host:getGitStatus', sessionId),
     getGitDiff: (options) => ipcRenderer.invoke('host:getGitDiff', options, sessionId),
+    previewGitRollback: (options) => ipcRenderer.invoke('host:previewGitRollback', options, sessionId),
+    applyGitRollback: (options) => ipcRenderer.invoke('host:applyGitRollback', options, sessionId),
+    listGitRollbacks: () => ipcRenderer.invoke('host:listGitRollbacks', sessionId),
+    previewUndoGitRollback: (options) => ipcRenderer.invoke('host:previewUndoGitRollback', options, sessionId),
+    undoGitRollback: (options) => ipcRenderer.invoke('host:undoGitRollback', options, sessionId),
     onEvent: (listener) => {
       const handler = (_event, data) => {
         if (sessionId === undefined ? data.defaultSession : data.sessionId === sessionId) listener(data);
@@ -38,6 +46,11 @@ function forSession(sessionId) {
 contextBridge.exposeInMainWorld('codex', {
   ...forSession(),
   getBuildInfo: () => ipcRenderer.invoke('host:getBuildInfo'),
+  searchHistory: (options) => ipcRenderer.invoke('host:searchHistory', options),
+  resolveHistoryTarget: (options) => ipcRenderer.invoke('host:resolveHistoryTarget', options),
+  listBookmarks: (options) => ipcRenderer.invoke('host:listBookmarks', options),
+  saveBookmark: (bookmark) => ipcRenderer.invoke('host:saveBookmark', bookmark),
+  removeBookmark: (id) => ipcRenderer.invoke('host:removeBookmark', id),
   getNotificationSettings: () => ipcRenderer.invoke('host:getNotificationSettings'),
   setNotificationSettings: (patch) => ipcRenderer.invoke('host:setNotificationSettings', patch),
   setNotificationContext: (context) => ipcRenderer.invoke('host:setNotificationContext', context),

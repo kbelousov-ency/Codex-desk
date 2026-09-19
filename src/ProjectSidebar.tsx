@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowLeft, ChevronRight, LoaderCircle, MessageSquare, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { Archive, ArrowLeft, Bookmark, ChevronRight, LoaderCircle, MessageSquare, Plus, RefreshCw, Search, X } from 'lucide-react';
 import ProjectTree, { projectKey, type ProjectTreeControls } from './ProjectTree';
 import ThreadMenu from './ThreadMenu';
 import { DiagnosticsButton } from './Diagnostics';
@@ -65,7 +65,7 @@ function DialogSearch({ controls, archived, active, query, onQuery }: {
   return <>
     <div className="dialog-search-control">
       <div className="dialog-search-input"><Search size={13} /><input ref={input} type="text" autoComplete="off" maxLength={500} aria-label={archived ? 'Поиск в архиве' : 'Поиск диалогов'} placeholder="Найти диалог…" value={query} onChange={event => onQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); clear(); } }} />{query && <button type="button" className="icon-button small" aria-label="Очистить поиск диалогов" title="Очистить поиск" onClick={clear}><X size={12} /></button>}</div>
-      {searching && <span className="dialog-search-hint">По названию диалога</span>}
+      {searching && <span className="dialog-search-hint">По названию диалога Codex</span>}
     </div>
     {searching && <nav className="dialog-search-results" aria-label="Результаты поиска диалогов" aria-busy={loading}>
       {groups.map(([key, group]) => <section className="folder-tree-entry dialog-search-folder" data-cwd={group.cwd} key={key}>
@@ -97,6 +97,7 @@ export default function ProjectSidebar({ controls, active = true }: { controls: 
       <div className="project-sidebar-main" hidden={archiveOpen}>
         <button className="new-project" aria-label="Новый проект" title="Выбрать новую рабочую папку" disabled={controls.opening} onClick={controls.addProject}><Plus size={15} /><span>Новый проект</span></button>
         <DialogSearch controls={controls} query={query} onQuery={setQuery} archived={false} active={active && !archiveOpen} />
+        {controls.openLibrary && <button className="library-sidebar-button" type="button" onClick={controls.openLibrary}><Bookmark size={13} />История и закладки</button>}
         {!query.trim() && <ProjectTree controls={controls} active={active && !archiveOpen} />}
       </div>
       {archiveOpen && <section className="archive-panel" role="region" aria-label="Архив диалогов">

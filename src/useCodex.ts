@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Access, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork } from './types';
+import type { Access, AgentProvider, Attachment, CodexBridge, BridgeEvent, Item, Model, Request, SessionAttentionEvent, Settings, Thread, TurnWork } from './types';
+import { agentName } from './AgentContext';
 import { mergeHistoricalTurnWork, observeTurnWork } from './turn-work';
 import { historicalCacheActivity, responseTime } from './cache-history';
 
@@ -20,6 +21,9 @@ type CompactionOperation = {
 };
 type InterruptedTurn = { threadId: string; turnId: string };
 const STOPPED_NOTICE = 'Выполнение остановлено. Можно продолжить диалог.';
+const providerCapabilities = (provider: AgentProvider) => provider === 'claude'
+  ? { compact: false, steer: false, terminal: false, mcp: false, archive: false }
+  : { compact: true, steer: true, terminal: true, mcp: true, archive: true };
 
 export function accessParams(access: Access, cwd: string, turn = false) {
   if (access === 'inherited') return {};
@@ -46,6 +50,9 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   // Restored workspace tabs keep their explicitly selected settings.
   const restoreSettingsRef = useRef(options?.restoreSettings);
   const [connection, setConnection] = useState<'connecting' | 'ready' | 'error'>('connecting');
+  const [provider, setProvider] = useState<AgentProvider>(options?.restoreSettings?.provider || 'codex');
+  const providerRef = useRef<AgentProvider>(options?.restoreSettings?.provider || 'codex');
+  const [capabilities, setCapabilities] = useState(() => providerCapabilities(options?.restoreSettings?.provider || 'codex'));
   const [cwd, setCwd] = useState('');
   const [models, setModels] = useState<Model[]>([]);
   const [model, setModel] = useState('');
@@ -267,7 +274,11 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       if (!bridge) throw new Error('Откройте Codex Desk как приложение: npm start. Подключение к Codex доступно в окне Electron.');
       const saved = await bridge.getSettings();
       settingsRef.current = saved;
+      providerRef.current = saved.provider || 'codex'; setProvider(providerRef.current);
+      setCapabilities(providerCapabilities(providerRef.current));
       const result = await bridge.start(directory ? { cwd: directory } : saved.cwd ? { cwd: saved.cwd } : undefined);
+      providerRef.current = result.provider || saved.provider || 'codex'; setProvider(providerRef.current);
+      setCapabilities({ ...providerCapabilities(providerRef.current), ...result.capabilities });
       const effective = result.config?.config || result.config || {};
       cwdRef.current = result.cwd; setCwd(result.cwd);
       const visibleModels = (Array.isArray(result.models) ? result.models : (result.models as any)?.data || []).filter((m: Model) => !m.hidden);
@@ -329,7 +340,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
           compactionRef.current = null; setCompacting(false); setNotice('');
           setBusy(false); activeRef.current = false; turnRef.current = null;
           pendingRequestIdsRef.current.clear(); setRequests([]);
-          setError(data.message || 'Соединение с Codex прервано. Подключитесь снова, затем откройте диалог из истории.');
+          setError(data.message || `Соединение с ${agentName(providerRef.current)} прервано. Подключитесь снова, затем откройте диалог из истории.`);
         }
         return;
       }
@@ -402,7 +413,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         cacheTurnRef.current.id = turnId;
         turnRef.current = null; activeRef.current = false; setBusy(false);
         pendingRequestIdsRef.current.clear(); setRequests([]);
-        if (p.turn.error) setError(p.turn.error.message || 'Codex завершил работу с ошибкой.');
+        if (p.turn.error) setError(p.turn.error.message || `${agentName(providerRef.current)} завершил работу с ошибкой.`);
         if (p.turn.status === 'interrupted' && threadRef.current) {
           updateInterrupted({ threadId: threadRef.current.id, turnId }); setNotice(STOPPED_NOTICE);
         } else updateInterrupted(null);
@@ -491,16 +502,16 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         if (p.turnId && ((expected && expected !== p.turnId) || settledTurnsRef.current.has(p.turnId))) return;
         if (p.willRetry !== true) invalidateCache();
         if (p.willRetry !== true && !resumingRef.current && !attentionSuppressed.current) reportAttention('error', `turn:${p.turnId || expected || lifecycleRef.current}`);
-        pauseQueue('Codex сообщил об ошибке. Проверьте результат перед продолжением очереди.');
+        pauseQueue(`${agentName(providerRef.current)} сообщил об ошибке. Проверьте результат перед продолжением очереди.`);
         if (compactionRef.current && p.willRetry !== true) {
           const operation = p.turnId ? matchCompactionTurn(p.turnId) : compactionRef.current;
           if (!operation) return;
           finishCompaction(operation, 'failed', p.error?.message || p.message || 'Ошибка сжатия контекста.');
         }
-        setError(p.error?.message || p.message || 'Ошибка Codex');
+        setError(p.error?.message || p.message || `Ошибка ${agentName(providerRef.current)}`);
       } else if (method === 'configWarning' || method === 'deprecationNotice' || method === 'model/rerouted') {
         if (method === 'model/rerouted') invalidateCache();
-        setNotice(p.message || p.reason || 'Codex обновил параметры текущего сеанса.');
+        setNotice(p.message || p.reason || `${agentName(providerRef.current)} обновил параметры текущего сеанса.`);
       }
     });
     void connect();
@@ -533,13 +544,14 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     if (terminalRef.current) return;
     if (value !== access) invalidateCache();
     if (value === 'inherited' && access !== 'inherited' && thread) {
-      clearThread(); setNotice('Открыт новый диалог: доступ будет взят из конфигурации Codex. Предыдущий диалог сохранён в истории.');
+      clearThread(); setNotice(`Открыт новый диалог: доступ будет взят из конфигурации ${agentName(providerRef.current)}. Предыдущий диалог сохранён в истории.`);
     }
     setAccess(value); void saveSettings({ access: value });
   };
 
   const resume = async (selected: Thread, preserveSettings = false) => {
     if (terminalRef.current || activeRef.current || loadingRef.current || connectionRef.current !== 'ready') return false;
+    if ((selected.provider || 'codex') !== providerRef.current) { setError('Этот диалог принадлежит другому агенту. Откройте его в отдельной вкладке.'); return false; }
     updateInterrupted(null);
     updateLoading(true); setError(''); setNotice('');
     const sameThread = threadRef.current?.id === selected.id;
@@ -752,6 +764,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   };
 
   const steer = async (text: string, attachments: Attachment[]) => {
+    if (!capabilities.steer) { setError(`Уточнения во время выполнения для ${agentName(provider)} пока недоступны. Добавьте сообщение в очередь.`); return false; }
     const current = threadRef.current;
     const expectedTurnId = turnRef.current;
     if (!current || !expectedTurnId || !activeRef.current || steerPendingRef.current || terminalRef.current || compactionRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size || (!text.trim() && !attachments.length)) return false;
@@ -789,6 +802,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   };
 
   const compact = async () => {
+    if (!capabilities.compact) { setError(`Сжатие контекста ${agentName(provider)} из приложения пока недоступно.`); return false; }
     const current = threadRef.current;
     if (terminalRef.current || !current || resumedThreadRef.current !== current.id || activeRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size) return false;
     updateInterrupted(null);
@@ -815,6 +829,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   };
 
   const openTerminal = async () => {
+    if (!capabilities.terminal) { setError(`Продолжение ${agentName(provider)} в терминале пока недоступно.`); return false; }
     const current = threadRef.current;
     if (terminalRef.current || !current || resumedThreadRef.current !== current.id || activeRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size) return false;
     pauseQueue('Диалог открыт в терминале. Проверьте историю перед продолжением очереди.');
@@ -881,7 +896,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
           else operation.turnStarted = true;
         }
       }
-      if (!turnRef.current) throw new Error('Codex ещё запускает запрос. Повторите остановку через секунду.');
+      if (!turnRef.current) throw new Error(`${agentName(providerRef.current)} ещё запускает запрос. Повторите остановку через секунду.`);
       if (!isCurrent()) return;
       await bridge.request('turn/interrupt', { threadId, turnId: turnRef.current });
     } catch (e) { if (isCurrent()) setError(errorText(e)); }
@@ -894,7 +909,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   };
 
   return {
-    connection, cwd, models, model, effort, access, account, config, executable, history, historyCursor, historyLoading,
+    connection, provider, capabilities, cwd, models, model, effort, access, account, config, executable, history, historyCursor, historyLoading,
     thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, loading, error, notice,
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
     cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { ChevronRight, File, Folder, FolderOpen, Link, LoaderCircle, RefreshCw } from 'lucide-react';
+import { ChevronRight, Eye, File, Folder, FolderOpen, Link, LoaderCircle, RefreshCw, Search } from 'lucide-react';
 import { useBridge } from './BridgeContext';
 import { folderName } from './useCodex';
 import type { ProjectFile } from './types';
@@ -10,7 +10,7 @@ type Directory = { entries: ProjectFile[]; nextCursor: number | null; loaded: bo
 const emptyDirectory = (): Directory => ({ entries: [], nextCursor: null, loaded: false, loading: false, error: '' });
 const errorText = (error: unknown) => String(error instanceof Error ? error.message : error).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '');
 
-export default function FileBrowser({ cwd, active = true, refreshKey, onAskCodex }: { cwd: string; active?: boolean; refreshKey?: unknown; onAskCodex?: (path: string) => void }) {
+export default function FileBrowser({ cwd, active = true, refreshKey, onAskCodex, onPreview }: { cwd: string; active?: boolean; refreshKey?: unknown; onAskCodex?: (path: string) => void; onPreview?(path?: string): void }) {
   const bridge = useBridge();
   const [directories, setDirectories] = useState<Record<string, Directory>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -125,6 +125,7 @@ export default function FileBrowser({ cwd, active = true, refreshKey, onAskCodex
             {isDirectory ? <ChevronRight size={12} className={`tree-file-chevron ${opened ? 'expanded' : ''}`} /> : <span className="tree-file-chevron-space" />}
             <Icon size={15} /><span className="tree-file-name">{entry.name}</span>{entry.type === 'link' && <span className="tree-file-kind">ссылка</span>}
           </button>
+          {!isDirectory && entry.type !== 'link' && onPreview && <button type="button" className="tree-file-preview" aria-label={`Просмотреть файл ${entry.name}`} title="Просмотреть в приложении" onClick={() => onPreview(entry.path)}><Eye size={12} /></button>}
           {isDirectory && opened && renderDirectory(entry.path, depth + 1)}
         </li>;
       })}
@@ -136,6 +137,7 @@ export default function FileBrowser({ cwd, active = true, refreshKey, onAskCodex
   };
 
   return <section className="file-browser" aria-label="Файлы рабочей папки">
+    {onPreview && <button type="button" className="library-sidebar-button" aria-label="Найти файл (Ctrl+P)" onClick={() => onPreview()}><Search size={13} />Найти файл <kbd>Ctrl+P</kbd></button>}
     <header className="file-browser-header"><FolderOpen size={15} /><div title={cwd}><strong>{folderName(cwd) || 'Рабочая папка'}</strong><span>{cwd || 'Папка не выбрана'}</span></div><button className="icon-button small" aria-label="Обновить дерево файлов" title="Обновить дерево файлов" disabled={!cwd || directories['']?.loading} onClick={refresh}><RefreshCw size={14} className={directories['']?.loading ? 'spin' : ''} /></button></header>
     {actionError && <div className="tree-file-feedback tree-file-error" role="alert">{actionError}</div>}
     {cwd ? renderDirectory('', 0) : <p className="tree-file-feedback">Выберите рабочую папку, чтобы увидеть её файлы.</p>}

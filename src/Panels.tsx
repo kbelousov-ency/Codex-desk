@@ -1,3 +1,4 @@
+import { useAgentName } from './AgentContext';
 import { useEffect, useMemo, useState } from 'react';
 import { Brain, Check, ChevronRight, Code2, FileCode2, GitBranch, Globe, Layers, LoaderCircle, Maximize2, Terminal } from 'lucide-react';
 import type { Item } from './types';
@@ -40,20 +41,22 @@ export function activityLabel(item?: Item) {
 }
 
 export function Reasoning({ item }: { item: Item }) {
+  const engineName = useAgentName();
   const content = reasoningText(item);
   if (!content) return null;
   return <details className="reasoning-card" open>
-    <summary><Brain size={15} /><span>Пояснения Codex</span>{!item.complete && <LoaderCircle size={13} className="spin" />}<ChevronRight className="disclosure-arrow" size={14} /></summary>
+    <summary><Brain size={15} /><span>Пояснения {engineName}</span>{!item.complete && <LoaderCircle size={13} className="spin" />}<ChevronRight className="disclosure-arrow" size={14} /></summary>
     <div className="reasoning-body"><Markdown>{content}</Markdown></div>
   </details>;
 }
 
 export function ActivityPanel({ items, plan, busy }: { items: Item[]; plan: any[]; busy: boolean }) {
+  const engineName = useAgentName();
   const activity = items.filter(i => !['userMessage', 'agentMessage', 'reasoning', 'plan'].includes(i.type));
   return <div className="panel-content">
     {plan.length > 0 && <div className="plan-card"><div className="eyebrow">ПЛАН РАБОТЫ</div>{plan.map((step, i) => <div className={`plan-step ${step.status}`} key={i}>{step.status === 'completed' ? <Check size={14} /> : step.status === 'inProgress' ? <LoaderCircle className="spin" size={14} /> : <span className="step-dot" />}<span>{step.step}</span></div>)}</div>}
-    {!activity.length && !plan.length ? <div className="panel-empty"><div className="empty-icon"><Terminal size={24} /></div><h3>Работа на виду</h3><p>Здесь появятся команды, поиск и действия Codex в вашем проекте.</p><div className="empty-hint"><span className={`status-dot ${busy ? 'working' : ''}`} />{busy ? 'Codex приступает к задаче' : 'Готов к первой задаче'}</div></div> : <div className="activity-list">{activity.map(item => <Activity key={item.id} item={item} />)}</div>}
-    <div className="panel-footnote"><Terminal size={13} /><span>Команды, результаты и файлы поступают из текущего сеанса Codex.</span></div>
+    {!activity.length && !plan.length ? <div className="panel-empty"><div className="empty-icon"><Terminal size={24} /></div><h3>Работа на виду</h3><p>Здесь появятся команды, поиск и действия {engineName} в вашем проекте.</p><div className="empty-hint"><span className={`status-dot ${busy ? 'working' : ''}`} />{busy ? `${engineName} приступает к задаче` : 'Готов к первой задаче'}</div></div> : <div className="activity-list">{activity.map(item => <Activity key={item.id} item={item} />)}</div>}
+    <div className="panel-footnote"><Terminal size={13} /><span>Команды, результаты и файлы поступают из текущего сеанса {engineName}.</span></div>
   </div>;
 }
 
@@ -83,9 +86,10 @@ function LineCounts({ text }: { text: string }) {
   return <span className="change-line-counts" title={`Строк в этой правке: добавлено ${added}, удалено ${removed}`}><b className="text-green">+{added}</b><b className="text-red">−{removed}</b></span>;
 }
 
-export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}, active = true, hasEarlier = false, loading = false, onLoadEarlier, onReviewChange, busy = false }: {
-  items: Item[]; diff: string; cwd?: string; diffTurnId?: string; turnDiffs?: Record<string, string>; active?: boolean; hasEarlier?: boolean; loading?: boolean; onLoadEarlier?(): void; onReviewChange?(open: boolean): void; busy?: boolean;
+export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}, active = true, hasEarlier = false, loading = false, onLoadEarlier, onReviewChange, busy = false, mutationsAllowed = true }: {
+  items: Item[]; diff: string; cwd?: string; diffTurnId?: string; turnDiffs?: Record<string, string>; active?: boolean; hasEarlier?: boolean; loading?: boolean; onLoadEarlier?(): void; onReviewChange?(open: boolean): void; busy?: boolean; mutationsAllowed?: boolean;
 }) {
+  const engineName = useAgentName();
   const bridge = useBridge();
   const [error, setError] = useState('');
   const [turn, setTurn] = useState('all');
@@ -126,14 +130,14 @@ export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}
   };
   return <div className="panel-content changes-panel">
     <div className="changes-source-tabs" role="group" aria-label="Источник изменений"><button type="button" aria-pressed={source === 'conversation'} onClick={() => { setSource('conversation'); setReview(null); }}>Из диалога</button><button type="button" aria-pressed={source === 'git'} onClick={() => { setSource('git'); setReview(null); }}><GitBranch size={13} />Git</button></div>
-    {source === 'git' ? <GitPanel cwd={cwd} active={active} refreshKey={`${busy}:${items.filter(item => item.type === 'fileChange').map(item => `${item.id}:${item.status}:${item.complete}`).join('|')}`} onReviewChange={onReviewChange} /> : <>
+    {source === 'git' ? <GitPanel cwd={cwd} active={active} refreshKey={`${busy}:${items.filter(item => item.type === 'fileChange').map(item => `${item.id}:${item.status}:${item.complete}`).join('|')}`} onReviewChange={onReviewChange} mutationsAllowed={mutationsAllowed} /> : <>
     {error && <div className="link-error" role="alert"><span>{error}</span><button aria-label="Скрыть ошибку открытия файла" onClick={() => setError('')}>×</button></div>}
     {(allFiles.length > 0 || diff || Object.keys(turnDiffs).length > 0) && <div className="changes-filters">
       <label>Показать изменения<select aria-label="Изменения по запросу" value={turn} onChange={event => { setTurn(event.target.value); setReview(null); }}><option value="all">Вся загруженная беседа</option>{turns.map(value => <option key={value.id} value={value.id}>{value.label}</option>)}{unknown && <option value="unknown">Без привязки к запросу</option>}</select></label>
       <input aria-label="Найти изменённый файл" placeholder="Найти файл…" value={query} onChange={event => setQuery(event.target.value)} />
     </div>}
     {hasEarlier && <button type="button" className="text-button" disabled={loading} onClick={onLoadEarlier}>{loading ? 'Загружаем…' : 'Загрузить более ранние правки'}</button>}
-    {!allFiles.length && !diff && !Object.keys(turnDiffs).length ? <div className="panel-empty"><div className="empty-icon"><Code2 size={25} /></div><h3>Изменения появятся здесь</h3><p>Следите за файлами и смотрите, какие строки добавил или удалил Codex.</p><div className="diff-sample"><span /><span /><span /></div></div> : <>
+    {!allFiles.length && !diff && !Object.keys(turnDiffs).length ? <div className="panel-empty"><div className="empty-icon"><Code2 size={25} /></div><h3>Изменения появятся здесь</h3><p>Следите за файлами и смотрите, какие строки добавил или удалил {engineName}.</p><div className="diff-sample"><span /><span /><span /></div></div> : <>
       {!files.length && !showDiff && <p className="changes-filter-empty">{query ? 'Файлы не найдены.' : 'Для этого запроса нет полученных правок.'}</p>}
       <div className="changes-summary"><span>{files.length ? `Файлов: ${files.length}` : 'Изменения текущего запроса'}</span>{files.length > 0 && <small>Раскройте файл, чтобы увидеть правки по порядку.</small>}</div>
       {files.map(file => {
@@ -146,7 +150,7 @@ export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}
           {file.edits.map((edit, index) => <section className="change-patch" key={edit.key}>
             {repeated && <div className="change-patch-label"><strong>Правка {index + 1}</strong><span className={`change-status ${edit.status || ''}`}>{changeStatus(edit)}</span>{edit.diff && <LineCounts text={edit.diff} />}</div>}
             {(edit.kind?.move_path || edit.kind?.movePath) && <div className="change-move-path">Новое имя: {relativeChangePath((edit.kind.move_path || edit.kind.movePath)!, cwd)}</div>}
-            {edit.diff ? <ReviewDiff text={edit.diff} /> : <p className="muted file-full-path">Diff не предоставлен Codex.</p>}
+            {edit.diff ? <ReviewDiff text={edit.diff} /> : <p className="muted file-full-path">Diff не предоставлен {engineName}.</p>}
           </section>)}
         </details>;
       })}

@@ -2,8 +2,10 @@ import { useState } from 'react';
 import { ArrowRight, Check, ShieldCheck, X } from 'lucide-react';
 import type { Item, Request } from './types';
 import { errorText } from './useCodex';
+import { useAgentName } from './AgentContext';
 
 export default function Approval({ request, items, respond }: { request: Request; items: Item[]; respond: (request: Request, result: any) => Promise<void> }) {
+  const engineName = useAgentName();
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -29,7 +31,7 @@ export default function Approval({ request, items, respond }: { request: Request
   };
 
   return <section className="approval-card">
-    <div className="approval-heading"><ShieldCheck size={18} /><strong>{questions ? 'Codex уточняет' : elicitation ? 'Запрос от подключения' : 'Нужно ваше решение'}</strong><span>{p.isBlocking === false ? 'Можно ответить позже' : 'Ожидает ответа'}</span></div>
+    <div className="approval-heading"><ShieldCheck size={18} /><strong>{questions ? `${engineName} уточняет` : elicitation ? 'Запрос от подключения' : 'Нужно ваше решение'}</strong><span>{p.isBlocking === false ? 'Можно ответить позже' : 'Ожидает ответа'}</span></div>
     {questions ? <form onSubmit={e => {
       e.preventDefault();
       void submit({ answers: Object.fromEntries((p.questions || []).map((q: any) => [q.id, { answers: answers[q.id]?.trim() ? [answers[q.id].trim()] : [] }])) });
@@ -50,7 +52,7 @@ export default function Approval({ request, items, respond }: { request: Request
       <button className="secondary-button" disabled={pending} onClick={() => void submit({ action: 'decline', content: null, _meta: null })}>Отклонить запрос</button>
     </> : !approval ? <>
       <p>Этот запрос пока не поддерживается оболочкой: <code>{request.method}</code>.</p>
-      {request.method === 'item/tool/call' ? <button className="secondary-button" disabled={pending} onClick={() => void submit({ success: false, contentItems: [{ type: 'inputText', text: 'This client does not implement the requested dynamic tool.' }] })}>Сообщить Codex</button> : <p className="muted">Остановите выполнение кнопкой под сообщением. Если запрос связан с аккаунтом, войдите через Codex CLI и переподключитесь.</p>}
+      {request.method === 'item/tool/call' ? <button className="secondary-button" disabled={pending} onClick={() => void submit({ success: false, contentItems: [{ type: 'inputText', text: 'This client does not implement the requested dynamic tool.' }] })}>Сообщить {engineName}</button> : <p className="muted">Остановите выполнение кнопкой под сообщением. Если запрос связан с аккаунтом, войдите через {engineName} CLI и переподключитесь.</p>}
     </> : <>
       <p>{p.reason || (command ? 'Разрешить выполнение этой команды?' : permissions ? 'Разрешить дополнительный доступ для текущего запроса?' : 'Разрешить изменения файлов?')}</p>
       {(p.command || item?.command) && <pre className="approval-code">{Array.isArray(p.command) ? p.command.join(' ') : p.command || item?.command}</pre>}

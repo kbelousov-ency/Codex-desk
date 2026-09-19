@@ -10,6 +10,14 @@
 
 Исходники ведутся в Git: `https://github.com/kbelousov-ency/Codex-desk`, ветка `main`, remote `origin`. Репозиторий инициализирован по запросу пользователя после первого подтверждённого продвижения Nightly в Release. Прежние заметки об отсутствии `.git` описывают состояние до 2026-09-18. Сборки, зависимости, тестовые профили/артефакты, журналы и персональные ярлыки в Git не включаются; канал Release обновляется отдельно от отправки исходников.
 
+## Поставка поиска, закладок и файлов — 2026-09-19
+
+Nightly `bb395564365b767a2f1ccef03f5d7763487d0a19386f88eb092e692556054f53`: добавлены [поиск сообщений/закладки](HISTORY_LIBRARY.md), [просмотр файлов](FILE_VIEWER.md); выполнена [реальная проверка Claude](CLAUDE.md#реальная-проверка-модели--2026-09-19). Сборка стоит в очереди `host_awaiting` (12:27:58 UTC), ждёт штатного «Закрыть». Пользовательское окно принудительно не завершалось.
+
+Общий Node-прогон: 348 passed, 2 платформенных skipped; после финального IPC дополнительно прошли 36 затронутых unit-тестов. Прошли production renderer history-library/file-viewer и регрессии chat-search/panels/links/archive/workspace-state/nightly-restore/composer-files/providers/notifications. Archive assertion уточнён до `.message-content`, поскольку новая кнопка закладки входит в текст всей карточки. Live Claude — 4 реальных запроса включая исправленный setup retry; остальные проверки модели не вызывали.
+
+Готовый exe: history host (`artifacts/history-host-5zWDvk`), file viewer host (`artifacts/file-viewer-host-pgtlfV`), оба установленных CLI bootstrap и обычный restart с черновиками (`artifacts/providers-host-GXbPJ3`), Windows identity/notifications без изменения production shortcuts (`artifacts/app-identity-o3ZaT6`). Manifest проверил 72 файла; 32 host/preload/dist файла app.asar побайтно совпали с рабочими исходниками/сборкой. Для nested paths `@electron/asar` на Windows требуется native separator при extractFile. SHA-256 Release app.asar остался `CBEC6906661925068EA3F4BA1E0956938580BD519FA334A6353AE7C28AF4AAE2`.
+
 ## Установщик для коллег
 
 `npm.cmd run release:installer` создаёт `release/installer/Codex Desk Setup <version>.exe` из **уже утверждённого stable**, без компиляции исходников или продвижения Nightly. Рядом — SHA256SUMS.txt, release-info.json и короткая README.txt. Для установки достаточно передать один exe; он содержит Electron и все файлы оболочки. Node.js/исходники на компьютере коллеги не нужны. Установленный и настроенный Codex CLI нужен отдельно; авторизацию, корпоративные токены, пользовательские настройки и историю автора в установщик не включаем.
@@ -36,6 +44,12 @@ NSIS oneClick устанавливает для текущего пользов�
 Для замены Release нужно закрыть его приложение. Первоначально это требовалось и для Nightly; по следующему запросу добавлено [автоматическое применение Nightly](#автоматическое-применение-nightly). Временная упаковка находится под `artifacts/channel-build` и очищается после успешной публикации. Блокировка и транзакционное переименование защищают от одновременных операций и неполной замены; неподтверждённые изменения не должны попадать в stable.
 
 ## Автоматическое применение Nightly
+
+Поставка второго агента Claude Code CLI 2026-09-19: `fb92e5afdba488150816d4818721f0e7ddefedf44bfabaf97be52d0b43450b3e`; [CLAUDE.md](CLAUDE.md) описывает протокол, изоляцию defaults/history и границы поддержки. Готовый exe прошёл реальное подключение обоих CLI без model turn, перезапуск со смешанными вкладками, identity/workspace/очередь host. Только Nightly, Release app.asar прежний `cbec6906661925068ea3f4ba1e0956938580bd519fa334a6353ae7c28af4aae2`. Предыдущий универсальный «+» `cbf778931852` применился: журнал published/relaunched/complete 11:29:46–11:29:47 UTC.
+
+Поставка универсального «+» 2026-09-19: `cbf7789318526f433cb03ebd3f300f7f07ff7a4b3184f13f0db5f0fdee68b92e`, [COMPOSER_FILES.md](COMPOSER_FILES.md). Готовый exe прошёл picker/queue/identity IPC и настоящий Codex bootstrap без model turn. Кандидат находится в штатной очереди, пользовательское окно не закрывалось. Release app.asar прежний (`cbec6906661925068ea3f4ba1e0956938580bd519fa334a6353ae7c28af4aae2`). Предыдущий rollback `f6cbb81aea96` применён: published/relaunched/complete 11:16:21–11:16:22 UTC.
+
+Поставка отката файла 2026-09-19: `f6cbb81aea96bea75c1da5d8ec59e7cfd961eca4e6daed7cacab5b5a2e3c66af`, [ROLLBACK.md](ROLLBACK.md). Готовый exe проверен через настоящий Electron/Git/IPC на временных repo, включая backup/restart/undo, reservation/stale и неизменность всей .git. Bootstrap и test-identity прошли. Кандидат ожидает «Закрыть»; пользовательское окно не завершалось автоматически. Release app.asar сохранил SHA-256 `cbec6906661925068ea3f4ba1e0956938580bd519fa334a6353ae7c28af4aae2`. Предыдущая поставка Git `561c8442b0fe` завершила published/relaunched/complete 10:27:55–10:27:56 UTC.
 
 Поставка Git 2026-09-19: `561c8442b0fe4c661f512a8d55698abcdbfd0db4d4b0ee8108a09e0fcd6ef34f`; [GIT.md](GIT.md) описывает scope/ограничения и проверки. Готовый exe с настоящим Git/IPC подтвердил независимость сессий и неизменность файлов/index/config; icon identity и Codex bootstrap прошли. Кандидат помещён в штатную очередь, пользовательское окно не закрывалось, Release не продвигался. Предыдущий `3f1e2fad04b3` успешно применён: журнал `published → relaunched → complete` 09:54:31–09:54:32 UTC.
 
