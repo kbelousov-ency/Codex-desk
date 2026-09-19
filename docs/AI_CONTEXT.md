@@ -32,7 +32,7 @@ Nightly принимает сборку через очередь; после у
 
 2026-09-19 выполнен следующий запрос на четыре пункта: реальная проверка Claude с подтверждением изменения временного файла/остановкой/resume, [поиск сообщений и закладки](HISTORY_LIBRARY.md) для обоих агентов, [просмотр файлов](FILE_VIEWER.md) через Ctrl+P. Поиск и просмотр читают локальные данные; выбранный фрагмент добавляется видимо в черновик. Результат live model проверки и её границы — в [CLAUDE.md](CLAUDE.md#реальная-проверка-модели--2026-09-19).
 
-2026-09-19 пользователь отдельно запросил [Claude Code CLI](CLAUDE.md) как второй агент. Codex остаётся на App Server; Claude использует свой stream/control CLI и существующие auth/settings. Выбор агента открывает новую вкладку, без переноса prompts/history. Defaults и ID разделены; неподдерживаемые Claude compact/steer/MCP-editor/archive не имитируются.
+2026-09-19 пользователь отдельно запросил [Claude Code CLI](CLAUDE.md) как второй агент. Codex остаётся на App Server; Claude использует свой stream/control CLI и существующие auth/settings. Выбор агента открывает новую вкладку, без переноса prompts/history. Defaults и ID разделены; MCP-editor и archive для Claude не имитируются. Steer, compact, rename и delete для Claude добавлены 2026-09-19 поверх документированного протокола CLI/SDK — см. [CLAUDE.md](CLAUDE.md#возможности-первой-интеграции).
 
 2026-09-19: пользователь сохранил [список идей](ROADMAP.md) и поручил первые два пункта: [восстановление рабочего места](WORKSPACE_STATE.md) и [уточнения/очередь](MESSAGE_QUEUE.md). Обычный restart теперь возвращает вкладки/черновики; очередь возвращается на паузе. Старые ограничения сохранения ниже описывают предшествовавшую реализацию.
 
@@ -151,6 +151,8 @@ React UI → window.codex (preload) → Electron IPC → CodexClient
 | `npm.cmd run dev` | Vite на `127.0.0.1:5178` + Electron. |
 | `npm.cmd run build` | TypeScript без emit + production Vite bundle. |
 | `npm.cmd start` | Запуск текущего dist через Electron. |
+| `npm.cmd run check` | Типы, все Node-тесты и production bundle одной командой; останавливается на первой ошибке. |
+| `npm.cmd run test:hosts [имена]` | Все host-сценарии `scripts/ui-*-host.mjs` по очереди с итоговой таблицей; без запросов модели. |
 | `npm.cmd test` | Node-тесты транспорта/host; без модели. |
 | `npm.cmd run smoke` | Настоящий App Server, чтение моделей/конфига/истории, без turn. |
 | `npm.cmd run test:ui` | Настоящее окно и соединение, вставка PNG; без model turn. Требует dist. |

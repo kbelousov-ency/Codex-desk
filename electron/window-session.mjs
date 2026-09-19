@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { CodexClient } from './codex-client.mjs';
-import { ClaudeClient } from './claude-client.mjs';
+import { ClaudeClient, CLAUDE_CAPABILITIES } from './claude-client.mjs';
 import { directoryPath, findCodex, findClaude, publicConfig } from './host-utils.mjs';
 import { launchSessionTerminal } from './terminal-launcher.mjs';
 
@@ -295,7 +295,7 @@ export class WindowSession {
       await this.setSettings({ cwd });
       checkCurrent();
       this.bootstrap = { initialize, models, account, config: publicConfig(configResponse.config), cwd, executable: nextExecutable, provider,
-        capabilities: provider === 'claude' ? { compact: false, steer: false, terminal: true, mcp: false, archive: false } : { compact: true, steer: true, terminal: true, mcp: true, archive: true } };
+        capabilities: provider === 'claude' ? { ...CLAUDE_CAPABILITIES } : { compact: true, steer: true, terminal: true, mcp: true, archive: true } };
       return this.bootstrap;
     } catch (error) {
       const failedCurrent = current();

@@ -54,7 +54,7 @@ test('Claude boot is shared, uses local streaming CLI, preserves native prompt/s
   const h = harness(); t.after(() => h.client.stop());
   const p = h.client.start(); assert.equal(h.client.start(), p);
   const boot = await p;
-  assert.equal(boot.provider, 'claude'); assert.equal(boot.capabilities.steer, false);
+  assert.equal(boot.provider, 'claude'); assert.equal(boot.capabilities.steer, true); assert.equal(boot.capabilities.compact, true); assert.equal(boot.capabilities.archive, false);
   assert.deepEqual(h.frames.map(f => f.request?.subtype), ['initialize', 'get_settings']);
   assert.deepEqual(h.frames[0].request, { subtype: 'initialize' });
   const { args, options } = h.spawns[0];
@@ -141,9 +141,9 @@ test('unsafe interaction approvals are denied rather than converted to a yes/no 
   assert.equal(h.requests.length, 0); assert.equal(h.frames.at(-1).response.response.behavior, 'deny');
 });
 
-test('stop interrupts the live turn through control without another prompt; steering is explicitly unsupported', async t => {
+test('stop interrupts the live turn through control without another prompt; a steer for another turn is rejected', async t => {
   const h = await running(t);
-  await assert.rejects(h.client.request('turn/steer', { threadId: h.thread.id, input: [{ type: 'text', text: 'more' }] }), /очередь/);
+  await assert.rejects(h.client.request('turn/steer', { threadId: h.thread.id, expectedTurnId: 'other-turn', input: [{ type: 'text', text: 'more' }] }), /уже завершилась/);
   await h.client.request('turn/interrupt', { threadId: h.thread.id, turnId: h.turn.id });
   assert.equal(h.frames.at(-1).request.subtype, 'interrupt'); assert.equal(h.frames.at(-1).request.cancel_queued, true);
   h.child.send(result(h.turn.id, { is_error: true, result: 'interrupted' }));
@@ -263,4 +263,95 @@ test('real subprocess JSONL carries image input, permission decision and a subse
   assert.equal(second.status, 'completed'); assert.notEqual(first.id, second.id);
   assert.ok(second.items.some(i => i.text === 'Следующий запрос получен'));
   assert.equal(events.filter(e => e.method === 'turn/completed').length, 2);
+});
+
+const steerId = 'bbbbbbbb-1111-2222-3333-444444444444';
+test('steer writes a mid-turn user frame with the client uuid, shows it once, and the folded result completes one turn', async t => {
+  const h = await running(t);
+  const before = h.frames.length;
+  const reply = await h.client.request('turn/steer', { threadId: h.thread.id, expectedTurnId: h.turn.id, clientUserMessageId: steerId, input: [{ type: 'text', text: 'и ещё тесты' }] });
+  assert.deepEqual(reply, { turnId: h.turn.id, userMessageId: steerId });
+  const written = h.frames.slice(before);
+  assert.equal(written.length, 1, 'exactly one user frame, no control request or restart');
+  assert.equal(written[0].type, 'user'); assert.equal(written[0].uuid, steerId); assert.equal(written[0].message.content[0].text, 'и ещё тесты');
+  assert.equal(h.spawns.length, 1, 'steer never respawns the CLI');
+  const shown = h.events.filter(e => e.method === 'item/completed' && e.params.item.id === steerId);
+  assert.equal(shown.length, 1); assert.equal(shown[0].params.turnId, h.turn.id); assert.deepEqual(shown[0].params.item.content, [{ type: 'text', text: 'и ещё тесты' }]);
+  h.child.send({ type: 'user', uuid: steerId, session_id: h.thread.id.slice(7), message: { role: 'user', content: [{ type: 'text', text: 'и ещё тесты' }] } });
+  assert.equal(h.events.filter(e => e.method === 'item/completed' && e.params.item.id === steerId).length, 1, 'the CLI echo does not duplicate the shown steer');
+  await assert.rejects(h.client.request('turn/steer', { threadId: h.thread.id, expectedTurnId: 'stale', input: [{ type: 'text', text: 'x' }] }), /уже завершилась/);
+  h.child.send(result(steerId, { user_message_uuids: [h.turn.id, steerId], queued_turn_count: 0, result: 'готово' }));
+  const completed = h.events.filter(e => e.method === 'turn/completed');
+  assert.equal(completed.length, 1); assert.equal(completed[0].params.turn.id, h.turn.id); assert.equal(completed[0].params.turn.status, 'completed');
+  assert.ok(completed[0].params.turn.items.some(item => item.id === steerId && item.type === 'userMessage'));
+  assert.equal(h.client._active, null);
+});
+
+test('a steer the CLI could not fold becomes the next turn without a second prompt; a dropped steer is reported', async t => {
+  const h = await running(t);
+  await h.client.request('turn/steer', { threadId: h.thread.id, expectedTurnId: h.turn.id, clientUserMessageId: steerId, input: [{ type: 'text', text: 'поздно' }] });
+  const before = h.frames.length;
+  h.child.send(result(h.turn.id, { user_message_uuids: [h.turn.id], queued_turn_count: 1, result: 'первый ответ' }));
+  const completed = h.events.filter(e => e.method === 'turn/completed');
+  assert.equal(completed.length, 1); assert.equal(completed[0].params.turn.id, h.turn.id);
+  assert.ok(!completed[0].params.turn.items.some(item => item.id === steerId), 'the unconsumed steer leaves the finished turn');
+  const started = h.events.filter(e => e.method === 'turn/started');
+  assert.equal(started.length, 2); assert.equal(started[1].params.turn.id, steerId, 'the follow-up turn is keyed by the queued message uuid');
+  const moved = h.events.filter(e => e.method === 'item/completed' && e.params.item.id === steerId).at(-1);
+  assert.equal(moved.params.turnId, steerId);
+  assert.equal(h.frames.length, before, 'no new frame is written: the CLI already holds the queued message');
+  await assert.rejects(h.client.request('turn/start', { threadId: h.thread.id, input: [{ type: 'text', text: 'x' }] }), /Дождитесь/);
+  h.child.send({ type: 'assistant', uuid: 'a2', session_id: h.thread.id.slice(7), message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'второй ответ' }] } });
+  h.child.send(result(steerId, { user_message_uuids: [steerId], queued_turn_count: 0, result: 'второй ответ' }));
+  assert.equal(h.events.filter(e => e.method === 'turn/completed').length, 2);
+  assert.equal(h.client._active, null);
+  const turn2 = (await h.client.request('turn/start', { threadId: h.thread.id, input: [{ type: 'text', text: 'ещё' }] })).turn;
+  await h.client.request('turn/steer', { threadId: h.thread.id, expectedTurnId: turn2.id, input: [{ type: 'text', text: 'потеряно' }] });
+  h.child.send(result(turn2.id, { user_message_uuids: [turn2.id], queued_turn_count: 0 }));
+  assert.equal(h.events.filter(e => e.method === 'turn/started').length, 3, 'no follow-up turn without a queued count');
+  assert.match(h.events.find(e => e.method === 'error')?.params.error.message || '', /не учёл уточнение/);
+  assert.equal(h.client._active, null);
+});
+
+test('compact sends the documented /compact command as its own turn and surfaces the boundary, no hidden instructions', async t => {
+  const h = harness(); t.after(() => h.client.stop()); await h.client.start();
+  const thread = (await h.client.request('thread/start')).thread;
+  await assert.rejects(h.client.request('thread/compact/start', { threadId: thread.id }), /пуст/);
+  const turn = (await h.client.request('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Привет' }] })).turn;
+  await assert.rejects(h.client.request('thread/compact/start', { threadId: thread.id }), /Дождитесь/);
+  h.child.send(result(turn.id));
+  const before = h.frames.length;
+  await h.client.request('thread/compact/start', { threadId: thread.id });
+  const written = h.frames.slice(before);
+  assert.equal(written.length, 1); assert.equal(written[0].type, 'user'); assert.deepEqual(written[0].message.content, [{ type: 'text', text: '/compact' }]);
+  const compactTurn = h.events.filter(e => e.method === 'turn/started').at(-1).params.turn;
+  assert.equal(compactTurn.id, written[0].uuid);
+  assert.equal(h.events.filter(e => e.method === 'item/completed' && e.params.turnId === compactTurn.id && e.params.item.type === 'userMessage').length, 0, 'the command is not shown as a user message');
+  await assert.rejects(h.client.request('turn/steer', { threadId: thread.id, expectedTurnId: compactTurn.id, input: [{ type: 'text', text: 'x' }] }), /сжатия/);
+  h.child.send({ type: 'system', subtype: 'compact_boundary', uuid: 'cb1', session_id: thread.id.slice(7), compact_metadata: { trigger: 'manual', pre_tokens: 5000, post_tokens: 900 } });
+  const boundary = h.events.find(e => e.method === 'item/completed' && e.params.item.type === 'contextCompaction');
+  assert.equal(boundary.params.turnId, compactTurn.id); assert.equal(boundary.params.item.preTokens, 5000);
+  h.child.send({ type: 'system', subtype: 'local_command_output', uuid: 'lc1', session_id: thread.id.slice(7), content: 'Compacted conversation' });
+  assert.equal(h.events.find(e => e.method === 'item/completed' && e.params.item.id === 'lc1').params.item.text, 'Compacted conversation');
+  h.child.send(result(compactTurn.id, { queued_turn_count: 0 }));
+  const done = h.events.filter(e => e.method === 'turn/completed').at(-1);
+  assert.equal(done.params.turn.id, compactTurn.id); assert.equal(done.params.turn.status, 'completed');
+  assert.equal(h.spawns.length, 1);
+});
+
+test('rename of the open session uses the rename_session control request and updates the thread', async t => {
+  const h = await running(t);
+  h.child.send(result(h.turn.id));
+  await assert.rejects(h.client.request('thread/name/set', { threadId: h.thread.id, name: '  ' }), /Название/);
+  await assert.rejects(h.client.request('thread/name/set', { threadId: 'claude:' + steerId, name: 'x' }), /Откройте/);
+  const before = h.frames.length;
+  const pending = h.client.request('thread/name/set', { threadId: h.thread.id, name: ' План миграции ' });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const request = h.frames.slice(before).find(f => f.type === 'control_request');
+  assert.deepEqual(request.request, { subtype: 'rename_session', title: 'План миграции', source: 'host', session_id: h.thread.id.slice(7) });
+  h.child.send({ type: 'control_response', response: { subtype: 'success', request_id: request.request_id, response: {} } });
+  const reply = await pending;
+  assert.equal(reply.thread.name, 'План миграции');
+  assert.deepEqual(h.events.find(e => e.method === 'thread/name/updated').params, { threadId: h.thread.id, name: 'План миграции' });
+  assert.equal((await h.client.request('thread/read', { threadId: h.thread.id })).thread.name, 'План миграции');
 });

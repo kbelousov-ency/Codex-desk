@@ -114,8 +114,9 @@ try {
   assert.equal(await selector('Модель').getAttribute('data-value'), claude.model);
   assert.equal(await draft().inputValue(), '');
   assert.equal(await page.getByRole('tab').count(), 2);
-  assert.equal(claude.capabilities.steer, false);
-  assert.equal(claude.capabilities.compact, false);
+  assert.equal(claude.capabilities.steer, true);
+  assert.equal(claude.capabilities.compact, true);
+  assert.equal(claude.capabilities.archive, false);
   assert.equal(claude.capabilities.terminal, true);
   await rememberCurrent(claude);
   await draft().fill('Черновик Claude сохраняется отдельно');

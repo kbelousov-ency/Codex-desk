@@ -36,7 +36,7 @@ try {
       const emit = state.emit = (method, params) => { for (const listener of state.listeners) listener({ type: 'notification', data: { method, params } }); };
       state.complete = () => { const turnId = state.activeTurn; emit('item/completed', { threadId: thread().id, turnId, item: { id: `answer-${turnId}`, type: 'agentMessage', text: 'Ответ Claude' } }); emit('turn/completed', { threadId: thread().id, turn: { id: turnId, status: 'completed', items: [], error: null } }); state.activeTurn = null; };
       state.bridge = {
-        async start() { if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: !claude, steer: !claude, terminal: true, mcp: !claude, archive: !claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
+        async start() { if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: true, steer: true, terminal: true, mcp: !claude, archive: !claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
         async getSettings() { return { ...settings }; },
         async setSettings(patch) { calls.push({ id, method: 'setSettings', patch: { ...patch } }); Object.assign(settings, patch); },
         async request(method, params = {}) {
@@ -50,6 +50,18 @@ try {
             emit('item/started', { threadId: thread().id, turnId, item });
             emit('item/completed', { threadId: thread().id, turnId, item });
             return { turn: { id: turnId, status: 'inProgress' } };
+          }
+          if (method === 'turn/steer') {
+            const item = { id: params.clientUserMessageId, clientId: params.clientUserMessageId, type: 'userMessage', content: params.input };
+            emit('item/completed', { threadId: thread().id, turnId: state.activeTurn, item });
+            return { turnId: state.activeTurn, userMessageId: params.clientUserMessageId };
+          }
+          if (method === 'thread/compact/start') {
+            const turnId = `compact-${calls.filter(call => call.method === 'thread/compact/start').length}`;
+            emit('turn/started', { threadId: thread().id, turn: { id: turnId, status: 'inProgress', items: [] } });
+            emit('item/completed', { threadId: thread().id, turnId, item: { id: `${turnId}:boundary`, type: 'contextCompaction' } });
+            emit('turn/completed', { threadId: thread().id, turn: { id: turnId, status: 'completed', items: [], error: null } });
+            return {};
           }
           if (method === 'turn/interrupt') { emit('turn/completed', { threadId: thread().id, turn: { id: state.activeTurn, status: 'interrupted' } }); state.activeTurn = null; return {}; }
           throw new Error(`Unsupported fixture request: ${method}`);
@@ -119,10 +131,6 @@ try {
   await view().getByRole('dialog').getByText(/Подключения Claude Code настраиваются/).waitFor();
   assert.equal((await calls('getMcpConfig')).length, 0, 'Claude settings never access the Codex MCP editor');
   await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
-  await draft().fill('/compact');
-  await draft().press('Enter');
-  await view().getByRole('alert').filter({ hasText: /Сжатие контекста Claude Code/ }).waitFor();
-  assert.equal((await calls('thread/compact/start')).length, 0);
   await draft().fill('Изучи материалы');
   await view().getByRole('button', { name: 'Добавить файлы', exact: true }).click();
   await view().getByRole('button', { name: 'Удалить example.png', exact: true }).waitFor();
@@ -136,8 +144,16 @@ try {
   assert.deepEqual(sent.params.input.map(item => item.type), ['text', 'localImage']);
   await draft().fill('Следующий вопрос');
   const steer = view().getByRole('button', { name: 'Уточнить текущую задачу', exact: true });
-  assert.equal(await steer.isDisabled(), true);
-  assert.match(await steer.getAttribute('title'), /пока недоступны/);
+  assert.equal(await steer.isDisabled(), false, 'Claude accepts mid-turn steering');
+  await steer.click();
+  await page.waitForFunction(() => window.__providers.calls.some(call => call.method === 'turn/steer'));
+  const steered = (await calls('turn/steer'))[0];
+  assert.equal(steered.provider, 'claude');
+  assert.equal(steered.params.input[0].text, 'Следующий вопрос');
+  assert.equal(steered.params.expectedTurnId, 'turn-1');
+  await view().locator('.user-message').filter({ hasText: 'Следующий вопрос' }).first().waitFor();
+  assert.equal(await draft().inputValue(), '', 'accepted steer clears the draft');
+  await draft().fill('Следующий вопрос');
   await view().getByRole('button', { name: 'Отправить после завершения', exact: true }).click();
   await view().getByRole('region', { name: 'Очередь сообщений', exact: true }).getByText('Следующий вопрос', { exact: true }).waitFor();
   assert.equal((await calls('turn/start')).length, 1, 'Queue waits while Claude is busy');
@@ -148,14 +164,20 @@ try {
   await page.evaluate(() => window.__providers.sessions['session-1'].complete());
   await ready();
   assert.equal(await view().getByRole('button', { name: 'Открыть текущую сессию в терминале', exact: true }).isEnabled(), true, 'Terminal support is independent of compact support');
+  await draft().fill('/compact');
+  await draft().press('Enter');
+  await view().getByText('Контекст сжат. Можно продолжить диалог.').waitFor();
+  assert.equal((await calls('thread/compact/start')).length, 1, 'Claude compact runs through the documented slash command turn');
+  assert.equal((await calls('thread/compact/start'))[0].provider, 'claude');
+  await ready();
   await view().getByRole('button', { name: 'Команды Claude Code', exact: true }).click();
-  assert.equal(await view().locator('[data-command="compact"]').count(), 0);
+  assert.equal(await view().locator('[data-command="compact"]').count(), 1, 'compact is offered in the Claude command menu');
   await draft().press('Escape');
   await choose('Агент', 'codex');
   await ready();
   assert.equal(await page.getByRole('tab').count(), 3);
   assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).getAttribute('data-value'), 'fixture-astra');
-  assert.equal((await calls('turn/steer')).length, 0);
+  assert.equal((await calls('turn/steer')).length, 1, 'the only steer belongs to the Claude tab');
   assert.deepEqual(errors, []);
   await activate('session-1');
   await page.screenshot({ path: 'artifacts/provider-claude.png' });

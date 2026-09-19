@@ -13,6 +13,7 @@ import { getGitStatus, getGitDiff } from './git-reader.mjs';
 import { GitRollbackService } from './git-rollback.mjs';
 import { prepareComposerFiles } from './composer-files.mjs';
 import { ClaudeHistory } from './claude-history.mjs';
+import { ClaudeThreadManagement } from './claude-threads.mjs';
 import { HistorySearch } from './history-search.mjs';
 import { BookmarkStore } from './bookmarks.mjs';
 import { searchProjectFiles, readProjectFile } from './file-viewer.mjs';
@@ -335,6 +336,15 @@ function installHandlers() {
     });
     return record.management;
   };
+  const claudeManagement = (record, event) => {
+    record.claudeManagement ??= new ClaudeThreadManagement({
+      coordinator: threadActions,
+      history: claudeHistory,
+      getSessions: () => [...windows.values()].flatMap(item => [...item.sessions.values()].filter(session => session.settings.provider === 'claude')),
+      assertActive: () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); },
+    });
+    return record.claudeManagement;
+  };
   const registeredProject = async (record, event, cwd) => {
     const canonical = await directoryPath(cwd);
     windowForEvent(windows, event);
@@ -436,7 +446,10 @@ function installHandlers() {
     windowForEvent(windows, event);
     return result;
   });
-  workspaceHandle('host:manageThread', (record, event, options) => management(record, event).manageThread(options));
+  workspaceHandle('host:manageThread', (record, event, options) => {
+    const claude = typeof options?.threadId === 'string' && options.threadId.startsWith('claude:');
+    return (claude ? claudeManagement(record, event) : management(record, event)).manageThread(options);
+  });
   workspaceHandle('host:openArchivedPath', async (record, event, options) => {
     const thread = await management(record, event).readArchivedMetadata(options?.threadId);
     const assertActive = () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); };

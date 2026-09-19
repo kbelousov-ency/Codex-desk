@@ -9,7 +9,17 @@ const MAX_FRAME = 32 * 1024 * 1024;
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
 const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermissions']);
-export const CLAUDE_CAPABILITIES = Object.freeze({ steer: false, compact: false, terminal: true, mcp: false, threadManagement: false });
+// steer: a user frame written mid-turn is folded into the running turn between tool
+// rounds; the result lists every consumed uuid. compact: the documented `/compact`
+// slash command runs as its own turn and emits a compact_boundary system frame.
+// archive: native Claude history has no archive; rename/delete are handled by ClaudeThreadManagement.
+export const CLAUDE_CAPABILITIES = Object.freeze({ steer: true, compact: true, terminal: true, mcp: false, archive: false });
+const MAX_STEERS = 16;
+const cleanTitle = value => {
+  const title = typeof value === 'string' ? value.trim() : '';
+  if (!title || title.length > 200 || /[\r\n\0]/.test(title)) throw new Error('Название должно содержать от 1 до 200 символов в одной строке.');
+  return title;
+};
 
 function rawId(value) {
   if (typeof value !== 'string' || !value.startsWith('claude:') || !UUID.test(value.slice(7))) throw new Error('Некорректный идентификатор диалога Claude.');
@@ -148,7 +158,45 @@ export class ClaudeClient extends EventEmitter {
       if (!this.history) throw new Error('История Claude недоступна.');
       return this.history.read({ ...params, cwd: this.cwd });
     }
-    if (method === 'turn/steer') throw new Error('Уточнение выполняющейся задачи пока недоступно для Claude. Добавьте сообщение в очередь.');
+    if (method === 'turn/steer') {
+      this._ensureThread(params.threadId);
+      const active = this._active;
+      if (!active || (params.expectedTurnId && active.id !== params.expectedTurnId)) throw new Error('Текущая задача Claude уже завершилась. Отправьте сообщение обычным способом.');
+      if (active.compaction) throw new Error('Дождитесь окончания сжатия контекста Claude.');
+      if (active.interrupted) throw new Error('Задача Claude останавливается. Дождитесь завершения.');
+      if (active.steers.size >= MAX_STEERS) throw new Error('Слишком много уточнений в одном запросе. Дождитесь завершения.');
+      const content = await this._input(params.input);
+      if (this._active !== active) throw new Error('Текущая задача Claude уже завершилась. Отправьте сообщение обычным способом.');
+      const owned = this._ensureSession();
+      const id = typeof params.clientUserMessageId === 'string' && UUID.test(params.clientUserMessageId) && !active.items.has(params.clientUserMessageId) && !active.steers.has(params.clientUserMessageId) ? params.clientUserMessageId : randomUUID();
+      active.steers.set(id, structuredClone(params.input));
+      try { await this._write(owned, { type: 'user', uuid: id, session_id: owned.id, parent_tool_use_id: null, message: { role: 'user', content } }); }
+      catch (error) { active.steers.delete(id); throw error; }
+      // The CLI echoes the frame with --replay-user-messages; show it now so the
+      // acknowledged steer is visible even when the echo is delayed.
+      if (this._active === active) this._userEcho({ uuid: id });
+      return { turnId: active.id, userMessageId: id };
+    }
+    if (method === 'thread/name/set') {
+      this._ensureThread(params.threadId);
+      const title = cleanTitle(params.name);
+      await this._control(session, 'rename_session', { title, source: 'host', session_id: session.id });
+      if (this._thread?.id === params.threadId) { this._thread.name = title; this._notify('thread/name/updated', { threadId: params.threadId, name: title }); }
+      return { thread: structuredClone(this._thread) };
+    }
+    if (method === 'thread/compact/start') {
+      this._ensureThread(params.threadId);
+      if (this._mutation || this._active) throw new Error('Дождитесь завершения текущей задачи Claude.');
+      if (!session.sent && !session.resumed) throw new Error('Диалог Claude ещё пуст: сжимать нечего.');
+      this._mutation = true;
+      try {
+        const owned = this._ensureSession();
+        const turn = this._beginTurn({ sourceInput: [], compaction: true });
+        try { await this._write(owned, { type: 'user', uuid: turn.id, session_id: owned.id, parent_tool_use_id: null, message: { role: 'user', content: [{ type: 'text', text: '/compact' }] } }); }
+        catch (error) { this._finish('failed', error.message); throw error; }
+        return {};
+      } finally { this._mutation = false; }
+    }
     if (method === 'turn/interrupt') {
       this._ensureThread(params.threadId);
       if (!this._active || (params.turnId && this._active.id !== params.turnId)) return {};
@@ -189,18 +237,23 @@ export class ClaudeClient extends EventEmitter {
       const content = await this._input(params.input);
       await this._configure(params);
       const owned = this._ensureSession();
-      const id = randomUUID();
-      const turn = { id, status: 'inProgress', items: [], startedAt: Math.floor(Date.now() / 1000) };
-      this._active = { ...turn, items: new Map(), sourceInput: structuredClone(params.input), completedMessages: new Set(), latestText: null };
-      this._thread.turns ||= []; this._thread.turns.push(turn); this._thread.status = { type: 'active' };
-      this._notify('turn/started', { threadId: this._thread.id, turn });
+      const turn = this._beginTurn({ sourceInput: structuredClone(params.input) });
       try {
-        await this._write(owned, { type: 'user', uuid: id, session_id: owned.id, parent_tool_use_id: null, message: { role: 'user', content } });
+        await this._write(owned, { type: 'user', uuid: turn.id, session_id: owned.id, parent_tool_use_id: null, message: { role: 'user', content } });
         owned.sent = true;
-        this._userEcho({ uuid: id });
+        this._userEcho({ uuid: turn.id });
       } catch (error) { this._finish('failed', error.message); throw error; }
       return { turn: { ...turn, items: [] } };
     } finally { this._mutation = false; }
+  }
+
+  /** Registers a new in-progress turn on the open thread and announces it. */
+  _beginTurn({ id = randomUUID(), sourceInput, steers = new Map(), compaction = false }) {
+    const turn = { id, status: 'inProgress', items: [], startedAt: Math.floor(Date.now() / 1000) };
+    this._active = { ...turn, items: new Map(), sourceInput, steers, completedMessages: new Set(), latestText: null, compaction };
+    this._thread.turns ||= []; this._thread.turns.push(turn); this._thread.status = { type: 'active' };
+    this._notify('turn/started', { threadId: this._thread.id, turn });
+    return turn;
   }
 
   _threadResponse() { const config = this._config(); return { thread: structuredClone(this._thread), model: config.model, reasoningEffort: config.model_reasoning_effort, cwd: this.cwd }; }
@@ -315,18 +368,30 @@ export class ClaudeClient extends EventEmitter {
     else if (frame.type === 'user' && !frame.parent_tool_use_id) {
       const content = frame.message?.content;
       if (Array.isArray(content)) for (const block of content) if (block.type === 'tool_result') this._toolResult(block);
-      if (frame.uuid === this._active?.id) this._userEcho(frame);
+      if (frame.uuid === this._active?.id || this._active?.steers.has(frame.uuid)) this._userEcho(frame);
     } else if (frame.type === 'result') this._result(frame);
-    else if (frame.type === 'system' && frame.subtype === 'init') {
-      if (frame.model) session.applied.model = frame.model;
+    else if (frame.type === 'system') this._system(session, frame);
+  }
+
+  _system(session, frame) {
+    if (frame.subtype === 'init') { if (frame.model) session.applied.model = frame.model; return; }
+    const a = this._active; if (!a) return;
+    if (frame.subtype === 'compact_boundary') {
+      const meta = frame.compact_metadata || {};
+      this._item({ id: frame.uuid || `${a.id}:compaction`, type: 'contextCompaction', trigger: meta.trigger, preTokens: meta.pre_tokens, postTokens: meta.post_tokens }, true);
+    } else if (frame.subtype === 'local_command_output' && typeof frame.content === 'string' && frame.content.trim()) {
+      this._item({ id: frame.uuid || `${a.id}:command-output`, type: 'agentMessage', text: safeText(frame.content, 20_000), phase: 'commentary' }, true);
     }
   }
 
   _userEcho(frame) {
-    const a = this._active; if (!a || a.items.has(a.id)) return;
-    const item = { id: frame.uuid || a.id, type: 'userMessage', content: a.sourceInput };
-    this._item(item, true);
-    const preview = a.sourceInput.filter(p => p.type === 'text').map(p => p.text).join('\n');
+    const a = this._active; if (!a || a.compaction) return;
+    const id = frame.uuid || a.id;
+    if (a.items.has(id)) return;
+    const content = id === a.id ? a.sourceInput : a.steers.get(id);
+    if (!content) return;
+    this._item({ id, type: 'userMessage', content }, true);
+    const preview = content.filter(p => p.type === 'text').map(p => p.text).join('\n');
     if (!this._thread.preview) this._thread.preview = preview.slice(0, 180);
   }
   _item(item, complete = false) {
@@ -413,7 +478,13 @@ export class ClaudeClient extends EventEmitter {
   }
   _result(frame) {
     const a = this._active; if (!a) return;
-    if (frame.user_message_uuid && frame.user_message_uuid !== a.id && !frame.user_message_uuids?.includes(a.id)) return;
+    const consumed = new Set([frame.user_message_uuid, ...(Array.isArray(frame.user_message_uuids) ? frame.user_message_uuids : [])].filter(Boolean));
+    if (consumed.size && !consumed.has(a.id) && ![...a.steers.keys()].some(id => consumed.has(id))) return;
+    // A steer that reached the CLI after the final model round is not folded into
+    // this turn; the CLI runs it as the next turn without further input.
+    const pending = [...a.steers].filter(([id]) => consumed.size && !consumed.has(id));
+    const followUp = pending.length && !a.interrupted && Number.isSafeInteger(frame.queued_turn_count) && frame.queued_turn_count > 0;
+    for (const [id] of pending) a.items.delete(id);
     const totals = Object.values(frame.modelUsage || {}).map(u => usageBreakdown(u, true));
     let total;
     if (totals.length) total = Object.fromEntries(['inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens', 'reasoningOutputTokens']
@@ -423,6 +494,15 @@ export class ClaudeClient extends EventEmitter {
     if (!a.latestText && !frame.is_error && typeof frame.result === 'string' && frame.result) this._item({ id: `${a.id}:result`, type: 'agentMessage', text: frame.result, phase: 'final_answer' }, true);
     const failed = frame.is_error || frame.subtype !== 'success';
     this._finish(a.interrupted ? 'interrupted' : failed ? 'failed' : 'completed', failed ? safeText(frame.errors?.join('\n') || frame.result || 'Claude завершил запрос с ошибкой.') : undefined);
+    if (!pending.length || a.interrupted || !this._thread || this._session?.ended) return;
+    if (!followUp) {
+      this._notify('error', { threadId: this._thread.id, willRetry: false, error: { message: 'Claude не учёл уточнение: задача уже завершилась. Отправьте его отдельным сообщением.' } });
+      return;
+    }
+    // The queued messages coalesce into one turn whose echo/result reference their uuids.
+    const [[firstId, firstInput], ...rest] = pending;
+    this._beginTurn({ id: firstId, sourceInput: firstInput, steers: new Map(rest) });
+    for (const [id] of pending) this._userEcho({ uuid: id });
   }
   _finish(status, message) {
     const a = this._active; if (!a || !this._thread) return;

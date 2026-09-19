@@ -7,10 +7,12 @@ import './archive.css';
 
 export type { ThreadAction } from './types';
 
-export default function ThreadMenu({ title, threadId, archived = false, active = true, disabled = false, onAction }: {
+export default function ThreadMenu({ title, threadId, archived = false, archivable = true, active = true, disabled = false, onAction }: {
   title: string;
   threadId: string;
   archived?: boolean;
+  /** Claude Code history has no archive state; only rename and delete are offered. */
+  archivable?: boolean;
   active?: boolean;
   disabled?: boolean;
   onAction(action: ThreadAction): void;
@@ -24,7 +26,7 @@ export default function ThreadMenu({ title, threadId, archived = false, active =
   const visible = open && active && !disabled;
   const actions = archived
     ? [{ action: 'delete' as const, label: 'Удалить', icon: Trash2 }, { action: 'restore' as const, label: 'Восстановить', icon: ArchiveRestore }]
-    : [{ action: 'rename' as const, label: 'Переименовать', icon: Pencil }, { action: 'archive' as const, label: 'В архив', icon: Archive }, { action: 'delete' as const, label: 'Удалить', icon: Trash2 }];
+    : [{ action: 'rename' as const, label: 'Переименовать', icon: Pencil }, ...(archivable ? [{ action: 'archive' as const, label: 'В архив', icon: Archive }] : []), { action: 'delete' as const, label: 'Удалить', icon: Trash2 }];
   const close = (focus = false) => { setOpen(false); if (focus) trigger.current?.focus(); };
   const show = (last = false) => {
     if (!active || disabled) return;

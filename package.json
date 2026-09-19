@@ -10,6 +10,8 @@
     "build": "tsc --noEmit && vite build",
     "start": "node scripts/start.mjs",
     "test": "node --test tests/*.test.mjs",
+    "check": "node scripts/check.mjs",
+    "test:hosts": "node scripts/hosts.mjs",
     "smoke": "node scripts/smoke.mjs",
     "test:ui": "node scripts/ui-smoke.mjs",
     "package": "npm run build && node scripts/package.mjs",
