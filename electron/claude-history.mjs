@@ -11,6 +11,57 @@ const directoryKey = value => process.platform === 'win32' ? path.normalize(valu
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = value => typeof value === 'string' ? value : '';
 const seconds = value => typeof value === 'number' && Number.isFinite(value) ? Math.floor(value / 1000) : undefined;
+/** Native frames carry an ISO `timestamp`; Unix seconds match App Server turn fields. */
+const frameSeconds = frame => {
+  const at = typeof frame?.timestamp === 'string' ? Date.parse(frame.timestamp) : typeof frame?.timestamp === 'number' ? frame.timestamp : NaN;
+  return Number.isFinite(at) && at > 0 ? Math.floor(at / 1000) : undefined;
+};
+
+/** Anthropic usage → App Server breakdown. Input counts every token the model read (ordinary + cache read + cache
+ * write), which is what the context estimate needs. Missing counters stay undefined, never zero. */
+export function usageBreakdown(usage, camel = false) {
+  const count = key => Number.isSafeInteger(usage?.[key]) && usage[key] >= 0 ? usage[key] : undefined;
+  const ordinary = count(camel ? 'inputTokens' : 'input_tokens');
+  const cached = count(camel ? 'cacheReadInputTokens' : 'cache_read_input_tokens');
+  const writing = count(camel ? 'cacheCreationInputTokens' : 'cache_creation_input_tokens');
+  const output = count(camel ? 'outputTokens' : 'output_tokens');
+  const input = ordinary === undefined ? undefined : ordinary + (cached || 0) + (writing || 0);
+  return { inputTokens: input, cachedInputTokens: cached, cacheWriteInputTokens: writing, outputTokens: output,
+    totalTokens: input === undefined || output === undefined ? undefined : input + output,
+    ...(camel && count('thinkingTokens') !== undefined ? { reasoningOutputTokens: count('thinkingTokens') } : {}) };
+}
+
+const USAGE_KEYS = ['inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens', 'reasoningOutputTokens'];
+export function addUsage(total, part) {
+  const base = total || Object.fromEntries(USAGE_KEYS.map(k => [k, k === 'reasoningOutputTokens' ? undefined : 0]));
+  return Object.fromEntries(USAGE_KEYS.map(k => [k, base[k] === undefined || part[k] === undefined ? (k === 'reasoningOutputTokens' ? undefined : base[k]) : base[k] + part[k]]));
+}
+
+/** Synthetic frames (auth/API failures written by the CLI) are not model responses. */
+const apiError = frame => frame?.isApiErrorMessage === true || frame?.message?.model === '<synthetic>';
+
+/** Token counters recorded in the transcript: `last` is the latest real model call (context proxy), `total` sums
+ * every call once per API message id. Sibling frames of one message repeat the same usage. Nothing is invented:
+ * a transcript without usage yields null. */
+export function claudeHistoryUsage(messages, { sessionId } = {}) {
+  if (!Array.isArray(messages)) return null;
+  const perMessage = new Map();
+  let last = null;
+  for (const [index, frame] of messages.entries()) {
+    if (!object(frame) || frame.type !== 'assistant' || frame.isSidechain || frame.parent_tool_use_id || apiError(frame)) continue;
+    if (sessionId && frame.session_id && frame.session_id !== sessionId) continue;
+    const usage = frame.message?.usage;
+    if (!object(usage)) continue;
+    const part = usageBreakdown(usage);
+    if (part.totalTokens === undefined) continue;
+    perMessage.set(text(frame.message.id) || text(frame.uuid) || `message-${index}`, part);
+    last = part;
+  }
+  if (!last) return null;
+  let total = null;
+  for (const part of perMessage.values()) total = addUsage(total, part);
+  return { last, total, messageIds: [...perMessage.keys()] };
+}
 
 /** The namespace never reaches the CLI; only a validated native UUID does. */
 export function claudeSessionId(value) {
@@ -118,6 +169,22 @@ export function claudeHistoryTurns(messages, { cwd, sessionId } = {}) {
     if (!current) { current = { id, status: 'completed', items: [] }; turns.push(current); }
     return current;
   };
+  // Turn timing comes only from frame timestamps: the user prompt starts the turn, the last real assistant frame ends
+  // it. A synthetic API-error frame marks the turn failed so the cache estimate stays unknown for it.
+  const observeTiming = frame => {
+    if (!current) return;
+    const at = frameSeconds(frame);
+    if (frame.type === 'user') { if (at !== undefined && current.startedAt === undefined) current.startedAt = at; return; }
+    if (apiError(frame)) {
+      current.status = 'failed';
+      const message = outputText(frame.message?.content);
+      if (!current.error) current.error = { message: (message || 'Claude завершил запрос с ошибкой.').slice(0, 4_000) };
+      delete current.completedAt;
+      return;
+    }
+    if (current.status === 'failed') return;
+    if (at !== undefined && (current.completedAt === undefined || at > current.completedAt)) current.completedAt = at;
+  };
   const addItem = item => {
     const turn = ensureTurn(`claude-history-${item.id}`);
     if (ids.has(item.id)) return;
@@ -155,10 +222,12 @@ export function claudeHistoryTurns(messages, { cwd, sessionId } = {}) {
       if (content.length && !ids.has(frameId)) {
         current = { id: frameId, status: 'completed', items: [] };
         turns.push(current);
+        observeTiming(frame);
         addItem({ id: frameId, type: 'userMessage', content });
       }
       continue;
     }
+    observeTiming(frame);
     const messageId = text(message.id) || frameId;
     const hasTools = messageTools.has(messageId);
     for (const [index, block] of blocks.entries()) {
@@ -229,6 +298,8 @@ export class ClaudeHistory {
       if (typeof info.fileSize === 'number' && info.fileSize > MAX_TRANSCRIPT_BYTES) throw new Error('История Claude превышает 128 МиБ. Откройте этот диалог в терминале.');
       const messages = await sdk.getSessionMessages(id, { dir: cwd, includeSystemMessages: false, limit: MAX_MESSAGES + 1 });
       thread.turns = claudeHistoryTurns(messages, { cwd, sessionId: id });
+      const usage = claudeHistoryUsage(messages, { sessionId: id });
+      if (usage) return { thread, tokenUsage: { last: usage.last, total: usage.total }, usageMessageIds: usage.messageIds };
     }
     return { thread };
   }

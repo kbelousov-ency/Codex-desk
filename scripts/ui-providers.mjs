@@ -45,6 +45,15 @@ try {
           if (method === 'agent/capabilities') return { commands: [{ name: 'compact', description: 'Compact', builtin: true }, { name: 'ency-extension', description: 'Build ENCY extensions', builtin: false }], agents: [{ name: 'Explore', description: 'Search' }], mcpServers: [{ name: 'plane', status: 'connected' }, { name: 'atlassian', status: 'failed', error: 'timeout' }] };
           if (method === 'usage/read') return fixture.usageUnavailable ? { available: false, windows: [], message: 'Лимиты плана не применяются к этому способу входа.' } : { available: true, subscription: 'max', updatedAt: new Date().toISOString(), windows: [{ key: 'five_hour', label: 'Сессия 5 часов', utilization: 42, resetsAt: new Date(Date.now() + 90 * 60000).toISOString() }, { key: 'seven_day', label: 'Неделя, все модели', utilization: 9, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() }] };
           if (method === 'thread/start') return { thread: thread(), model: settings.model };
+          if (method === 'thread/resume') {
+            // Native Claude history: turn timestamps and the transcript's token counters come with the resume response.
+            const at = Math.floor((Date.now() - 20 * 60000) / 1000);
+            const turns = [{ id: 'history-turn', status: 'completed', startedAt: at - 30, completedAt: at, items: [
+              { id: 'history-user', type: 'userMessage', content: [{ type: 'text', text: 'Сохранённый вопрос Claude' }] },
+              { id: 'history-answer', type: 'agentMessage', text: 'Сохранённый ответ Claude', phase: 'final_answer' }] }];
+            return { thread: { ...thread(), id: params.threadId, name: 'История Claude', historyMode: 'legacy', turns }, model: settings.model,
+              tokenUsage: { last: { inputTokens: 4505, cachedInputTokens: 4500, cacheWriteInputTokens: 0, outputTokens: 7, totalTokens: 4512 }, total: { inputTokens: 9015, cachedInputTokens: 8500, cacheWriteInputTokens: 500, outputTokens: 27, totalTokens: 9042 } } };
+          }
           if (method === 'turn/start') {
             const turnId = state.activeTurn = `turn-${calls.filter(call => call.method === 'turn/start').length}`;
             const item = { id: `user-${turnId}`, clientId: params.clientUserMessageId, type: 'userMessage', content: params.input };
@@ -84,7 +93,7 @@ try {
     window.codex = {
       ...sessions['initial-codex'].bridge,
       async getWorkspace() { return { projects: [cwd], sessions: [{ id: 'initial-codex', cwd, provider: 'codex' }] }; },
-      async listProjectThreads() { return { data: [], nextCursor: null }; },
+      async listProjectThreads() { return { data: [{ id: 'claude:history-1', provider: 'claude', cwd, name: 'История Claude', historyMode: 'legacy' }], nextCursor: null }; },
       async createSession(options) {
         fixture.create.push(structuredClone(options));
         const provider = options.provider || options.settings?.provider || 'codex';
@@ -221,6 +230,17 @@ try {
   assert.deepEqual(errors, []);
   await activate('session-1');
   await page.screenshot({ path: 'artifacts/provider-claude.png' });
+  // Opening a stored Claude dialog shows its token counters and the cache estimate from the last answer time.
+  const turnsBeforeResume = (await calls('turn/start')).length;
+  await page.getByRole('button', { name: 'История Claude', exact: true }).click();
+  await view().getByText('Сохранённый вопрос Claude', { exact: true }).waitFor();
+  await ready();
+  const resumed = await calls('thread/resume');
+  assert.equal(resumed.length, 1); assert.equal(resumed[0].provider, 'claude'); assert.equal(resumed[0].params.threadId, 'claude:history-1');
+  await view().getByRole('button', { name: 'Подробности токенов', exact: true }).filter({ hasText: /4.512 токенов/ }).waitFor();
+  assert.match(await view().locator('.cache-control .cache-countdown').innerText(), /Кэш ≈ (?:39:5\d|40:00)/, 'the estimate counts from the stored answer time, not from opening');
+  assert.equal((await calls('turn/start')).length, turnsBeforeResume, 'opening history sends nothing to the model');
+  await page.screenshot({ path: 'artifacts/provider-claude-history.png' });
   await activate('session-2');
   await page.evaluate(() => { window.__providers.failNext = true; });
   await choose('Агент', 'claude');

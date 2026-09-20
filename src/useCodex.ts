@@ -652,6 +652,9 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       if (!isCurrent()) return false;
       threadRef.current = result.thread; setThread(result.thread);
       resumedThreadRef.current = result.thread.id; setThreadReady(true);
+      // Counters stored with the transcript (Claude history) are shown as-is; they are not a live model response
+      // and never move the cache estimate, which comes from turn timestamps below.
+      if (result.tokenUsage && lifecycleRef.current === lifecycle) setTokens(result.tokenUsage);
       if (lifecycleRef.current === lifecycle) {
         const activeTurn = result.thread.turns?.find((t: any) => t.status === 'inProgress');
         turnRef.current = activeTurn?.id || null;

@@ -4,6 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { readAttachment } from './attachments.mjs';
+import { usageBreakdown, addUsage } from './claude-history.mjs';
 
 const MAX_FRAME = 32 * 1024 * 1024;
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
@@ -64,17 +65,6 @@ function permissionMode(params, fallback) {
   if (['read-only', 'readOnly'].includes(sandbox)) return 'plan';
   if (['workspace-write', 'workspaceWrite'].includes(sandbox)) return params.approvalsReviewer === 'auto_review' ? 'acceptEdits' : 'default';
   return fallback;
-}
-function usageBreakdown(usage, camel = false) {
-  const count = key => Number.isSafeInteger(usage?.[key]) && usage[key] >= 0 ? usage[key] : undefined;
-  const ordinary = count(camel ? 'inputTokens' : 'input_tokens');
-  const cached = count(camel ? 'cacheReadInputTokens' : 'cache_read_input_tokens');
-  const writing = count(camel ? 'cacheCreationInputTokens' : 'cache_creation_input_tokens');
-  const output = count(camel ? 'outputTokens' : 'output_tokens');
-  const input = ordinary === undefined ? undefined : ordinary + (cached || 0) + (writing || 0);
-  return { inputTokens: input, cachedInputTokens: cached, cacheWriteInputTokens: writing, outputTokens: output,
-    totalTokens: input === undefined || output === undefined ? undefined : input + output,
-    ...(camel && count('thinkingTokens') !== undefined ? { reasoningOutputTokens: count('thinkingTokens') } : {}) };
 }
 
 /** Adapter for the installed Claude Code CLI's documented SDK stream/control protocol.
@@ -269,6 +259,7 @@ export class ClaudeClient extends EventEmitter {
       }
       if (method === 'thread/resume') {
         const id = rawId(params.threadId);
+        let restored = null;
         if (this._thread?.id !== params.threadId) {
           if (!this.history) throw new Error('История Claude недоступна.');
           const loaded = await this.history.read({ threadId: params.threadId, cwd: this.cwd, includeTurns: true });
@@ -276,9 +267,16 @@ export class ClaudeClient extends EventEmitter {
           if (loaded.thread.cwd && path.resolve(loaded.thread.cwd).toLowerCase() !== path.resolve(this.cwd).toLowerCase()) throw new Error('Диалог Claude находится в другой рабочей папке.');
           await this._restart({ id, resume: true, ...this._launchSettings(params) });
           this._thread = loaded.thread; this._resetUsage();
+          if (loaded.tokenUsage) {
+            // Counters recorded in the transcript seed the session totals; the next `result` replaces them with the
+            // CLI's cumulative modelUsage. The renderer treats this snapshot as history, not as a fresh model response.
+            this._usage.total = loaded.tokenUsage.total || null;
+            for (const id of loaded.usageMessageIds || []) this._usage.seen.add(id);
+            restored = loaded.tokenUsage;
+          }
         }
         await this._configure(params);
-        return this._threadResponse();
+        return { ...this._threadResponse(), ...(restored ? { tokenUsage: { last: restored.last, total: restored.total || undefined, modelContextWindow: this._usage.contextWindow || undefined } } : {}) };
       }
       this._ensureThread(params.threadId);
       // Resolve every input before changing or starting a turn. The host owns these image files.
@@ -298,11 +296,7 @@ export class ClaudeClient extends EventEmitter {
   /** Token accounting. `last` is the most recent model call (its input ≈ current context), `total` the CLI's running
    * per-model totals for the whole session; between results the total is advanced call by call. */
   _resetUsage() { this._usage = { total: null, contextWindow: null, seen: new Set() }; }
-  _addUsage(total, part) {
-    const keys = ['inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'totalTokens', 'reasoningOutputTokens'];
-    const base = total || Object.fromEntries(keys.map(k => [k, k === 'reasoningOutputTokens' ? undefined : 0]));
-    return Object.fromEntries(keys.map(k => [k, base[k] === undefined || part[k] === undefined ? (k === 'reasoningOutputTokens' ? undefined : base[k]) : base[k] + part[k]]));
-  }
+  _addUsage(total, part) { return addUsage(total, part); }
   _emitUsage(last) {
     if (!this._thread || !this._active) return;
     this._usage ||= { total: null, contextWindow: null, seen: new Set() };

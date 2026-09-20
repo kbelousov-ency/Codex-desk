@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { ClaudeHistory, claudeSessionId, claudeThreadId, claudeHistoryTurns } from '../electron/claude-history.mjs';
+import { ClaudeHistory, claudeSessionId, claudeThreadId, claudeHistoryTurns, claudeHistoryUsage } from '../electron/claude-history.mjs';
 
 const execFileAsync = promisify(execFile);
 const firstId = '00000000-1111-4222-8333-000000000001';
@@ -135,6 +135,53 @@ test('Claude history keeps assistant sibling blocks sharing message id and tool 
   ]);
   assert.equal(new Set(turns[0].items.map(item => item.id)).size, 4);
   assert.equal(turns[0].items.at(-1).aggregatedOutput, 'result');
+});
+
+test('Claude history turns carry frame timestamps; a synthetic API error fails the turn without a completion time', () => {
+  const at = (uuid, timestamp, type, content, extra = {}) => frame(type, uuid, content, { timestamp, ...extra, ...(extra.message ? { message: { ...extra.message, content } } : {}) });
+  const usage = { input_tokens: 10, cache_read_input_tokens: 4000, cache_creation_input_tokens: 500, output_tokens: 20 };
+  const turns = claudeHistoryTurns([
+    at('prompt', '2026-09-20T10:00:00Z', 'user', 'Посмотри'),
+    at('a1', '2026-09-20T10:00:05Z', 'assistant', [{ type: 'tool_use', id: 'tool-id', name: 'Read', input: { file_path: 'test.txt' } }], { message: { id: 'm1', role: 'assistant', usage, content: [] } }),
+    at('tool-result', '2026-09-20T10:00:06Z', 'user', [{ type: 'tool_result', tool_use_id: 'tool-id', content: 'result' }]),
+    at('a2', '2026-09-20T10:00:09.700Z', 'assistant', [{ type: 'text', text: 'Готово' }], { message: { id: 'm2', role: 'assistant', usage, content: [] } }),
+    at('prompt2', '2026-09-20T11:00:00Z', 'user', 'Ещё'),
+    at('err', '2026-09-20T11:00:01Z', 'assistant', [{ type: 'text', text: 'Failed to authenticate' }], { isApiErrorMessage: true, message: { id: 'syn', model: '<synthetic>', role: 'assistant', usage: { input_tokens: 0, output_tokens: 0 }, content: [] } }),
+    frame('user', 'prompt3', 'Без времени'),
+    frame('assistant', 'a3', [{ type: 'text', text: 'Ответ без метки' }]),
+  ], { cwd });
+  assert.equal(turns.length, 3);
+  assert.equal(turns[0].startedAt, Date.parse('2026-09-20T10:00:00Z') / 1000);
+  assert.equal(turns[0].completedAt, Math.floor(Date.parse('2026-09-20T10:00:09.700Z') / 1000));
+  assert.equal(turns[0].status, 'completed');
+  assert.equal(turns[1].status, 'failed');
+  assert.equal(turns[1].completedAt, undefined);
+  assert.match(turns[1].error.message, /authenticate/);
+  assert.equal(turns[2].startedAt, undefined);
+  assert.equal(turns[2].completedAt, undefined, 'no timestamp is never replaced by now');
+});
+
+test('Claude history usage: last real call is the context proxy, totals count each API message once, synthetic frames are ignored', async () => {
+  const call = (uuid, id, usage, extra = {}) => frame('assistant', uuid, [{ type: 'text', text: 'x' }], { message: { id, role: 'assistant', usage, content: [{ type: 'text', text: 'x' }] }, ...extra });
+  const messages = [
+    frame('user', 'prompt', 'Посмотри'),
+    call('a1', 'm1', { input_tokens: 10, cache_read_input_tokens: 4000, cache_creation_input_tokens: 500, output_tokens: 20 }),
+    call('a1b', 'm1', { input_tokens: 10, cache_read_input_tokens: 4000, cache_creation_input_tokens: 500, output_tokens: 20 }),
+    call('a2', 'm2', { input_tokens: 5, cache_read_input_tokens: 4500, cache_creation_input_tokens: 0, output_tokens: 7 }),
+    call('sub', 'm3', { input_tokens: 999, output_tokens: 999 }, { parent_tool_use_id: 'other' }),
+    call('syn', 'm4', { input_tokens: 0, output_tokens: 0 }, { isApiErrorMessage: true }),
+  ];
+  const usage = claudeHistoryUsage(messages, { sessionId: firstId });
+  assert.deepEqual(usage.last, { inputTokens: 4505, cachedInputTokens: 4500, cacheWriteInputTokens: 0, outputTokens: 7, totalTokens: 4512 });
+  assert.equal(usage.total.totalTokens, 4530 + 4512);
+  assert.deepEqual(usage.messageIds, ['m1', 'm2']);
+  assert.equal(claudeHistoryUsage([frame('user', 'p', 'a'), frame('assistant', 'b', [{ type: 'text', text: 'x' }])]), null, 'no usage yields null, not zeros');
+  const { history } = fixture({ async getSessionMessages() { return messages; } });
+  const read = await history.read({ cwd, threadId: firstId });
+  assert.equal(read.tokenUsage.last.inputTokens, 4505);
+  assert.deepEqual(read.usageMessageIds, ['m1', 'm2']);
+  const empty = fixture();
+  assert.equal((await empty.history.read({ cwd, threadId: firstId })).tokenUsage, undefined);
 });
 
 test('Claude history official SDK reconstructs native branch and does not modify isolated files', async () => {

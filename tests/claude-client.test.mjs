@@ -237,6 +237,28 @@ test('native resume uses UUID only, preserves transcript, and rejects cross-prov
   await assert.rejects(h.client.request('thread/read', { threadId: thread.id, cwd: path.dirname(process.cwd()) }), /папке/);
 });
 
+test('resume returns the transcript token snapshot and seeds session totals without a model call', async t => {
+  const last = { inputTokens: 4505, cachedInputTokens: 4500, cacheWriteInputTokens: 0, outputTokens: 7, totalTokens: 4512 };
+  const total = { inputTokens: 9015, cachedInputTokens: 8500, cacheWriteInputTokens: 500, outputTokens: 27, totalTokens: 9042, reasoningOutputTokens: undefined };
+  const history = { async read({ threadId, cwd }) { return { thread: { id: threadId, cwd, turns: [{ id: 'old', status: 'completed', items: [], completedAt: 1_700_000_000 }] }, tokenUsage: { last, total }, usageMessageIds: ['m1', 'm2'] }; } };
+  const h = harness({ history }); t.after(() => h.client.stop()); await h.client.start();
+  const resumed = await h.client.request('thread/resume', { threadId: `claude:${nativeId}` });
+  assert.deepEqual(resumed.tokenUsage, { last, total, modelContextWindow: undefined });
+  assert.equal(resumed.thread.turns[0].completedAt, 1_700_000_000);
+  assert.equal(h.events.filter(e => e.method === 'thread/tokenUsage/updated').length, 0, 'the snapshot is a response field, not a live event');
+  assert.equal(h.frames.filter(f => f.type === 'user').length, 0);
+  const turn = (await h.client.request('turn/start', { threadId: resumed.thread.id, input: [{ type: 'text', text: 'ещё' }] })).turn;
+  h.child.send({ type: 'assistant', uuid: 'a3', session_id: nativeId, message: { id: 'm2', role: 'assistant', content: [{ type: 'text', text: 'дубль' }], usage: { input_tokens: 5, cache_read_input_tokens: 4500, cache_creation_input_tokens: 0, output_tokens: 7 } } });
+  h.child.send({ type: 'assistant', uuid: 'a4', session_id: nativeId, message: { id: 'm5', role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 10, cache_read_input_tokens: 9000, cache_creation_input_tokens: 0, output_tokens: 5 } } });
+  const next = h.events.filter(e => e.method === 'thread/tokenUsage/updated').at(-1).params;
+  assert.equal(next.turnId, turn.id);
+  assert.equal(next.tokenUsage.total.totalTokens, 9042 + 9015, 'restored totals continue; a message id already counted in history is not added twice');
+  assert.equal(next.tokenUsage.last.inputTokens, 9010);
+  h.child.send(result(turn.id));
+  const again = await h.client.request('thread/resume', { threadId: resumed.thread.id });
+  assert.equal(again.tokenUsage, undefined, 'a same-thread resume has no stale snapshot');
+});
+
 test('full access requires explicit process flag and restart; ordinary boot never enables bypass', async t => {
   const h = harness(); t.after(() => h.client.stop()); await h.client.start();
   assert.ok(!h.spawns[0].args.includes('--allow-dangerously-skip-permissions'));

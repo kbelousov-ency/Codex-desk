@@ -32,6 +32,10 @@
 
 Поставка только в Nightly: build ID `870235344a40230a8448c98f6736d85a39091f2815b35c9d69ab82876515f88f`. Release остался `74e2c7c166098278d75de1987e9ed1035b24aebd5e2763baf537959a21f1ea47`, сверено манифестом. Новый browser test прошёл 29 сценариев, включая replay старого completion при более новом успешном/interrupted/compacted запросе. Пройдены Node проверки и cache/resume/commands/continue; packaged host подтвердил timestamp и оставшиеся ~40 минут через настоящий preload/IPC (`artifacts/cache-history-host-d3QllU`), без модельного запроса. 19 host/preload/dist файлов в app.asar совпадают с текущей сборкой.
 
+## Отсчёт и токены для истории Claude — 2026-09-20
+
+Замечание пользователя: после запуска приложения на вкладке Claude не было ни кэша, ни токенов. Причина — транскрипт Claude читался без времён ходов и счётчиков. Исправление описано в [CLAUDE.md](CLAUDE.md) (пункт «Токены и кэш при открытии истории»): `completedAt`/`startedAt` из меток кадров, `tokenUsage` в ответе `thread/resume`. Правила этого документа не изменились: время из истории используется только когда оно достоверно, ход с ошибкой API остаётся без оценки, снимок токенов не двигает таймер и не включает автопинг.
+
 ## Проверки
 
 `scripts/ui-cache.mjs` / `npm.cmd run test:cache`: production renderer + scoped fixtures + Playwright clock. Проверяет минутный порог, hidden-tab isolation, сохранение модели/effort/access/черновика/картинки, видимое сообщение, busy/approvals, отсутствие повторов до completion, failure/stop/model/disconnect, отсутствие catch-up, долгие команды и поздний usage, размеры 1440/940/650. Реальные модельные запросы не запускаются. Скриншот: `artifacts/cache-controls.png`.
