@@ -611,7 +611,10 @@ export class ClaudeClient extends EventEmitter {
     }
     if (!a.latestText && !frame.is_error && typeof frame.result === 'string' && frame.result) this._item({ id: `${a.id}:result`, type: 'agentMessage', text: frame.result, phase: 'final_answer' }, true);
     const failed = frame.is_error || frame.subtype !== 'success';
-    this._finish(a.interrupted ? 'interrupted' : failed ? 'failed' : 'completed', failed ? safeText(frame.errors?.join('\n') || frame.result || 'Claude завершил запрос с ошибкой.') : undefined);
+    const status = a.interrupted ? 'interrupted' : failed ? 'failed' : 'completed';
+    // A user interrupt may end with error_during_execution and CLI diagnostics.
+    // It is still a stopped turn; attaching an error also raises an error alert/notification in the UI.
+    this._finish(status, status === 'failed' ? safeText(frame.errors?.join('\n') || frame.result || 'Claude завершил запрос с ошибкой.') : undefined);
     if (!pending.length || a.interrupted || !this._thread || this._session?.ended) return;
     if (!followUp) {
       this._notify('error', { threadId: this._thread.id, willRetry: false, error: { message: 'Claude не учёл уточнение: задача уже завершилась. Отправьте его отдельным сообщением.' } });

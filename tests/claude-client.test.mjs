@@ -154,8 +154,56 @@ test('stop interrupts the live turn through control without another prompt; a st
   await h.client.request('turn/interrupt', { threadId: h.thread.id, turnId: h.turn.id });
   assert.equal(h.frames.at(-1).request.subtype, 'interrupt'); assert.equal(h.frames.at(-1).request.cancel_queued, true);
   h.child.send(result(h.turn.id, { is_error: true, result: 'interrupted' }));
-  assert.equal(h.events.find(e => e.method === 'turn/completed').params.turn.status, 'interrupted');
+  const stopped = h.events.find(e => e.method === 'turn/completed').params.turn;
+  assert.equal(stopped.status, 'interrupted'); assert.equal(stopped.error, undefined);
   assert.equal(h.frames.filter(f => f.type === 'user').length, 1);
+});
+
+for (const resultBeforeReceipt of [false, true]) test(`stop during a tool call clears approval without a CLI diagnostic error; result before receipt: ${resultBeforeReceipt}`, async t => {
+  const diagnostic = '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use';
+  const h = await running(t, { onFrame(frame, child) {
+    if (resultBeforeReceipt && frame.request?.subtype === 'interrupt') {
+      child.send(result(h.turn.id, { subtype: 'error_during_execution', is_error: true, errors: [diagnostic], stop_reason: 'tool_use' }));
+    }
+  } });
+  h.child.send({ type: 'control_request', request_id: 'stop-approval', request: {
+    subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: 'stopped-tool', input: { command: 'git status' },
+  } });
+  await h.client.request('turn/interrupt', { threadId: h.thread.id, turnId: h.turn.id });
+  if (!resultBeforeReceipt) h.child.send(result(h.turn.id, { subtype: 'error_during_execution', is_error: true, errors: [diagnostic], stop_reason: 'tool_use' }));
+  const completed = h.events.filter(e => e.method === 'turn/completed');
+  assert.equal(completed.length, 1);
+  assert.equal(completed[0].params.turn.status, 'interrupted');
+  assert.equal(completed[0].params.turn.error, undefined);
+  assert.ok(h.events.some(e => e.method === 'serverRequest/resolved' && e.params.requestId === 'stop-approval'));
+  await assert.rejects(h.client.respond('stop-approval', { decision: 'accept' }), /завершён/);
+  assert.equal(h.client.state, 'ready'); assert.equal(h.child.killed, false);
+  assert.equal(h.frames.filter(f => f.type === 'user').length, 1);
+  const { thread } = await h.client.request('thread/read', { threadId: h.thread.id });
+  assert.equal(thread.status.type, 'idle'); assert.equal(thread.turns[0].error, undefined);
+  const next = await h.client.request('turn/start', { threadId: h.thread.id, input: [{ type: 'text', text: 'Продолжить' }] });
+  h.child.send(result(next.turn.id));
+  assert.equal(h.events.filter(e => e.method === 'turn/completed').at(-1).params.turn.status, 'completed');
+});
+
+test('an execution error without Stop remains visible', async t => {
+  const h = await running(t);
+  const diagnostic = '[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use';
+  h.child.send(result(h.turn.id, { subtype: 'error_during_execution', is_error: true, errors: [diagnostic] }));
+  const failed = h.events.find(e => e.method === 'turn/completed').params.turn;
+  assert.equal(failed.status, 'failed'); assert.equal(failed.error.message, diagnostic);
+});
+
+test('a rejected interrupt does not suppress the subsequent execution error', async t => {
+  const h = await running(t, { onFrame(frame, child) {
+    if (frame.request?.subtype !== 'interrupt') return;
+    child.send({ type: 'control_response', response: { subtype: 'error', request_id: frame.request_id, error: 'Interrupt rejected' } });
+    return false;
+  } });
+  await assert.rejects(h.client.request('turn/interrupt', { threadId: h.thread.id, turnId: h.turn.id }), /Interrupt rejected/);
+  h.child.send(result(h.turn.id, { subtype: 'error_during_execution', is_error: true, errors: ['Execution failed'] }));
+  const failed = h.events.find(e => e.method === 'turn/completed').params.turn;
+  assert.equal(failed.status, 'failed'); assert.equal(failed.error.message, 'Execution failed');
 });
 
 test('two user sends cannot interleave while image/config resolution is pending', async t => {
