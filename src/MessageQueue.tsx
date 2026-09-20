@@ -38,8 +38,8 @@ export default function MessageQueue({ queue, blocked }: { queue: ReturnType<typ
           {item.state === 'uncertain' && <small className="queue-uncertain">{queue.inFlight === item.id ? 'Ожидаем подтверждения отправки…' : 'Отправка не подтверждена. Проверьте историю перед повтором.'}</small>}
         </div>
         <div className="queue-item-actions">
-          {item.state === 'uncertain' && queue.inFlight !== item.id && <button type="button" className="queue-text-button" onClick={() => queue.markWaiting(item.id)}><RotateCcw size={11} />Проверено: повторить</button>}
-          <button type="button" className="queue-icon-button" aria-label="Изменить" title="Изменить сообщение" disabled={Boolean(queue.inFlight)} onClick={() => queue.setEditing(item.id)}><Pencil size={12} /></button>
+          {item.state === 'uncertain' && queue.inFlight !== item.id && <button type="button" className="queue-text-button" onClick={() => void queue.markWaiting(item.id)}><RotateCcw size={11} />Проверить отправку</button>}
+          <button type="button" className="queue-icon-button" aria-label="Изменить" title="Изменить сообщение" disabled={Boolean(queue.inFlight) || item.state === 'uncertain'} onClick={() => queue.setEditing(item.id)}><Pencil size={12} /></button>
           <button type="button" className="queue-icon-button" aria-label="Удалить из очереди" title="Удалить из очереди" disabled={queue.inFlight === item.id} onClick={() => queue.remove(item.id)}><X size={13} /></button>
         </div>
       </>}

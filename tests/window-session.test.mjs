@@ -499,3 +499,29 @@ test('closing the app leaves an external console alive and suppresses callbacks 
   assert.equal(a.events.length, eventCount);
   assert.equal(a.session.terminal, null);
 });
+
+
+test('message status checks exact identifiers, trusts late receipts, and never treats matching text as delivery', async t => {
+  const { session, clients } = fixture(); t.after(() => session.dispose()); await session.start();
+  const clientUserMessageId = 'aaaaaaaa-1111-2222-3333-444444444444';
+  const client = clients[0], original = client.request.bind(client);
+  client.request = (method, params) => method === 'thread/read' ? Promise.resolve({ thread: { id: params.threadId, turns: [{ id: 'turn-a', status: 'completed', items: [{ id: 'other-id', type: 'userMessage', content: [{ type: 'text', text: 'same text' }] }] }] } }) : original(method, params);
+  assert.deepEqual(await session.request('message/status', { threadId: 'thread-a', clientUserMessageId }), { accepted: false, rejected: false });
+  client.emit('notification', { method: 'message/receipt', params: { threadId: 'thread-a', clientUserMessageId, accepted: true, rejected: false, turnId: 'turn-a' } });
+  assert.equal((await session.request('message/status', { threadId: 'thread-a', clientUserMessageId })).accepted, true);
+  assert.equal((await session.request('message/status', { threadId: 'thread-b', clientUserMessageId })).accepted, false);
+  await assert.rejects(session.request('message/status', { threadId: 'thread-a', clientUserMessageId: '' }), /идентификатор/);
+  assert.equal(client.calls.filter(call => call.method === 'turn/start').length, 0);
+});
+
+test('history receipts work after host restart using clientId and native Claude UUID', async t => {
+  const { session, clients } = fixture(); t.after(() => session.dispose()); await session.start();
+  const id = 'aaaaaaaa-1111-2222-3333-444444444444';
+  const client = clients[0];
+  for (const item of [{ id: 'provider-id', clientId: id }, { id }]) {
+    client.request = async () => ({ thread: { id: 'thread-a', turns: [{ id: 'turn-a', status: 'completed', items: [{ ...item, type: 'userMessage', content: [] }] }] } });
+    session.messageReceipts.clear();
+    const receipt = await session.request('message/status', { threadId: 'thread-a', clientUserMessageId: id });
+    assert.equal(receipt.accepted, true); assert.equal(receipt.turnId, 'turn-a'); assert.equal(receipt.status, 'completed');
+  }
+});

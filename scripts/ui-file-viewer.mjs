@@ -58,7 +58,7 @@ try {
           if (path.endsWith('.md')) Object.assign(data, { kind: 'markdown', text: '# Документация\n\nБезопасный **Markdown**.\n\n<script>window.fileScriptRan = true</script>\n\n[Ссылка](../README.md)' });
           if (path.endsWith('.png')) Object.assign(data, { kind: 'image', dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CfkAAAAASUVORK5CYII=' });
           if (path.endsWith('.pdf')) Object.assign(data, { kind: 'unsupported', message: 'Предпросмотр двоичного файла недоступен.' });
-          if (path === 'large.txt') Object.assign(data, { truncated: true, message: 'Показан первый 1 МБ файла.' });
+          if (path === 'large.txt') Object.assign(data, { text: Array.from({ length: 800 }, (_, index) => `Строка ${index + 1}: ${'длинный текст '.repeat(30)}`).join('\r\n'), truncated: true, message: 'Показан первый 1 МБ файла.' });
           if (state.deferRead) { state.deferRead = false; return new Promise(resolve => state.pendingReads.push(() => resolve(data))); }
           return data;
         },
@@ -98,6 +98,8 @@ try {
   await source().waitFor();
   assert.match(await source().inputValue(), /const project = 'a'/);
   assert.equal(await source().getAttribute('readonly'), '');
+  assert.equal(await modal().locator('.source-keyword').first().innerText(), 'const');
+  assert.equal(await modal().locator('.source-string').first().innerText(), "'a'");
   await source().evaluate(element => {
     element.focus();
     element.setSelectionRange(element.value.indexOf('const greeting'), element.value.indexOf('console.log'));
@@ -117,6 +119,12 @@ try {
   assert.equal(await page.evaluate(() => window.fileScriptRan), undefined);
   await modal().getByRole('button', { name: 'Исходник', exact: true }).click();
   assert.match(await source().inputValue(), /<script>/);
+  await modal().getByRole('button', { name: 'Предпросмотр', exact: true }).click();
+  await page.keyboard.press('Control+g');
+  await modal().getByRole('textbox', { name: 'Номер строки', exact: true }).fill('3');
+  await modal().getByRole('textbox', { name: 'Номер строки', exact: true }).press('Enter');
+  await source().waitFor();
+  assert.equal(await source().evaluate(element => element.value.slice(element.selectionStart, element.selectionEnd)), 'Безопасный **Markdown**.');
   await result('assets/image.png').click();
   await modal().getByRole('img', { name: 'assets/image.png', exact: true }).waitFor();
   await result('binary.pdf').click();
@@ -125,6 +133,16 @@ try {
   assert.deepEqual(await page.evaluate(() => window.__files.opens.at(-1)), { sessionId: 'a', path: 'binary.pdf' });
   await result('large.txt').click();
   await modal().getByText('Показан первый 1 МБ файла.', { exact: true }).waitFor();
+  await page.keyboard.press('Control+g');
+  const lineInput = modal().getByRole('textbox', { name: 'Номер строки', exact: true });
+  await lineInput.fill('0'); await lineInput.press('Enter');
+  await modal().getByRole('alert').filter({ hasText: 'Введите номер от 1 до 800.' }).waitFor();
+  await lineInput.fill('700'); await lineInput.press('Enter');
+  assert.match(await source().evaluate(element => element.value.slice(element.selectionStart, element.selectionEnd)), /^Строка 700:/);
+  assert.ok(await source().evaluate(element => element.scrollTop > 10_000));
+  await page.waitForFunction(() => document.querySelector('.file-viewer-highlight').textContent.includes('Строка 700:'));
+  await source().evaluate(element => { element.scrollLeft = 250; element.dispatchEvent(new Event('scroll')); });
+  await page.waitForFunction(() => document.querySelector('.file-viewer-highlight').style.transform.startsWith('translate(-250px'));
 
   await page.evaluate(() => { window.__files.sessions.a.failRead = true; });
   await result('src/app.ts').click();

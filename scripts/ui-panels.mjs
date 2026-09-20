@@ -109,7 +109,7 @@ try {
   // Workspace may restore its last created tab as active; deliberately start in A.
   await selectWorkspaceTab('session-1');
   await files().waitFor();
-  assert.deepEqual(await panel().locator('.panel-tabs button').allTextContents(), ['Файлы', 'Действия', 'Изменения']);
+  assert.deepEqual(await panel().locator('.panel-tabs button').allTextContents(), ['Файлы', 'Действия', 'Подагенты', 'Изменения']);
   const directory = name => files().getByRole('button', { name: `Раскрыть папку ${name}`, exact: true });
   const fileButton = name => files().getByRole('button', { name: `Открыть файл ${name}`, exact: true });
   await fileButton('README.md').waitFor();

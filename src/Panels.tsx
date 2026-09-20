@@ -36,6 +36,7 @@ export function activityLabel(item?: Item) {
   if (item.type === 'dynamicToolCall') return item.tool || 'Вызов инструмента';
   if (item.type === 'collabAgentToolCall') return 'Агенты: ' + item.tool;
   if (item.type === 'subAgentActivity') return 'Агент: ' + (item.agentPath || item.agentThreadId);
+  if (item.type === 'subAgentTask') return 'Подагент: ' + (item.description || item.taskId);
   if (item.type === 'contextCompaction') return 'Сжатие контекста';
   if (item.type === 'imageView') return 'Просмотр: ' + folderName(item.path || '');
   return '';

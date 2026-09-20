@@ -11,6 +11,7 @@ artifacts/
 !.env.example
 /.codex/
 /.agents/
+/.claude/worktrees/
 /auth.json
 # Windows runtime caches accidentally created under temporary root folders.
 /*/Microsoft/

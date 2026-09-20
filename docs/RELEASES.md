@@ -1,5 +1,19 @@
 # Release и Nightly
 
+## Nightly `cd27f41cb543` — 2026-09-20
+
+Реализован следующий набор после `781fc2c04438`: [подагенты](SUBAGENTS.md), [ответвление/палитра/вкладки](TABS.md), [экспорт Markdown/HTML](EXPORT.md), [сверка отправки после timeout](MESSAGE_QUEUE.md), [подсветка и переход к строке](FILE_VIEWER.md). Исправления кэша/токенов и Stop Claude сохранены. Настройки и модели установленных CLI не менялись.
+
+`npm.cmd run check`: 401 тест, 399 успешны, 2 платформенных пропущены; TypeScript и Vite прошли. Предыдущий прогон один раз получил Windows EPERM на временном `.transaction.json.tmp` в существующем release-тесте, повтор полного check прошёл; production release-алгоритм в этой задаче не менялся. Vite предупреждает о главном chunk ~590 КБ (gzip ~176 КБ); HTML SSR ~204 КБ вынесен в динамический chunk. Это предупреждение, не ошибка сборки.
+
+Прошли production renderer сценарии workspace-tools, tabs, workspace-state, nightly-restore, message-queue (включая ordinary composer timeout и разные ID при одинаковом тексте), file-viewer, conversation-export, panels, providers, work-log и history-library. Реальный Codex App Server проверил fork сохранённой paginated-истории и чтение копии без turn; настоящий SDK Claude — fork на изолированном транскрипте, неизменность исходника и файлов, сохранение usage. SDK переписывает время последней скопированной записи; таймер копии теперь неизвестен до настоящего ответа, включая повторное открытие. Обычная реальная история Claude по-прежнему отдаёт время ответа и токены.
+
+Живая проверка Claude отправила 1 turn: лимит 5-часовой сессии достиг 100%, сброс 15:50 Asia/Nicosia. Успешных ответов модели 0; steer/compact остались подтверждены только фикстурами. Настоящее rename_session и сохранение названия в native history проверены отдельно без дополнительного model turn. Отчёт `artifacts/live-claude-controls-pCSmLy/result.json`; детали — [CLAUDE.md](CLAUDE.md).
+
+Первый кандидат `8fd8b506ff181ed0c2ca21dc1d0139ac02b61b590956ae3e1b99f7407a628151` прошёл настоящий Electron/preload/IPC: оба установленных CLI и restart (`artifacts/providers-host-wURToO`), export (`artifacts/export-host-8sjueK`), queue (`artifacts/message-queue-host-pVvXQ7`), history/SDK (`artifacts/history-host-LS9vL9`), file viewer (`artifacts/file-viewer-host-ZjZGaq`). Затем добавлен fallback строкового `aggregatedOutput` для ошибки подагента из истории Claude; проверены 19 subagent/history тестов, повторены renderer work-log/workspace-tools и TypeScript/Vite при package. Кандидат снят штатным `--discard` после остановки только node-помощника обновления, пользовательское приложение не закрывалось.
+
+Итоговый `npm.cmd run package` собрал `cd27f41cb5438d3114e974ba46f71285511693e581c582c25e65385a552e6672`. Он стоит в штатной очереди `artifacts/nightly-update/app`, состояние `host_awaiting`; применение — после кнопки «Закрыть» в чате или ручного выхода. Готовый exe повторно прошёл оба настоящих CLI и restart (`artifacts/providers-host-7ku60e`), 0 модельных запросов. Manifest проверен; 40 файлов host/preload/dist побайтно совпали с текущими исходниками и сборкой. Release app.asar сохранил SHA-256 `ffc8de8fd2512c7f5881ca104a53eb5a4f2d51cdcd849708b88aad9658a21f3d`.
+
 С 2026-09-18 вместо отдельной папки под каждый запрос используются два постоянных канала:
 
 - `release/stable/Codex Desk.exe` — проверенная версия. Обычный `Codex Desk.lnk` / `Start Codex Desk.vbs` всегда запускает её.

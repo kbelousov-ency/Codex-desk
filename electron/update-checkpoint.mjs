@@ -31,6 +31,15 @@ function attachments(value) {
 }
 function viewState(tab) {
   const result = {};
+  if (tab.pinned === true) result.pinned = true;
+  if (tab.pendingMessage !== undefined) {
+    const pending = tab.pendingMessage;
+    const threadId = text(pending?.threadId, 256);
+    const clientUserMessageId = text(pending?.clientUserMessageId, 256);
+    if (!threadId || !clientUserMessageId || !['start', 'steer'].includes(pending?.kind)) throw new Error('Некорректная неподтверждённая отправка.');
+    if (tab.thread?.id && tab.thread.id !== threadId) throw new Error('Неподтверждённая отправка относится к другому диалогу.');
+    result.pendingMessage = { threadId, clientUserMessageId, kind: pending.kind, text: text(pending.text, 2_000_000), attachments: attachments(pending.attachments) };
+  }
   if (tab.preservedDraft !== undefined) result.preservedDraft = {
     text: text(tab.preservedDraft?.text, 2_000_000), attachments: attachments(tab.preservedDraft?.attachments),
   };
@@ -73,7 +82,7 @@ function boundedSnapshot(value) {
 export function validateStoredCheckpoint(value, { resetFullAccess = false } = {}) {
   snapshotShape(value);
   const tabs = value.tabs.map(tab => {
-    if (tab.archivedThread) return { archivedThread: thread(tab.archivedThread), draft: '', attachments: [], ...viewState({ scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor }) };
+    if (tab.archivedThread) return { archivedThread: thread(tab.archivedThread), draft: '', attachments: [], ...viewState({ pinned: tab.pinned, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor }) };
     const cwd = text(tab.cwd, 4096);
     if (!path.isAbsolute(cwd)) throw new Error('Invalid directory');
     const settings = { ...cleanSettings(tab.settings), cwd };
@@ -89,7 +98,7 @@ export function captureUpdateCheckpoint(snapshot, sessions) {
   snapshotShape(snapshot);
   const seen = new Set();
   const tabs = snapshot.tabs.map(tab => {
-    if (tab.archivedThread) return { archivedThread: thread(tab.archivedThread), draft: '', attachments: [], ...viewState({ scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor }) };
+    if (tab.archivedThread) return { archivedThread: thread(tab.archivedThread), draft: '', attachments: [], ...viewState({ pinned: tab.pinned, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor }) };
     if (typeof tab.sessionId !== 'string' || seen.has(tab.sessionId)) throw new Error("Некорректная сессия снимка.");
     seen.add(tab.sessionId);
     const session = sessions.get(tab.sessionId);

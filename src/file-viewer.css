@@ -38,7 +38,22 @@
 .file-viewer-source { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .file-viewer-gutter { flex-shrink: 0; min-width: 46px; overflow: hidden; border-right: 1px solid var(--border); user-select: none; color: var(--muted); text-align: right; }
 .file-viewer-gutter pre { padding: 14px 10px; margin: 0; font: 12px/20px Consolas, 'Courier New', monospace; }
-.file-viewer-source textarea { flex: 1; min-width: 0; min-height: 0; resize: none; margin: 0; padding: 14px 12px; border: 0; border-radius: 0; outline: 0; background: transparent; color: var(--text); font: 12px/20px Consolas, 'Courier New', monospace; tab-size: 2; white-space: pre; overflow: auto; }
+.file-viewer-code { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+.file-viewer-source textarea, .file-viewer-highlight { box-sizing: border-box; margin: 0; padding: 14px 12px; border: 0; border-radius: 0; font: 12px/20px Consolas, 'Courier New', monospace; tab-size: 2; letter-spacing: normal; white-space: pre; }
+.file-viewer-source textarea { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; outline: 0; background: transparent; color: transparent; caret-color: var(--text); overflow: auto; }
+.file-viewer-source textarea::selection { background: #6e91b96b; color: transparent; }
+.file-viewer-highlight { position: absolute; top: 0; left: 0; min-width: 100%; pointer-events: none; color: var(--text); }
+.file-viewer-highlight .source-comment { color: #98a697; }
+.file-viewer-highlight .source-string { color: #d9b887; }
+.file-viewer-highlight .source-keyword { color: #cbb0ec; }
+.file-viewer-highlight .source-number { color: #a1c8a0; }
+.file-viewer-highlight .source-tag { color: #88bed9; }
+.file-viewer-highlight .source-property { color: #a0cddd; }
+.file-viewer-line-jump { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+.file-viewer-line-jump input { width: 78px; min-width: 0; padding: 4px 6px; border: 1px solid var(--border); border-radius: 5px; background: #0002; color: var(--text); font-size: 11px; }
+.file-viewer-line-jump button { padding: 4px 7px; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text); font-size: 11px; cursor: pointer; }
+.file-viewer-line-jump [role="alert"] { color: var(--danger, #edaaa0); }
+@media (forced-colors: active) { .file-viewer-highlight { display: none; } .file-viewer-source textarea, .file-viewer-source textarea::selection { color: CanvasText; } }
 .file-viewer-markdown { flex: 1; min-height: 0; min-width: 0; overflow: auto; padding: 20px 26px; }
 .file-viewer-markdown .markdown { max-width: 100%; }
 .file-viewer-image { flex: 1; min-height: 0; overflow: auto; padding: 20px; display: grid; place-items: center; background: #0002; }

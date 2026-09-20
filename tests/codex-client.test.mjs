@@ -391,3 +391,16 @@ test('real diagnostic files/export keep correlations and classified failures but
   assert.equal(errorNotification.data.retry, true);
   assert.equal(report.logs.find(entry => entry.event === 'codex.version').data.codexVersion, '0.154.0');
 });
+
+
+test('late turn ACK after timeout reports the exact client message without resending', async t => {
+  const h = harness({ requestTimeoutMs: 15 }); t.after(() => h.client.stop());
+  await h.client.start();
+  const events = []; h.client.on('notification', event => events.push(event));
+  const clientUserMessageId = 'aaaaaaaa-1111-2222-3333-444444444444';
+  await assert.rejects(h.client.request('turn/start', { threadId: 'thread-a', clientUserMessageId, input: [] }), /timed out/);
+  const sent = h.frames.at(-1);
+  h.child.send({ id: sent.id, result: { turn: { id: 'turn-a', status: 'inProgress' } } });
+  assert.deepEqual(events.at(-1), { method: 'message/receipt', params: { threadId: 'thread-a', clientUserMessageId, accepted: true, rejected: false, turnId: 'turn-a', status: 'inProgress' } });
+  assert.equal(h.frames.filter(frame => frame.method === 'turn/start').length, 1);
+});

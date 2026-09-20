@@ -4,7 +4,8 @@ import type { Attachment, MessageQueueState } from './types';
 type QueueSession = {
   busy: boolean; blocked: boolean; completion: number; pause: { revision: number; reason: string };
   canSend(pauseRevision?: number): boolean;
-  send(text: string, attachments: Attachment[]): Promise<boolean>;
+  send(text: string, attachments: Attachment[], silentCompletion?: boolean, messageId?: string): Promise<boolean>;
+  reconcile?(id: string): Promise<{ accepted: boolean; rejected?: boolean }>;
   flush?(): Promise<void>;
 };
 
@@ -54,7 +55,7 @@ export function useMessageQueue(initial: MessageQueueState | undefined, session:
           return;
         }
         started = true;
-        const sent = await sessionRef.current.send(first.text, first.attachments);
+        const sent = await sessionRef.current.send(first.text, first.attachments, false, first.id);
         if (!alive.current) return;
         if (sent) update({ ...current.current, items: current.current.items.filter(item => item.id !== first.id) });
         else pause('Отправка не подтверждена. Проверьте историю: сообщение могло быть принято.');
@@ -87,7 +88,18 @@ export function useMessageQueue(initial: MessageQueueState | undefined, session:
       update({ ...current.current, items: current.current.items.map(item => item.id === id ? { ...item, text, attachments } : item) });
       setEditing(null);
     },
-    markWaiting: (id: string) => update({ ...current.current, paused: true, reason: 'Повторная отправка подготовлена. Нажмите «Продолжить очередь».', items: current.current.items.map(item => item.id === id ? { ...item, state: 'waiting' } : item) }),
+    markWaiting: async (id: string) => {
+      if (flightRef.current || !sessionRef.current.reconcile) return;
+      flightRef.current = id; setInFlight(id);
+      try {
+        const receipt = await sessionRef.current.reconcile(id);
+        if (!alive.current) return;
+        if (receipt.accepted) update({ ...current.current, paused: true, reason: 'Сообщение уже принято. Оно удалено из очереди без повторной отправки.', items: current.current.items.filter(item => item.id !== id) });
+        else if (receipt.rejected) update({ ...current.current, paused: true, reason: 'Сервер отклонил сообщение. Можно изменить его и продолжить очередь.', items: current.current.items.map(item => item.id === id ? { ...item, state: 'waiting' } : item) });
+        else pause('Подтверждение не найдено. Сообщение могло быть принято; повторная отправка заблокирована. Проверьте позже.');
+      } catch { if (alive.current) pause('Проверка отправки недоступна. Повторная отправка заблокирована.'); }
+      finally { flightRef.current = null; if (alive.current) setInFlight(null); }
+    },
     pause,
     resume: () => {
       if (current.current.items.some(item => item.state === 'uncertain')) return;

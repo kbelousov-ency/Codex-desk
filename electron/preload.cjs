@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('codex', {
   resolveHistoryTarget: (options) => ipcRenderer.invoke('host:resolveHistoryTarget', options),
   listBookmarks: (options) => ipcRenderer.invoke('host:listBookmarks', options),
   saveBookmark: (bookmark) => ipcRenderer.invoke('host:saveBookmark', bookmark),
+  exportConversation: (file) => ipcRenderer.invoke('host:exportConversation', file),
   removeBookmark: (id) => ipcRenderer.invoke('host:removeBookmark', id),
   getNotificationSettings: () => ipcRenderer.invoke('host:getNotificationSettings'),
   setNotificationSettings: (patch) => ipcRenderer.invoke('host:setNotificationSettings', patch),

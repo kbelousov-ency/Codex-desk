@@ -33,13 +33,17 @@ export function useMessageJump({ jump, active, loading, ready, items, hasEarlier
     if (node) {
       const target = node;
       completed.current = jump.key; pendingPage.current = '';
+      if (target instanceof HTMLDetailsElement) target.open = true;
       for (let parent = target.parentElement; parent && parent !== scroller; parent = parent.parentElement) if (parent instanceof HTMLDetailsElement) parent.open = true;
       onJump();
-      requestAnimationFrame(() => {
+      let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+      const frame = requestAnimationFrame(() => {
+        if (!target.isConnected || !scroller.contains(target)) return;
         scroller.scrollTop += target.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 22;
         target.classList.add('message-jump-highlight'); target.tabIndex = -1; target.focus({ preventScroll: true });
-        setTimeout(() => target.classList.remove('message-jump-highlight'), 4000);
+        highlightTimer = setTimeout(() => target.classList.remove('message-jump-highlight'), 4000);
       });
+      return () => { cancelAnimationFrame(frame); clearTimeout(highlightTimer); target.classList.remove('message-jump-highlight'); };
     } else if (hasEarlier) {
       const key = `${jump.key}:${items.length}:${items[0]?.id || ''}`;
       if (pendingPage.current === key) { completed.current = jump.key; onMissing(); return; }

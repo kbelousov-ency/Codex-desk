@@ -213,6 +213,20 @@ try {
   await log('unknown-history').getByText('Старое пояснение без метаданных времени', { exact: true }).waitFor();
 
   await activate('session-1');
+  await item('session-1', 'turn-1', { id: 'spawn-worker', type: 'collabAgentToolCall', tool: 'spawnAgent', status: 'completed', receiverThreadIds: ['worker-a'], prompt: 'Проверить контракт API', agentsStates: { 'worker-a': { status: 'running', message: null } } });
+  await view().locator('.panel-tabs').getByRole('button', { name: 'Подагенты', exact: true }).click();
+  const agentCard = view().locator('.subagent-card').filter({ hasText: 'worker-a' });
+  await agentCard.getByText('Проверить контракт API', { exact: true }).waitFor();
+  assert.match(await agentCard.innerText(), /Работает/);
+  await item('session-1', 'turn-1', { id: 'wait-worker', type: 'collabAgentToolCall', tool: 'wait', status: 'completed', receiverThreadIds: ['worker-a'], agentsStates: { 'worker-a': { status: 'errored', message: 'Контракт требует исправления' } } });
+  await agentCard.getByRole('alert').getByText('Контракт требует исправления', { exact: true }).waitFor();
+  await agentCard.getByRole('button', { name: 'К результату в чате', exact: true }).click();
+  await flush();
+  const target = chat().locator('[data-item-id="wait-worker"]');
+  assert.equal(await target.evaluate(node => node === document.activeElement), true, 'Subagent result opens its work log and focuses exact event');
+  await target.getByText(/Контракт требует исправления/).waitFor();
+  assert.equal(await openState(log('turn-1')), true);
+  await page.screenshot({ path: 'artifacts/subagents-panel.png' });
   for (const size of [{ width: 1440, height: 900 }, { width: 940, height: 640 }]) {
     await page.setViewportSize(size); await flush();
     const folderHeights = await view().locator('.folder-toggle').evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));

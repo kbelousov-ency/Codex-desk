@@ -8,7 +8,7 @@ const MAX_FRAME_CHARS = 32 * 1024 * 1024;
 const MAX_DIAGNOSTIC_CHARS = 4_000;
 const DIAGNOSTIC_WINDOW_MS = 5_000;
 const REQUEST_METHODS = new Set([
-  'initialize', 'thread/start', 'thread/resume', 'thread/read', 'thread/list', 'thread/items/list',
+  'initialize', 'thread/start', 'thread/resume', 'thread/fork', 'thread/read', 'thread/list', 'thread/items/list',
   'thread/turns/list', 'thread/name/set', 'thread/compact/start', 'thread/archive', 'thread/unarchive',
   'thread/delete', 'turn/start', 'turn/interrupt', 'turn/steer', 'model/list', 'account/read',
   'config/read', 'config/batchWrite', 'config/mcpServer/reload', 'mcpServerStatus/list',
@@ -164,6 +164,7 @@ export class CodexClient extends EventEmitter {
     const session = {
       child: null,
       pending: new Map(),
+      unacknowledged: new Map(),
       writes: new Set(),
       serverRequests: new Set(),
       outputDecoder: new StringDecoder('utf8'),
@@ -246,6 +247,10 @@ export class CodexClient extends EventEmitter {
         const pending = session.pending.get(id);
         if (!session.pending.delete(id)) return;
         const error = new Error(`Codex request timed out: ${method}`);
+        if (['turn/start', 'turn/steer'].includes(method) && params.clientUserMessageId) {
+          session.unacknowledged.set(id, { threadId: params.threadId, clientUserMessageId: params.clientUserMessageId });
+          if (session.unacknowledged.size > 500) session.unacknowledged.delete(session.unacknowledged.keys().next().value);
+        }
         this._requestDiagnostic(pending, error);
         reject(error);
       }, this._timeout);
@@ -361,7 +366,15 @@ export class CodexClient extends EventEmitter {
     }
     if (!hasId) return;
     const pending = session.pending.get(message.id);
-    if (!pending) return; // Responses can arrive after a local timeout.
+    if (!pending) {
+      // A late ACK still establishes delivery; do not send the model request again.
+      const receipt = session.unacknowledged.get(message.id);
+      if (receipt && (message.error || Object.hasOwn(message, 'result'))) {
+        session.unacknowledged.delete(message.id);
+        this.emit('notification', { method: 'message/receipt', params: { ...receipt, accepted: !message.error, rejected: Boolean(message.error), turnId: message.result?.turn?.id || message.result?.turnId, status: message.result?.turn?.status } });
+      }
+      return;
+    }
     session.pending.delete(message.id);
     clearTimeout(pending.timer);
     if (message.error) {

@@ -4,7 +4,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { readAttachment } from './attachments.mjs';
-import { usageBreakdown, addUsage } from './claude-history.mjs';
+import { usageBreakdown, addUsage, claudeTaskItem } from './claude-history.mjs';
 
 const MAX_FRAME = 32 * 1024 * 1024;
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
@@ -243,7 +243,7 @@ export class ClaudeClient extends EventEmitter {
       catch (error) { if (this._active === active) active.interrupted = false; throw error; }
       return {};
     }
-    if (!['thread/start', 'thread/resume', 'turn/start'].includes(method)) throw new Error(`Действие ${method} пока недоступно для Claude CLI.`);
+    if (!['thread/start', 'thread/resume', 'thread/fork', 'turn/start'].includes(method)) throw new Error(`Действие ${method} пока недоступно для Claude CLI.`);
     if (this._mutation || this._active) throw new Error('Дождитесь завершения текущей задачи Claude.');
     this._mutation = true;
     try {
@@ -256,6 +256,14 @@ export class ClaudeClient extends EventEmitter {
           name: '', preview: '', historyMode: 'legacy', turns: [], status: { type: 'idle' } };
         this._notify('thread/started', { thread: this._thread });
         return this._threadResponse();
+      }
+      if (method === 'thread/fork') {
+        // The SDK copies the transcript into a new session; this tab then resumes the copy. The source stays untouched.
+        rawId(params.threadId);
+        if (!this.history?.fork) throw new Error('Ответвление диалога Claude недоступно.');
+        const forked = await this.history.fork({ threadId: params.threadId, cwd: this.cwd, title: params.title });
+        params = { ...params, threadId: forked.threadId };
+        method = 'thread/resume';
       }
       if (method === 'thread/resume') {
         const id = rawId(params.threadId);
@@ -283,7 +291,7 @@ export class ClaudeClient extends EventEmitter {
       const content = await this._input(params.input);
       await this._configure(params);
       const owned = this._ensureSession();
-      const turn = this._beginTurn({ sourceInput: structuredClone(params.input) });
+      const turn = this._beginTurn({ ...(UUID.test(params.clientUserMessageId || '') ? { id: params.clientUserMessageId } : {}), sourceInput: structuredClone(params.input) });
       try {
         await this._write(owned, { type: 'user', uuid: turn.id, session_id: owned.id, parent_tool_use_id: null, message: { role: 'user', content } });
         owned.sent = true;
@@ -448,6 +456,7 @@ export class ClaudeClient extends EventEmitter {
       if (w) this._notify('usage/updated', { window: w, status: info.status });
     }
 
+    if ((!frame.session_id || frame.session_id === session.id) && claudeTaskItem(frame)) { this._taskFrame(frame); return; }
     // Resume replays are already read from native history. Never attach them to a new turn.
     if (!this._active) return;
     if (frame.session_id && frame.session_id !== session.id) return;
@@ -472,13 +481,27 @@ export class ClaudeClient extends EventEmitter {
     }
   }
 
+  _taskFrame(frame) {
+    const task = claudeTaskItem(frame);
+    if (!task || !this._thread) return;
+    const turn = this._thread.turns?.findLast(turn => turn.items?.some(item => item.id === task.id || item.id === task.toolUseId))
+      || this._thread.turns?.at(-1);
+    if (!turn) return;
+    if (this._active?.id === turn.id) { this._item(task, task.status !== 'running'); return; }
+    // Background completion may arrive after the main turn ended. It updates that turn only.
+    const index = turn.items.findIndex(item => item.id === task.id);
+    const merged = { ...(index >= 0 ? turn.items[index] : {}), ...task, complete: task.status !== 'running' };
+    if (index >= 0) turn.items[index] = merged; else turn.items.push(merged);
+    this._notify(task.status === 'running' ? 'item/started' : 'item/completed', { threadId: this._thread.id, turnId: turn.id, item: merged });
+  }
+
   _userEcho(frame) {
     const a = this._active; if (!a || a.compaction) return;
     const id = frame.uuid || a.id;
     if (a.items.has(id)) return;
     const content = id === a.id ? a.sourceInput : a.steers.get(id);
     if (!content) return;
-    this._item({ id, type: 'userMessage', content }, true);
+    this._item({ id, clientId: id, type: 'userMessage', content }, true);
     const preview = content.filter(p => p.type === 'text').map(p => p.text).join('\n');
     if (!this._thread.preview) this._thread.preview = preview.slice(0, 180);
   }

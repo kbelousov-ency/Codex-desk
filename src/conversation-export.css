@@ -1,0 +1,21 @@
+.export-backdrop { position: fixed; inset: 0; z-index: 175; display: grid; place-items: center; padding: 22px; background: #0009; backdrop-filter: blur(4px); }
+.export-dialog { width: min(490px, 100%); max-height: 90vh; overflow: auto; border: 1px solid var(--line, #343638); border-radius: 13px; padding: 20px; background: var(--panel, #202422); color: var(--text); box-shadow: 0 20px 80px #0008; }
+.export-dialog header, .export-dialog h2 { display: flex; align-items: center; gap: 9px; }
+.export-dialog header { justify-content: space-between; }
+.export-dialog h2 { margin: 0; font-size: 17px; }
+.export-dialog header button { padding: 4px; border: 0; background: transparent; }
+.export-dialog button { color: var(--text); background: transparent; border: 1px solid var(--line, #343638); border-radius: 6px; padding: 7px 10px; font-size: 12px; cursor: pointer; }
+.export-dialog button:disabled { cursor: default; opacity: .45; }
+.export-name { overflow-wrap: anywhere; font-size: 13px; }
+.export-option { display: flex; align-items: center; justify-content: space-between; gap: 15px; font-size: 13px; margin: 18px 0; }
+.export-option select { color: var(--text); background: var(--panel, #202422); border: 1px solid var(--line, #343638); border-radius: 6px; padding: 7px 10px; }
+.export-dialog fieldset { display: grid; gap: 11px; margin: 0; padding: 12px; border: 1px solid var(--line, #343638); border-radius: 8px; font-size: 13px; }
+.export-dialog fieldset label { display: flex; align-items: center; gap: 8px; }
+.export-dialog input { accent-color: var(--accent); }
+.export-hint { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.export-history { border: 1px solid var(--line, #343638); border-radius: 8px; padding: 10px 12px; font-size: 12px; line-height: 1.5; }
+.export-history p { margin: 0 0 8px; }
+.export-error { color: var(--danger, #edaaa0); font-size: 12px; line-height: 1.6; }
+.export-saved { color: var(--accent); overflow-wrap: anywhere; font-size: 12px; }
+.export-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.export-dialog .export-save { border-color: var(--accent); color: var(--accent); }

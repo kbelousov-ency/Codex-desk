@@ -5,11 +5,14 @@ import { CodexClient, codexVersionFrom } from './codex-client.mjs';
 import { ClaudeClient, CLAUDE_CAPABILITIES } from './claude-client.mjs';
 import { directoryPath, findCodex, findClaude, publicConfig } from './host-utils.mjs';
 import { launchSessionTerminal } from './terminal-launcher.mjs';
+import { findAcceptedMessage, uncertainDelivery } from './message-status.mjs';
 
-const allowedMethods = new Set(['thread/start', 'thread/resume', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/name/set', 'thread/compact/start', 'turn/start', 'turn/interrupt', 'turn/steer', 'model/list', 'account/read', 'config/read', 'usage/read', 'agent/capabilities']);
-const projectMethods = new Set(['thread/start', 'thread/resume', 'thread/list', 'turn/start', 'config/read']);
+const allowedMethods = new Set(['thread/start', 'thread/resume', 'thread/fork', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/name/set', 'thread/compact/start', 'turn/start', 'turn/interrupt', 'turn/steer', 'model/list', 'account/read', 'config/read', 'usage/read', 'agent/capabilities']);
+const projectMethods = new Set(['thread/start', 'thread/resume', 'thread/fork', 'thread/list', 'turn/start', 'config/read']);
 const readOnlyMethods = new Set(['thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'model/list', 'account/read', 'config/read', 'usage/read', 'agent/capabilities']);
 const threadUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+allowedMethods.add('message/status');
+readOnlyMethods.add('message/status');
 
 export function cleanSettings(patch) {
   const clean = {};
@@ -162,6 +165,7 @@ export class WindowSession {
     this.diagnosticContext = diagnosticContext;
     this.currentThreadId = null;
     this.pendingThreadIds = new Map();
+    this.messageReceipts = new Map();
     this.compactingThreads = new Set();
     this.compactingTurnIds = new Map();
     this.terminal = null;
@@ -248,6 +252,14 @@ export class WindowSession {
     for (const event of ['notification', 'serverRequest', 'status', 'diagnostic']) {
       owned.on(event, data => {
         if (!current()) return;
+        if (event === 'notification' && ['item/started', 'item/completed'].includes(data.method) && data.params?.item?.type === 'userMessage') {
+          const { item, threadId, turnId } = data.params;
+          for (const id of [item.clientId, item.clientUserMessageId, item.id].filter(Boolean)) this.rememberMessage(threadId, id, { accepted: true, turnId, item });
+        }
+        if (event === 'notification' && data.method === 'message/receipt') {
+          const { threadId, clientUserMessageId, ...receipt } = data.params;
+          this.rememberMessage(threadId, clientUserMessageId, receipt);
+        }
         if (event === 'serverRequest') this.requests.set(data.id, data);
         if (event === 'notification' && data.method === 'serverRequest/resolved') this.requests.delete(data.params?.requestId);
         if (event === 'notification' && data.method === 'thread/started' && data.params?.thread?.id) {
@@ -265,6 +277,9 @@ export class WindowSession {
         }
         if (event === 'notification' && data.method === 'turn/started' && data.params?.threadId && data.params?.turn?.id) this.activeThreadTurns.set(data.params.threadId, data.params.turn.id);
         if (event === 'notification' && data.method === 'turn/completed' && this.activeThreadTurns.get(data.params?.threadId) === data.params?.turn?.id) this.activeThreadTurns.delete(data.params.threadId);
+        if (event === 'notification' && data.method === 'turn/completed') {
+          for (const [key, receipt] of this.messageReceipts) if (key.startsWith(`${data.params.threadId}:`) && receipt.turnId === data.params.turn.id) receipt.status = data.params.turn.status;
+        }
         if (event === 'status' && ['error', 'stopped'].includes(data.state)) {
           this.client = null;
           this.bootstrap = null;
@@ -323,6 +338,19 @@ export class WindowSession {
     if (!this.client || !this.bootstrap) throw new Error('Нет подключения к Codex. Нажмите «Подключиться».');
     const owned = this.client;
     const generation = this.generation;
+    if (method === 'message/status') {
+      if (!params.threadId || !threadUuid.test(params.clientUserMessageId || '')) throw new Error('Некорректный идентификатор сообщения.');
+      const key = `${params.threadId}:${params.clientUserMessageId}`;
+      const receipt = this.messageReceipts.get(key);
+      if (receipt?.accepted || receipt?.rejected) return { ...receipt, status: this.activeThreadTurns.get(params.threadId) === receipt.turnId ? 'inProgress' : receipt.status };
+      const read = await owned.request('thread/read', { threadId: params.threadId, includeTurns: true });
+      this.assertActive(generation);
+      if (owned !== this.client) throw new Error('Подключение Codex изменилось.');
+      if (read.thread?.id !== params.threadId) throw new Error('Агент вернул другой диалог при проверке отправки.');
+      const found = findAcceptedMessage(read.thread, params.clientUserMessageId);
+      if (found) { this.rememberMessage(params.threadId, params.clientUserMessageId, found); return found; }
+      return { accepted: false, rejected: false };
+    }
     // Project operations and history remain bound to this tab's working folder.
     if (projectMethods.has(method)) params = { ...params, cwd: this.currentCwd };
     if (mutation) {
@@ -332,7 +360,11 @@ export class WindowSession {
     }
     let result;
     try { result = await owned.request(method, params); }
-    catch (error) { if (method === 'thread/compact/start') { this.compactingThreads.delete(params.threadId); this.compactingTurnIds.delete(params.threadId); } throw error; }
+    catch (error) {
+      if (method === 'thread/compact/start') { this.compactingThreads.delete(params.threadId); this.compactingTurnIds.delete(params.threadId); }
+      if (['turn/start', 'turn/steer'].includes(method) && params.clientUserMessageId && typeof error.code === 'number' && !uncertainDelivery(error)) this.rememberMessage(params.threadId, params.clientUserMessageId, { accepted: false, rejected: true });
+      throw error;
+    }
     finally {
       if (mutation) {
         this.pendingMutations--;
@@ -344,10 +376,19 @@ export class WindowSession {
     }
     this.assertActive(generation);
     if (owned !== this.client) throw new Error('Подключение Codex изменилось.');
-    if (['thread/start', 'thread/resume'].includes(method) && result?.thread?.id) this.currentThreadId = result.thread.id;
+    if (['turn/start', 'turn/steer'].includes(method) && params.clientUserMessageId) this.rememberMessage(params.threadId, params.clientUserMessageId, { accepted: true, turnId: result.turn?.id || result.turnId, status: result.turn?.status });
+    if (['thread/start', 'thread/resume', 'thread/fork'].includes(method) && result?.thread?.id) this.currentThreadId = result.thread.id;
     if (method === 'turn/start' && result?.turn?.status === 'inProgress' && result.turn.id) this.activeThreadTurns.set(params.threadId, result.turn.id);
     if (result?.thread) this.threadActions?.remember(result.thread);
     return method === 'config/read' ? { ...result, config: publicConfig(result.config), layers: null, origins: {} } : result;
+  }
+
+  rememberMessage(threadId, id, receipt) {
+    if (!threadId || !id) return;
+    const key = `${threadId}:${id}`;
+    if (this.messageReceipts.get(key)?.accepted && !receipt.accepted) return;
+    this.messageReceipts.set(key, receipt);
+    if (this.messageReceipts.size > 1000) this.messageReceipts.delete(this.messageReceipts.keys().next().value);
   }
 
   async respond(id, result) {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowRight, ArrowUp, Brain, Check, ChevronDown, ChevronRight, Code2, CornerDownRight, Cpu, Folder, FolderOpen, FolderPlus, GitBranch, ImagePlus, ListPlus, LoaderCircle, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, RefreshCw, Search, Settings2, Shield, Square, Terminal, X } from 'lucide-react';
-import type { Access, AgentProvider, Attachment, CodexBridge, Item, MessageQueueState, ScrollAnchor, SessionAttentionEvent, Settings, Thread, UpdateTabSnapshot } from './types';
+import type { Access, AgentProvider, Attachment, CodexBridge, Item, MessageQueueState, PendingMessage, ScrollAnchor, SessionAttentionEvent, Settings, Thread, UpdateTabSnapshot } from './types';
 import { BridgeContext } from './BridgeContext';
 import { AgentContext, agentName } from './AgentContext';
 import { BuildBadge } from './BuildInfo';
@@ -29,10 +29,13 @@ import { useMessageJump, type MessageJump } from './useMessageJump';
 import { cliVersionNote } from './cli-versions';
 import EffectiveSettings from './EffectiveSettings';
 import UsageLimit from './UsageLimit';
+import SubagentPanel from './SubagentPanel';
+import ExportConversation from './ExportConversation';
+import { Download } from 'lucide-react';
 
 const effortLabels: Record<string, string> = { none: 'Без размышлений', minimal: 'Минимум', low: 'Низкий', medium: 'Средний', high: 'Высокий', xhigh: 'Очень высокий', max: 'Максимум', ultra: 'Ультра' };
 
-export type SessionSummary = { cwd: string; title: string; threadId?: string; initialized: boolean; terminalOpen: boolean; busy: boolean; loading: boolean; connection: string; pending: number; settings: Settings };
+export type SessionSummary = { cwd: string; title: string; threadId?: string; initialized: boolean; terminalOpen: boolean; busy: boolean; loading: boolean; connection: string; pending: number; pendingDelivery?: boolean; settings: Settings };
 export type WorkspaceControls = ProjectTreeControls & {
   threadNames?: Record<string, string>;
   newChat(cwd: string, provider?: AgentProvider): void;
@@ -42,12 +45,15 @@ export type WorkspaceControls = ProjectTreeControls & {
   onSessionStateChange?(id: string): void;
   flushSessionState?(): Promise<void>;
   onSessionAttention?(id: string, event: SessionAttentionEvent, title: string): void;
+  /** Opens a copy of the dialog as a new tab (App Server thread/fork or Claude SDK forkSession). */
+  forkThread?(cwd: string, thread: Thread, lastTurnId?: string): void;
+  openPalette?(): void;
 };
-export default function App({ bridge = window.codex, sessionId = 'default', active = true, initialThread, initialDraft = '', initialAttachments = [], initialQueue, initialScrollTop, initialScrollAnchor, initialPreservedDraft, restoreSettings, workspace, jump }: {
-  bridge?: CodexBridge; sessionId?: string; active?: boolean; initialThread?: Thread; initialDraft?: string; initialAttachments?: Attachment[]; initialQueue?: MessageQueueState; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; initialPreservedDraft?: { text: string; attachments: Attachment[] }; restoreSettings?: Settings; workspace?: WorkspaceControls; jump?: MessageJump;
+export default function App({ bridge = window.codex, sessionId = 'default', active = true, initialThread, initialFork, initialDraft = '', initialAttachments = [], initialQueue, initialPendingMessage, initialScrollTop, initialScrollAnchor, initialPreservedDraft, restoreSettings, workspace, jump }: {
+  bridge?: CodexBridge; sessionId?: string; active?: boolean; initialThread?: Thread; initialFork?: { lastTurnId?: string }; initialDraft?: string; initialAttachments?: Attachment[]; initialQueue?: MessageQueueState; initialPendingMessage?: PendingMessage; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; initialPreservedDraft?: { text: string; attachments: Attachment[] }; restoreSettings?: Settings; workspace?: WorkspaceControls; jump?: MessageJump;
 }) {
   const attentionRef = useRef<(event: SessionAttentionEvent) => void>(() => {});
-  const codex = useCodex(bridge, { restoreSettings, onAttention: event => attentionRef.current(event) });
+  const codex = useCodex(bridge, { restoreSettings, restorePendingMessage: initialPendingMessage, onAttention: event => attentionRef.current(event) });
   const engineName = agentName(codex.provider);
   const [text, setText] = useState(initialDraft);
   const [attachments, setAttachments] = useState<Attachment[]>(initialAttachments);
@@ -57,7 +63,8 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const editThread = useRef(initialThread?.id);
   const editGeneration = useRef(0);
   const editPending = useRef(false);
-  const [tab, setTab] = useState<'files' | 'activity' | 'changes'>('files');
+  const [tab, setTab] = useState<'files' | 'activity' | 'changes' | 'agents'>('files');
+  const [localJump, setLocalJump] = useState<MessageJump>();
   const [showSidebar, setShowSidebar] = useState(true);
   const [showPanel, setShowPanel] = useState(() => window.innerWidth > 1000);
   useEffect(() => {
@@ -67,6 +74,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     return () => narrow.removeEventListener('change', resize);
   }, []);
   const [showSettings, setShowSettings] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   useEffect(() => { if (showSettings && codex.provider === 'claude' && codex.connection === 'ready') void codex.refreshAgentDetails(); }, [showSettings, codex.provider, codex.connection]);
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [showChangesReview, setShowChangesReview] = useState(false);
@@ -78,6 +86,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const filePickerPending = useRef(false);
   const filePickerGeneration = useRef(0);
   const [sending, setSending] = useState(false);
+  const [checkingMessage, setCheckingMessage] = useState(false);
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [commandDismissed, setCommandDismissed] = useState(false);
   const [commandIndex, setCommandIndex] = useState(0);
@@ -97,7 +106,8 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const composerRef = useRef<HTMLDivElement>(null);
   const filesRef = useRef<HTMLInputElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
-  useMessageJump({ jump, active, loading: codex.loading, ready: Boolean(codex.thread), items: codex.items, hasEarlier: Boolean(codex.itemCursor), loadEarlier: () => void codex.loadEarlier(), container: chatRef,
+  useEffect(() => { setLocalJump(undefined); }, [jump?.key, codex.thread?.id]);
+  useMessageJump({ jump: localJump || jump, active, loading: codex.loading, ready: Boolean(codex.thread), items: codex.items, hasEarlier: Boolean(codex.itemCursor), loadEarlier: () => void codex.loadEarlier(), container: chatRef,
     onMissing: () => codex.setNotice('Сообщение не найдено в доступной истории. Оно могло быть удалено или сжато.'), onJump: () => { pendingScroll.current = undefined; setScrolledUp(true); } });
   useEffect(() => {
     if (!active) { setFileViewer(null); return; }
@@ -106,14 +116,14 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     };
     document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key);
   }, [active, codex.cwd]);
-  const locked = workspace?.actionBusy || codex.terminalOpen || codex.busy || codex.loading || codex.connection === 'connecting';
+  const locked = Boolean(codex.pendingMessage) || workspace?.actionBusy || codex.terminalOpen || codex.busy || codex.loading || codex.connection === 'connecting';
   const ready = codex.connection === 'ready';
   const queueOwner = useRef<{ threadId?: string; cwd?: string } | null>(initialQueue?.items.length ? { threadId: initialQueue.threadId || initialThread?.id, cwd: initialQueue.cwd || initialThread?.cwd } : null);
   const queueOwnerMismatch = Boolean(queueOwner.current && ((queueOwner.current.threadId && queueOwner.current.threadId !== codex.thread?.id) || (queueOwner.current.cwd && codex.cwd && queueOwner.current.cwd !== codex.cwd)));
-  const queueBlocked = Boolean(queueOwnerMismatch || workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showChangesReview || Boolean(fileViewer) || confirmFull || (codex.thread && !codex.threadReady) || (initialThread && !resumeAttempted.current));
+  const queueBlocked = Boolean(queueOwnerMismatch || workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showChangesReview || Boolean(fileViewer) || confirmFull || (codex.thread && !codex.threadReady) || (initialThread && !resumeAttempted.current));
   const queue = useMessageQueue(initialQueue, {
     busy: codex.busy, blocked: queueBlocked, completion: codex.queueCompletion, pause: codex.queuePause,
-    canSend: codex.canSendQueued, send: codex.send, flush: workspace?.flushSessionState,
+    canSend: codex.canSendQueued, send: codex.send, reconcile: codex.reconcileQueuedMessage, flush: workspace?.flushSessionState,
   });
   useEffect(() => {
     if (!queue.state.items.length) { queueOwner.current = null; return; }
@@ -140,7 +150,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     }
     editThread.current = codex.thread.id;
   }, [bridge, codex.cwd, codex.thread?.id]);
-  const canOperateThread = !selectingFiles && !workspace?.actionBusy && ready && codex.threadReady && Boolean(codex.thread) && !codex.terminalOpen && !codex.busy && !codex.loading && !codex.requests.length;
+  const canOperateThread = !codex.pendingMessage && !selectingFiles && !workspace?.actionBusy && ready && codex.threadReady && Boolean(codex.thread) && !codex.terminalOpen && !codex.busy && !codex.loading && !codex.requests.length;
   const canCompact = codex.capabilities.compact && canOperateThread;
   useEffect(() => { setCommandDismissed(false); setCommandIndex(0); setCommandKeyboardSelected(false); }, [text]);
   useEffect(() => { if (!active) { setCommandMenuOpen(false); setCommandDismissed(true); setShowHistory(false); } }, [active]);
@@ -223,7 +233,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   useEffect(() => {
     if (initialThread && ready && !resumeAttempted.current) {
       resumeAttempted.current = true;
-      void codex.resume(initialThread, Boolean(restoreSettings));
+      void codex.resume(initialThread, Boolean(restoreSettings), initialFork);
     }
   }, [initialThread, ready]);
   useEffect(() => {
@@ -231,16 +241,18 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       cwd: codex.cwd, title: dialogueTitle,
       threadId: codex.thread?.id, terminalOpen: codex.terminalOpen, busy: codex.busy, loading: codex.loading,
       initialized: ready && (!initialThread || resumeAttempted.current),
-      connection: codex.connection, pending: codex.requests.length,
+      connection: codex.connection, pending: codex.requests.length, pendingDelivery: Boolean(codex.pendingMessage),
       settings: { ...(codex.provider === 'claude' ? { provider: codex.provider } : {}), model: codex.model, effort: codex.effort, access: codex.access },
     });
-  }, [workspace?.report, sessionId, codex.cwd, codex.thread?.id, dialogueTitle, initialThread, codex.terminalOpen, codex.busy, codex.loading, codex.connection, codex.requests.length, codex.provider, codex.model, codex.effort, codex.access]);
+  }, [workspace?.report, sessionId, codex.cwd, codex.thread?.id, dialogueTitle, initialThread, codex.terminalOpen, codex.busy, codex.loading, codex.connection, codex.requests.length, codex.pendingMessage, codex.provider, codex.model, codex.effort, codex.access]);
   const captureUpdateRef = useRef<(persistent?: boolean) => UpdateTabSnapshot | null>(() => null);
   captureUpdateRef.current = persistent => {
-    if (!persistent && (sending || queue.inFlight || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showChangesReview || Boolean(fileViewer) || confirmFull || codex.loading || codex.busy || codex.terminalOpen || codex.requests.length || codex.connection === 'connecting')) return null;
-    const selected = codex.thread || (!resumeAttempted.current ? initialThread : undefined);
+    if (!persistent && (sending || queue.inFlight || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showChangesReview || Boolean(fileViewer) || confirmFull || codex.loading || codex.busy || codex.terminalOpen || codex.requests.length || codex.connection === 'connecting')) return null;
+    const candidate = codex.thread || (!resumeAttempted.current ? initialThread : undefined);
+    const selected = initialFork && candidate?.id === initialThread?.id ? undefined : candidate;
     return {
       sessionId, draft: text, attachments, queue: { ...queue.snapshot(), ...queueOwner.current },
+      ...(codex.pendingMessage ? { pendingMessage: codex.pendingMessage } : {}),
       scrollTop: pendingScroll.current ?? (active && chatRef.current ? chatRef.current.scrollTop : savedScrollTop.current),
       scrollAnchor: pendingScroll.current !== undefined || !active || !chatRef.current ? savedAnchor.current : readScrollAnchor(chatRef.current),
       ...(savedDraft.current ? { preservedDraft: savedDraft.current } : {}),
@@ -249,7 +261,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     };
   };
   useLayoutEffect(() => workspace?.registerUpdateCapture?.(sessionId, persistent => captureUpdateRef.current(persistent)), [workspace?.registerUpdateCapture, sessionId]);
-  useEffect(() => { workspace?.onSessionStateChange?.(sessionId); }, [workspace?.onSessionStateChange, sessionId, text, attachments, queue.state, editingMessage]);
+  useEffect(() => { workspace?.onSessionStateChange?.(sessionId); }, [workspace?.onSessionStateChange, sessionId, text, attachments, queue.state, editingMessage, codex.pendingMessage]);
   useEffect(() => {
     const el = inputRef.current;
     if (el) { el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 180)}px`; }
@@ -357,6 +369,15 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const clearSentDraft = (draft: string, images: Attachment[]) => {
     if (savedDraft.current) { const saved = savedDraft.current; savedDraft.current = null; setEditingMessage(false); setText(saved.text); setAttachments(saved.attachments); }
     else { setText(current => current === draft ? '' : current); setAttachments(current => current.filter(image => !images.includes(image))); }
+  };
+  const checkPendingMessage = async () => {
+    if (checkingMessage) return;
+    const draft = text, images = attachments;
+    setCheckingMessage(true);
+    try {
+      const receipt = await codex.reconcileMessage();
+      if (receipt.accepted && 'message' in receipt && receipt.message && receipt.message.text === draft && JSON.stringify(receipt.message.attachments) === JSON.stringify(images)) clearSentDraft(draft, images);
+    } finally { setCheckingMessage(false); }
   };
   const steerCurrent = async () => {
     if (workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || !codex.busy || codex.compacting || codex.steering || sending || readingImages || filePickerPending.current || editPending.current) return;
@@ -472,7 +493,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     </aside>
 
     <main className="main-column">
-      <header className="topbar"><button className="icon-button" title={showSidebar ? 'Скрыть проекты' : 'Показать проекты'} aria-label="Переключить панель проектов" onClick={() => setShowSidebar(!showSidebar)}>{showSidebar ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button><div className="breadcrumbs"><span>{codex.cwd ? folderName(codex.cwd) : 'Рабочее пространство'}</span><ChevronRight size={13} /><strong>{dialogueTitle || 'Новый диалог'}</strong></div><div className="topbar-actions">{chatSearchButton}<span className={`connection-pill ${codex.busy ? 'is-working' : ''}`}><span className={`status-dot ${ready ? codex.busy ? 'working' : 'online' : ''}`} />{status}</span><button className="icon-button" title="Настройки" aria-label="Настройки" onClick={() => setShowSettings(true)}><MoreHorizontal size={19} /></button><button className="icon-button" title={showPanel ? 'Скрыть действия' : 'Показать действия'} aria-label="Переключить панель действий" onClick={() => setShowPanel(!showPanel)}>{showPanel ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button></div></header>
+      <header className="topbar"><button className="icon-button" title={showSidebar ? 'Скрыть проекты' : 'Показать проекты'} aria-label="Переключить панель проектов" onClick={() => setShowSidebar(!showSidebar)}>{showSidebar ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button><div className="breadcrumbs"><span>{codex.cwd ? folderName(codex.cwd) : 'Рабочее пространство'}</span><ChevronRight size={13} /><strong>{dialogueTitle || 'Новый диалог'}</strong></div><div className="topbar-actions">{chatSearchButton}<button type="button" className="icon-button" title="Экспорт беседы" aria-label="Экспорт беседы" disabled={!codex.items.length || codex.loading} onClick={() => setShowExport(true)}><Download size={17} /></button>{codex.thread && <button type="button" className="icon-button" title="Копия беседы в новой вкладке. Папка и файлы общие" aria-label="Ответвить беседу" disabled={!codex.threadReady || codex.busy || codex.loading || codex.terminalOpen || Boolean(codex.pendingMessage) || Boolean(workspace?.opening)} onClick={() => { const thread = { ...codex.thread!, cwd: codex.cwd, ...(codex.provider === 'claude' ? { provider: codex.provider } : {}) }; if (workspace?.forkThread) workspace.forkThread(codex.cwd, thread); else void codex.resume(thread, true, {}); }}><GitBranch size={17} /></button>}<span className={`connection-pill ${codex.busy ? 'is-working' : ''}`}><span className={`status-dot ${ready ? codex.busy ? 'working' : 'online' : ''}`} />{status}</span><button className="icon-button" title="Настройки" aria-label="Настройки" onClick={() => setShowSettings(true)}><MoreHorizontal size={19} /></button><button className="icon-button" title={showPanel ? 'Скрыть действия' : 'Показать действия'} aria-label="Переключить панель действий" onClick={() => setShowPanel(!showPanel)}>{showPanel ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button></div></header>
 
       <div className="chat-scroll" ref={chatRef} onScroll={e => { const el = e.currentTarget; if (!active || pendingScroll.current !== undefined) return; savedScrollTop.current = el.scrollTop; savedAnchor.current = readScrollAnchor(el); setScrolledUp(el.scrollHeight - el.scrollTop - el.clientHeight > 100); workspace?.onSessionStateChange?.(sessionId); }}>
         {!showChatSearch && !chatItems.length && !codex.loading && !codex.busy && !codex.items.some(item => activityLabel(item)) ? <section className="welcome">
@@ -493,6 +514,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
 
       <div className="composer-area">
         <UpdateNotice />
+        {codex.pendingMessage && <div className="alert notice-alert pending-message" role="status"><span><strong>Отправка не подтверждена.</strong> Сообщение могло быть принято. Проверка по его идентификатору не отправляет задачу повторно.</span><button type="button" disabled={checkingMessage || !ready || codex.loading} onClick={() => void checkPendingMessage()}>{checkingMessage ? 'Проверяем…' : 'Проверить отправку'}</button></div>}
         {scrolledUp && <button className="scroll-bottom" onClick={() => { setScrolledUp(false); if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight; }}><ArrowDown size={14} />К последнему сообщению</button>}
         {codex.error && <div className="alert error-alert" role="alert"><span>{codex.error}</span>{codex.connection === 'error' && <button onClick={() => void codex.reconnect()}><RefreshCw size={14} />{codex.thread ? 'Переподключить диалог' : 'Подключить'}</button>}<button className="icon-button small" title="Скрыть ошибку" aria-label="Скрыть ошибку" onClick={() => codex.setError('')}><X size={14} /></button></div>}
         {codex.notice && <div className="alert notice-alert"><span>{codex.notice}</span>{codex.canContinue && <button type="button" className="continue-button" aria-label="Продолжить выполнение" title="Отправить «Продолжай» в этот диалог" disabled={locked || !ready || !codex.threadReady || sending || readingImages || Boolean(codex.requests.length)} onClick={() => void continueStopped()}><ArrowRight size={14} />Продолжить</button>}<button className="icon-button small" title="Скрыть уведомление" aria-label="Скрыть уведомление" onClick={() => codex.setNotice('')}><X size={14} /></button></div>}
@@ -511,24 +533,26 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
             <ComposerSelect kind="effort" label="Глубина размышлений" value={codex.effort} options={effortOptions} icon={<Brain size={14} />} disabled={locked || selectingFiles || !ready || !efforts.length} active={active} onChange={codex.selectEffort} />
           </div><div className="composer-actions">
             {(codex.busy || queue.state.items.length > 0) && <>
-              {codex.busy && <button type="button" className="composer-action composer-steer" aria-label="Уточнить текущую задачу" title={codex.capabilities.steer ? `Уточнить текущую задачу — передать сообщение ${engineName} во время выполнения` : `Уточнения во время выполнения для ${engineName} пока недоступны. Используйте очередь.`} disabled={!codex.capabilities.steer || (!text.trim() && !attachments.length) || Boolean(workspace?.actionBusy) || codex.terminalOpen || codex.loading || !ready || Boolean(codex.requests.length) || selectingFiles || sending || readingImages || loadingEdit || codex.compacting || codex.steering || (attachments.length > 0 && !imagesSupported)} onClick={() => void steerCurrent()}><CornerDownRight size={14} /><span>Уточнить</span></button>}
+              {codex.busy && <button type="button" className="composer-action composer-steer" aria-label="Уточнить текущую задачу" title={codex.capabilities.steer ? `Уточнить текущую задачу — передать сообщение ${engineName} во время выполнения` : `Уточнения во время выполнения для ${engineName} пока недоступны. Используйте очередь.`} disabled={Boolean(codex.pendingMessage) || !codex.capabilities.steer || (!text.trim() && !attachments.length) || Boolean(workspace?.actionBusy) || codex.terminalOpen || codex.loading || !ready || Boolean(codex.requests.length) || selectingFiles || sending || readingImages || loadingEdit || codex.compacting || codex.steering || (attachments.length > 0 && !imagesSupported)} onClick={() => void steerCurrent()}><CornerDownRight size={14} /><span>Уточнить</span></button>}
               <button type="button" className="composer-action composer-enqueue" aria-label="Отправить после завершения" title="В очередь — отправить сообщение после завершения текущей задачи" disabled={(!text.trim() && !attachments.length) || queueOwnerMismatch || selectingFiles || sending || readingImages || loadingEdit || (attachments.length > 0 && !imagesSupported)} onClick={enqueueMessage}><ListPlus size={15} /><span>В очередь</span></button>
               {codex.busy && <span className="composer-action-divider" aria-hidden="true" />}
             </>}
             {codex.busy ? <button className="stop-button" onClick={() => void codex.stop()} title="Остановить выполнение" aria-label="Остановить выполнение"><Square size={14} fill="currentColor" /></button> : <button className="send-button" title="Отправить (Enter)" aria-label="Отправить сообщение" disabled={!ready || locked || selectingFiles || sending || readingImages || loadingEdit || (!text.trim() && !attachments.length)} onClick={() => void send()}><ArrowUp size={20} /></button>}
           </div></div>
         </div>
-        <div className="composer-footer"><AccessSelect provider={codex.provider} value={codex.access} disabled={locked || selectingFiles || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span>{codex.capabilities.usage && <UsageLimit usage={codex.usage} loading={codex.usageLoading} active={active} disabled={!ready || locked || sending} onRefresh={() => void codex.refreshUsage()} onCommand={command => { if (ready && !locked && !sending) void codex.send(command, []); }} />}<CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showChangesReview || Boolean(fileViewer) || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compactSupported={codex.capabilities.compact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
+        <div className="composer-footer"><AccessSelect provider={codex.provider} value={codex.access} disabled={locked || selectingFiles || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span>{codex.capabilities.usage && <UsageLimit usage={codex.usage} loading={codex.usageLoading} active={active} disabled={!ready || locked || sending} onRefresh={() => void codex.refreshUsage()} onCommand={command => { if (ready && !locked && !sending) void codex.send(command, []); }} />}<CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showChangesReview || Boolean(fileViewer) || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compactSupported={codex.capabilities.compact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
       </div>
     </main>
 
     <aside className="details-panel"><div className="panel-tabs">
       <button className={tab === 'files' ? 'active' : ''} onClick={() => setTab('files')}><Folder size={14} />Файлы</button>
       <button className={tab === 'activity' ? 'active' : ''} onClick={() => setTab('activity')}><Terminal size={14} />Действия{codex.busy && <span className="tab-live-dot" />}</button>
+      <button className={tab === 'agents' ? 'active' : ''} onClick={() => setTab('agents')}><GitBranch size={14} />Подагенты</button>
       <button className={tab === 'changes' ? 'active' : ''} onClick={() => setTab('changes')}><GitBranch size={14} />Изменения{changedFiles > 0 && <span className="count-badge">{changedFiles}</span>}</button>
     </div><div className="panel-scroll">
       <div hidden={tab !== 'files'}><FileBrowser cwd={codex.cwd} active={active && showPanel && tab === 'files'} refreshKey={changedFiles} onAskCodex={askAboutPath} onPreview={path => setFileViewer({ path })} /></div>
       {tab === 'activity' && <ActivityPanel items={codex.items} plan={codex.plan} busy={codex.busy} />}
+      {tab === 'agents' && <SubagentPanel items={codex.items} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} onJump={itemId => { setShowChatSearch(false); if (window.innerWidth <= 1000) setShowPanel(false); setLocalJump({ itemId, key: Date.now() }); }} />}
       {tab === 'changes' && <ChangesPanel key={codex.thread?.id || 'new'} items={codex.items} diff={codex.diff} cwd={codex.cwd} diffTurnId={codex.diffTurnId} turnDiffs={codex.turnDiffs} active={active && !workspace?.actionBusy} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} busy={codex.busy} mutationsAllowed={ready && codex.access !== 'read-only' && !locked && !codex.requests.length && !sending && !readingImages} onLoadEarlier={() => void codex.loadEarlier()} onReviewChange={setShowChangesReview} />}
     </div><div className="panel-bottom"><span className="status-dot online" /><span>{tab === 'files' ? 'Файлы текущей рабочей папки' : 'Изменения сохраняются в проекте'}</span></div></aside>
     <input ref={filesRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => { void addImages([...(e.target.files || [])]); e.currentTarget.value = ''; }} />
@@ -538,5 +562,6 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
 
     {confirmFull && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="full-access-title"><div className="permission-symbol"><Shield size={26} /></div><h2 id="full-access-title">Включить полный доступ?</h2><p>{engineName} сможет выполнять команды, обращаться к сети и изменять файлы за пределами проекта без запросов подтверждения.</p><p className="muted">Режим применяется со следующего сообщения в этой вкладке.</p><div className="confirm-actions"><button className="secondary-button" autoFocus onClick={() => setConfirmFull(false)}>Отмена</button><button className="danger-button" onClick={() => { codex.selectAccess('danger-full-access'); setConfirmFull(false); }}>Включить полный доступ</button></div></section></div>}
     {fileViewer && active && <FileViewer cwd={codex.cwd} active={active} initialPath={fileViewer.path} onClose={() => setFileViewer(null)} onAsk={question => { focusDraftEnd.current = true; setText(current => `${current}${current && !current.endsWith('\n') ? '\n' : ''}${question}\n`); setFileViewer(null); inputRef.current?.focus(); }} />}
+    {showExport && active && <ExportConversation key={codex.thread?.id || 'new'} items={codex.items} turnWork={codex.turnWork} title={dialogueTitle} provider={engineName} cwd={codex.cwd} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} busy={codex.busy} onLoadEarlier={codex.loadEarlier} onClose={() => setShowExport(false)} onSave={file => window.codex.exportConversation(file)} />}
   </div></BridgeContext.Provider></AgentContext.Provider>;
 }

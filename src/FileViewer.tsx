@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { ExternalLink, FileCode2, FileText, Image, MessageSquarePlus, Search, X } from 'lucide-react';
 import { useBridge } from './BridgeContext';
 import Markdown from './Markdown';
+import { highlightSource, sourceLineRange, sourceWindow } from './source-highlight';
 import './file-viewer.css';
 
 type FileResult = { path: string; name: string };
@@ -28,7 +29,12 @@ export default function FileViewer({ cwd, active, onClose, onAsk, initialPath }:
   const [source, setSource] = useState(false);
   const [selection, setSelection] = useState<SelectedText | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const [lineInput, setLineInput] = useState('');
+  const [lineError, setLineError] = useState('');
+  const [jumpLine, setJumpLine] = useState<number | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const lineNumberInput = useRef<HTMLInputElement>(null);
   const dialog = useRef<HTMLElement>(null);
   const markdown = useRef<HTMLDivElement>(null);
   const textarea = useRef<HTMLTextAreaElement>(null);
@@ -43,6 +49,7 @@ export default function FileViewer({ cwd, active, onClose, onAsk, initialPath }:
     searchInput.current?.focus();
     const key = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close.current(); }
+      if ((event.ctrlKey || event.metaKey) && event.code === 'KeyG' && lineNumberInput.current) { event.preventDefault(); event.stopPropagation(); lineNumberInput.current.focus(); lineNumberInput.current.select(); }
       if (event.key !== 'Tab') return;
       const nodes = [...(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input, textarea, [tabindex="0"]') || [])].filter(node => node.getClientRects().length);
       const first = nodes[0], last = nodes.at(-1);
@@ -71,7 +78,7 @@ export default function FileViewer({ cwd, active, onClose, onAsk, initialPath }:
     const revision = ++readRevision.current;
     const origin = context.current;
     const current = () => revision === readRevision.current && context.current.cwd === origin.cwd && context.current.bridge === origin.bridge && context.current.active;
-    setPreviewPath(path); setPreview(null); setSelection(null); setPreviewError(''); setPreviewBusy(true); setSource(false); setScrollTop(0);
+    setPreviewPath(path); setPreview(null); setSelection(null); setPreviewError(''); setPreviewBusy(true); setSource(false); setScrollTop(0); setScrollLeft(0); setLineInput(''); setLineError(''); setJumpLine(null);
     try { const result = await bridge.readProjectFile({ path }); if (current()) setPreview(result); }
     catch (error) { if (current()) setPreviewError(message(error)); }
     finally { if (current()) setPreviewBusy(false); }
@@ -123,13 +130,24 @@ export default function FileViewer({ cwd, active, onClose, onAsk, initialPath }:
   };
 
   const displaySource = preview && (preview.kind === 'text' || (preview.kind === 'markdown' && source));
-  const lines = useMemo(() => {
-    if (!displaySource) return 0;
-    let count = 1;
-    for (const character of preview?.text || '') if (character === '\n') count++;
-    return count;
-  }, [displaySource, preview?.text]);
+  const highlighted = useMemo(() => highlightSource(preview?.text || '', preview?.path || ''), [preview?.text, preview?.path]);
+  const lines = highlighted.offsets.length;
   const firstLine = Math.max(0, Math.floor(scrollTop / 20) - 2);
+  const visibleSource = useMemo(() => sourceWindow(highlighted, firstLine, 100), [highlighted, firstLine]);
+  useEffect(() => {
+    if (!displaySource || jumpLine == null || !textarea.current) return;
+    const range = sourceLineRange(highlighted, String(jumpLine));
+    if (!range) return;
+    const element = textarea.current;
+    element.focus({ preventScroll: true }); element.setSelectionRange(range.start, range.end);
+    element.scrollTop = Math.max(0, (range.line - 1) * 20 - element.clientHeight / 2 + 24); element.scrollLeft = 0;
+    setScrollTop(element.scrollTop); setScrollLeft(0); captureSourceSelection(); setJumpLine(null);
+  }, [displaySource, jumpLine, highlighted]);
+  const goToLine = () => {
+    const range = sourceLineRange(highlighted, lineInput);
+    if (!range) { setLineError(`Введите номер от 1 до ${lines}.`); return; }
+    setLineError(''); setSource(true); setJumpLine(range.line);
+  };
   if (!active) return null;
   return createPortal(<div className="file-viewer-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="file-viewer" role="dialog" aria-modal="true" aria-labelledby="file-viewer-title" ref={dialog}>
@@ -158,8 +176,10 @@ export default function FileViewer({ cwd, active, onClose, onAsk, initialPath }:
           {!previewPath && <div className="file-viewer-placeholder"><FileCode2 size={34} /><strong>Откройте файл для просмотра</strong><span>Выберите его слева или найдите по имени.</span><small>↑ ↓ — выбор · Enter — открыть</small></div>}
           {preview && <>
             {preview.kind === 'markdown' && <div className="file-viewer-modes"><button type="button" aria-pressed={!source} onClick={() => { setSource(false); setSelection(null); }}>Предпросмотр</button><button type="button" aria-pressed={source} onClick={() => { setSource(true); setSelection(null); setScrollTop(0); }}>Исходник</button></div>}
+            {(preview.kind === 'text' || preview.kind === 'markdown') && <form className="file-viewer-line-jump" onSubmit={event => { event.preventDefault(); goToLine(); }}><label htmlFor="file-viewer-line">Строка</label><input id="file-viewer-line" ref={lineNumberInput} value={lineInput} onChange={event => { setLineInput(event.target.value); setLineError(''); }} inputMode="numeric" aria-label="Номер строки" aria-invalid={!!lineError} aria-describedby={lineError ? 'file-viewer-line-error' : undefined} placeholder={`1–${lines}`} /><button type="submit" title="Перейти к строке · Ctrl+G">Перейти</button><span>Ctrl+G</span>{lineError && <span id="file-viewer-line-error" role="alert">{lineError}</span>}</form>}
             {preview.message && <p className="file-viewer-notice">{preview.message}</p>}
-            {displaySource && <div className="file-viewer-source"><div className="file-viewer-gutter" aria-hidden="true" style={{ width: `${Math.max(5, String(lines).length + 2)}ch` }}><pre style={{ transform: `translateY(${firstLine * 20 - scrollTop}px)` }}>{Array.from({ length: Math.min(100, Math.max(0, lines - firstLine)) }, (_, i) => firstLine + i + 1).join('\n')}</pre></div><textarea ref={textarea} readOnly spellCheck={false} wrap="off" aria-label="Содержимое файла" value={preview.text || ''} onSelect={captureSourceSelection} onMouseUp={captureSourceSelection} onKeyUp={captureSourceSelection} onScroll={event => setScrollTop(event.currentTarget.scrollTop)} /></div>}
+            {displaySource && <div className="file-viewer-source"><div className="file-viewer-gutter" aria-hidden="true" style={{ width: `${Math.max(5, String(lines).length + 2)}ch` }}><pre style={{ transform: `translateY(${firstLine * 20 - scrollTop}px)` }}>{Array.from({ length: Math.min(100, Math.max(0, lines - firstLine)) }, (_, i) => firstLine + i + 1).join('\n')}</pre></div><div className="file-viewer-code"><pre className="file-viewer-highlight" aria-hidden="true" style={{ transform: `translate(${-scrollLeft}px, ${firstLine * 20 - scrollTop}px)` }}>{visibleSource.map((piece, index) => piece.kind ? <span key={index} className={`source-${piece.kind}`}>{piece.text}</span> : piece.text)}</pre><textarea ref={textarea} readOnly spellCheck={false} wrap="off" aria-label="Содержимое файла" value={highlighted.text} onSelect={captureSourceSelection} onMouseUp={captureSourceSelection} onKeyUp={captureSourceSelection} onScroll={event => { setScrollTop(event.currentTarget.scrollTop); setScrollLeft(event.currentTarget.scrollLeft); }} /></div></div>}
+            {displaySource && highlighted.limited && <p className="file-viewer-notice">Подсветка ограничена для большого файла; весь загруженный текст доступен для чтения.</p>}
             {preview.kind === 'markdown' && !source && <div ref={markdown} className="file-viewer-markdown" tabIndex={0} onMouseUp={captureMarkdownSelection} onKeyUp={captureMarkdownSelection}><Markdown>{preview.text || ''}</Markdown></div>}
             {preview.kind === 'image' && <div className="file-viewer-image"><img src={preview.dataUrl} alt={preview.path} /></div>}
             {preview.kind === 'unsupported' && <div className="file-viewer-placeholder"><FileText size={32} /><span>Файл можно открыть во внешней программе или добавить его путь в сообщение.</span></div>}

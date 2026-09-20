@@ -16,6 +16,33 @@ const otherCwd = path.resolve('other-fixture-project');
 const info = (sessionId = firstId, extra = {}) => ({ sessionId, summary: 'Диалог', firstPrompt: 'Проверь файл', lastModified: 1_800_000_123_456, cwd, ...extra });
 const frame = (type, uuid, content, extra = {}) => ({ type, uuid, session_id: firstId, parent_tool_use_id: null, message: { role: type, content }, ...extra });
 
+test('history adapts public task updates and ignores other sessions and nested output', () => {
+  const turns = claudeHistoryTurns([
+    frame('user', 'user-1', 'Review'),
+    { type: 'system', subtype: 'task_started', session_id: firstId, task_id: 't1', description: 'Review task', tool_use_id: 'agent-1' },
+    { type: 'system', subtype: 'task_progress', session_id: firstId, task_id: 't1', summary: 'Reading files' },
+    frame('assistant', 'nested', 'Private nested frame', { parent_tool_use_id: 'agent-1' }),
+    { type: 'system', subtype: 'task_notification', session_id: secondId, task_id: 't1', status: 'failed', summary: 'Other session' },
+    { type: 'system', subtype: 'task_notification', session_id: firstId, task_id: 't1', status: 'completed', summary: 'Review complete', output_file: '/result' },
+  ], { cwd, sessionId: firstId });
+  const tasks = turns.flatMap(turn => turn.items).filter(item => item.type === 'subAgentTask');
+  assert.equal(tasks.length, 1); assert.equal(tasks[0].status, 'completed');
+  assert.equal(tasks[0].description, 'Review task'); assert.equal(tasks[0].result, 'Review complete');
+  assert.equal(turns.flatMap(turn => turn.items).some(item => item.text === 'Private nested frame'), false);
+});
+
+test('copied fork timestamps never imply fresh model work; a later real answer restores timing', () => {
+  const messages = [
+    frame('user', 'copied-user', 'Original', { timestamp: '2026-09-19T10:00:00Z' }),
+    frame('assistant', 'copied-answer', 'Copied answer', { timestamp: '2026-09-20T10:00:00Z' }),
+    frame('user', 'new-user', 'Continue', { timestamp: '2026-09-20T11:00:00Z' }),
+    frame('assistant', 'new-answer', 'New answer', { timestamp: '2026-09-20T11:00:01Z' }),
+  ];
+  const turns = claudeHistoryTurns(messages, { copiedMessageIds: new Set(['copied-user', 'copied-answer']) });
+  assert.equal(turns[0].completedAt, undefined); assert.equal(turns[0].startedAt, undefined);
+  assert.equal(turns[1].completedAt, Date.parse('2026-09-20T11:00:01Z') / 1000);
+});
+
 function fixture(overrides = {}) {
   const calls = [];
   let imports = 0;
@@ -117,7 +144,7 @@ test('Claude history retains text, images, public reasoning, commands, edits and
   assert.equal(items.at(-1).phase, 'final_answer');
   assert.equal(items.at(-1).turnId, 'user-one');
   assert.equal(JSON.stringify(thread).includes('SECRET_'), false);
-  assert.deepEqual(calls.at(-1), ['messages', firstId, { dir: cwd, includeSystemMessages: false, limit: 100_001 }]);
+  assert.deepEqual(calls.at(-1), ['messages', firstId, { dir: cwd, includeSystemMessages: true, limit: 100_001 }]);
 });
 
 test('Claude history keeps assistant sibling blocks sharing message id and tool results do not create prompts', () => {
@@ -203,14 +230,24 @@ test('Claude history official SDK reconstructs native branch and does not modify
       native('assistant', 'old-answer', 'prompt', [{ type: 'text', text: 'Abandoned branch' }]),
       native('assistant', 'answer', 'prompt', [{ type: 'text', text: 'Current answer' }]),
       native('user', 'followup', 'answer', 'Followup'),
-      native('assistant', 'final', 'followup', [{ type: 'text', text: 'Final answer' }]),
+      native('assistant', 'final', 'followup', [{ type: 'text', text: 'Final answer' }], { message: {
+        role: 'assistant', id: 'api-final', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Final answer' }],
+        usage: { input_tokens: 12, cache_read_input_tokens: 4000, cache_creation_input_tokens: 500, output_tokens: 8 },
+      } }),
     ].map(entry => JSON.stringify(entry)).join('\n') + '\n';
     const filename = path.join(transcriptFolder, `${firstId}.jsonl`);
     await writeFile(filename, transcript);
     await writeFile(path.join(transcriptFolder, `${secondId}.jsonl`), JSON.stringify(native('user', 'sidechain', null, 'Excluded', { sessionId: secondId, isSidechain: true })) + '\n');
     const beforeFiles = await readdir(transcriptFolder);
     const moduleUrl = new URL('../electron/claude-history.mjs', import.meta.url).href;
-    const script = `import { ClaudeHistory } from ${JSON.stringify(moduleUrl)}; const history = new ClaudeHistory(); const result = await history.list({cwd:process.argv[1]}); const read = await history.read({cwd:process.argv[1],threadId:process.argv[2]}); console.log(JSON.stringify({result,read}));`;
+    const script = `import { ClaudeHistory } from ${JSON.stringify(moduleUrl)};
+      const history = new ClaudeHistory();
+      const result = await history.list({cwd:process.argv[1]});
+      const read = await history.read({cwd:process.argv[1],threadId:process.argv[2]});
+      const fork = await history.fork({cwd:process.argv[1],threadId:process.argv[2],title:'Fork timing regression'});
+      const copied = await new ClaudeHistory().read({cwd:process.argv[1],threadId:fork.threadId});
+      const reread = await new ClaudeHistory().read({cwd:process.argv[1],threadId:process.argv[2]});
+      console.log(JSON.stringify({result,read,fork,copied,reread}));`;
     const { stdout } = await execFileAsync(process.execPath, ['--input-type=module', '-e', script, projectPath, firstId], {
       env: { ...process.env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_PROJECT_DIR_NAME: '' }, windowsHide: true, timeout: 15_000,
     });
@@ -223,8 +260,17 @@ test('Claude history official SDK reconstructs native branch and does not modify
     assert.equal(content.includes('Final answer'), true);
     assert.equal(content.includes('Abandoned branch'), false);
     assert.equal(content.includes('Excluded'), false);
+    const sourceTime = Date.parse('2026-09-19T10:00:00Z') / 1000;
+    assert.ok(parsed.read.thread.turns.every(turn => turn.startedAt === sourceTime && turn.completedAt === sourceTime), 'ordinary SDK export must not silently suppress source timing');
+    assert.equal(parsed.read.tokenUsage.last.inputTokens, 4512);
+    assert.equal(parsed.read.tokenUsage.last.totalTokens, 4520);
+    assert.equal(parsed.copied.thread.turns.length, 2);
+    assert.ok(parsed.copied.thread.turns.every(turn => turn.startedAt === undefined && turn.completedAt === undefined), 'fresh reader identifies copied UUIDs through the real SDK export API');
+    assert.equal(parsed.copied.tokenUsage.last.totalTokens, 4520, 'copied historical usage remains visible without implying fresh cache');
+    assert.deepEqual(parsed.reread, parsed.read, 'reading the fork cannot alter source counters or timing');
     assert.equal(await readFile(filename, 'utf8'), transcript);
-    assert.deepEqual(await readdir(transcriptFolder), beforeFiles);
+    const copiedFilename = `${parsed.fork.threadId.replace(/^claude:/, '')}.jsonl`;
+    assert.deepEqual((await readdir(transcriptFolder)).sort(), [...beforeFiles, copiedFilename].sort());
   } finally {
     assert.equal(path.dirname(fixtureRoot), await realpath(os.tmpdir()));
     assert.equal(path.basename(fixtureRoot).startsWith('codex-desk-claude-history-'), true);

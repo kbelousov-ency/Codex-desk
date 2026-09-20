@@ -63,6 +63,18 @@
 
 ### Проверки без запросов модели
 
+### Попытка живой проверки steer/compact/rename — 2026-09-20
+
+Добавлен opt-in `node scripts/live-claude-controls.mjs --run`: отдельная временная cwd, только Read синтетического файла после подтверждения, уточнение с точным UUID во время approval, rename_session, native `/compact`, проверка двух маркеров после сжатия и persisted history. Модель/effort наследуются без переопределения, глобальные auth/settings не меняются. При полном успехе сценарий отправляет 4 user frames (начальный запрос, steer, `/compact`, проверка контекста); число API model calls может отличаться из-за инструментов и compaction.
+
+Фактический запуск `artifacts/live-claude-controls-pCSmLy/result.json` остановлен провайдером на первом turn: `You've hit your session limit · resets 3:50pm (Asia/Nicosia)`. Сохранены `claude-fable-5-1` / `medium`; отправлен 1 реальный turn, успешных ответов модели 0, steer/compact в этой попытке не достигнуты. Повторов после лимита и обхода через другую модель не было. Затем на созданном диалоге отдельно прошли настоящие resume + `rename_session` + чтение native history: название сохранилось, модель/effort прежние; это 0 дополнительных model requests. Отчёт дополнен `renameLive`, `renamePersisted`, `renameSettingsPreserved`. Поле `modelTurns` отчёта считает agentMessage (включая синтетическую ошибку CLI), а не успешные API calls. Steer/compact остаются проверенными фикстурами; live проверка требует доступного лимита.
+
+### Публичные состояния фоновых задач
+
+`task_started`, `task_progress`, `task_notification` преобразуются в `subAgentTask`: ID `task:<task_id>`, toolUseId, описание, статус, полученный summary и outputFile. Завершение фоновой задачи после основного ответа обновляет исходный turn. Native history запрашивает SDK `includeSystemMessages: true`, но адаптирует лишь эти публичные task кадры; вложенные assistant/parent_tool_use_id не раскрываются и не реконструируются. Тест проверяет позднюю ошибку, сохранение описания и отсутствие nested output. Сведения используются панелью подагентов.
+
+SDK `forkSession` переписывает timestamp последнего скопированного assistant на текущее время, а `getSessionMessages` удаляет `forkedFrom`. Проверено на настоящем SDK с изолированной историей `artifacts/fork-sdk-ojSJao`: обычное чтение ошибочно давало бы свежий кэш без запроса модели. `ClaudeHistory.read` дополнительно использует официальный `importSessionToStore` с in-memory sink, собирая лишь UUID кадров с `forkedFrom`; их времена не считаются модельной активностью. Новый реальный ответ после fork снова даёт обычный таймер. Native transcript не редактируется, отдельный постоянный sidecar не создаётся. Если проверка происхождения недоступна из-за ошибки SDK, исторический таймер остаётся неизвестным. В UI первый fork также не показывает свежий кэш по скопированной истории.
+
 Claude transport unit tests: frame UTF-8, settings/protocol, поток/результат/эхо, tool/question approvals, interrupt, full flag, ошибка/timeout, изоляция изображений, настоящий отдельный Node child с JSONL и последовательными fixture turns. Реальной модели эти тесты не вызывают.
 
 History tests включают официальный SDK на изолированном synthetic native history, проверку веток и побайтовую неизменность. Provider defaults/namespace/terminal/checkpoint проверены отдельно; UI `ui-providers` проверяет выбор, модели/черновики, capabilities, queue/files/labels и отсутствие CLI fallback при ошибке.

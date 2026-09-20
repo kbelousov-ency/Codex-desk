@@ -60,6 +60,27 @@ test('persistent state round trips and remains separate from Nightly checkpoint'
   assert.deepEqual(await readdir(directory), ['workspace-state.json']);
 });
 
+test('pinning, tab order and an unconfirmed send survive disk validation for live and archived tabs', async t => {
+  const { store } = await fixture(t);
+  const value = snapshot();
+  value.tabs[0].pinned = true;
+  value.tabs[0].pendingMessage = { threadId: 'thread', clientUserMessageId: 'submitted-message', kind: 'steer', text: 'Уточнение', attachments: [image()], token: 'discard' };
+  value.tabs.push({ archivedThread: { id: 'archived', cwd: session().currentCwd }, draft: '', attachments: [], pinned: true, scrollTop: 42 });
+  value.activeIndex = 1;
+  const captured = capture(value);
+  await store.save(captured);
+  const restored = await store.read();
+  assert.equal(restored.activeIndex, 1);
+  assert.deepEqual(restored.tabs.map(tab => [tab.thread?.id || tab.archivedThread?.id, tab.pinned]), [['thread', true], ['archived', true]]);
+  assert.deepEqual(restored.tabs[0].pendingMessage, { threadId: 'thread', clientUserMessageId: 'submitted-message', kind: 'steer', text: 'Уточнение', attachments: [{ name: 'draft.png', dataUrl: png }] });
+  assert.equal(restored.tabs[1].scrollTop, 42);
+  value.tabs[0].pendingMessage.threadId = 'another-thread';
+  assert.throws(() => capture(value), /другому диалогу/);
+  value.tabs[0].pendingMessage.threadId = 'thread';
+  value.tabs[0].pendingMessage.kind = 'automatic-retry';
+  assert.throws(() => capture(value), /Некорректная/);
+});
+
 test('snapshot queue preserves invocation order and freezes values before asynchronous disk writes', async t => {
   const { store } = await fixture(t);
   const first = capture(snapshot()), second = capture(snapshot());

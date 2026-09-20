@@ -72,6 +72,17 @@ export function claudeSessionId(value) {
 
 export const claudeThreadId = value => `claude:${claudeSessionId(value)}`;
 
+/** Only public task status frames; parent-tool agent conversations remain private to the CLI. */
+export function claudeTaskItem(frame) {
+  if (frame?.type !== 'system' || !['task_started', 'task_progress', 'task_notification'].includes(frame.subtype) || typeof frame.task_id !== 'string' || !frame.task_id || frame.ambient === true) return null;
+  return { id: `task:${frame.task_id}`, type: 'subAgentTask', taskId: frame.task_id,
+    ...(typeof frame.tool_use_id === 'string' ? { toolUseId: frame.tool_use_id } : {}),
+    ...(typeof frame.description === 'string' ? { description: frame.description.slice(0, 20_000) } : {}),
+    status: frame.subtype === 'task_notification' && ['completed', 'failed', 'stopped'].includes(frame.status) ? frame.status : 'running',
+    ...(typeof frame.summary === 'string' ? { result: frame.summary.slice(0, 100_000) } : {}),
+    ...(typeof frame.output_file === 'string' ? { outputFile: frame.output_file } : {}) };
+}
+
 function scopeKey(cwd) { return createHash('sha256').update(directoryKey(cwd)).digest('hex').slice(0, 24); }
 function cursorOffset(cursor, cwd) {
   if (cursor === undefined || cursor === null) return 0;
@@ -156,7 +167,7 @@ function toolItem(block, cwd) {
 }
 
 /** Adapt only the public user/assistant messages returned by the official SDK. */
-export function claudeHistoryTurns(messages, { cwd, sessionId } = {}) {
+export function claudeHistoryTurns(messages, { cwd, sessionId, copiedMessageIds = new Set() } = {}) {
   if (!Array.isArray(messages) || messages.length > MAX_MESSAGES) throw new Error('История Claude слишком велика для просмотра. Откройте её в терминале.');
   const turns = [];
   const tools = new Map();
@@ -165,6 +176,7 @@ export function claudeHistoryTurns(messages, { cwd, sessionId } = {}) {
     && Array.isArray(frame.message?.content) && frame.message.content.some(block => block?.type === 'tool_use'))
     .map(frame => text(frame.message?.id) || text(frame.uuid)));
   let current;
+  const tasks = new Map();
   const ensureTurn = id => {
     if (!current) { current = { id, status: 'completed', items: [] }; turns.push(current); }
     return current;
@@ -173,6 +185,9 @@ export function claudeHistoryTurns(messages, { cwd, sessionId } = {}) {
   // it. A synthetic API-error frame marks the turn failed so the cache estimate stays unknown for it.
   const observeTiming = frame => {
     if (!current) return;
+    // SDK forkSession rewrites the last copied assistant timestamp to the fork time.
+    // Copied frames did not make a model call and cannot establish fresh cache activity.
+    if (copiedMessageIds.has(frame.uuid) || frame.forkedFrom) return;
     const at = frameSeconds(frame);
     if (frame.type === 'user') { if (at !== undefined && current.startedAt === undefined) current.startedAt = at; return; }
     if (apiError(frame)) {
@@ -193,6 +208,15 @@ export function claudeHistoryTurns(messages, { cwd, sessionId } = {}) {
     return turn.items.at(-1);
   };
   for (const [messageIndex, frame] of messages.entries()) {
+    if (object(frame) && (!sessionId || !frame.session_id || frame.session_id === sessionId)) {
+      const task = claudeTaskItem(frame);
+      if (task) {
+        const previous = tasks.get(task.id);
+        if (previous) Object.assign(previous, task);
+        else if (current) { const item = addItem(task); if (item) tasks.set(task.id, item); }
+        continue;
+      }
+    }
     if (!object(frame) || !['user', 'assistant'].includes(frame.type) || frame.is_meta || frame.isMeta || frame.isSidechain || frame.parent_tool_use_id) continue;
     if (sessionId && frame.session_id && frame.session_id !== sessionId) continue;
     const message = frame.message;
@@ -247,7 +271,7 @@ export function claudeHistoryTurns(messages, { cwd, sessionId } = {}) {
   return turns;
 }
 
-/** Read-only native Claude history. Never starts the CLI or writes its store. */
+/** Reads native Claude history without starting the CLI; explicit fork uses the official SDK mutation. */
 export class ClaudeHistory {
   constructor({ sdk = () => import('@anthropic-ai/claude-agent-sdk'), resolveDirectory = directoryPath } = {}) {
     this.sdkFactory = sdk;
@@ -296,11 +320,41 @@ export class ClaudeHistory {
     const thread = threadMetadata(info, cwd);
     if (includeTurns) {
       if (typeof info.fileSize === 'number' && info.fileSize > MAX_TRANSCRIPT_BYTES) throw new Error('История Claude превышает 128 МиБ. Откройте этот диалог в терминале.');
-      const messages = await sdk.getSessionMessages(id, { dir: cwd, includeSystemMessages: false, limit: MAX_MESSAGES + 1 });
-      thread.turns = claudeHistoryTurns(messages, { cwd, sessionId: id });
+      const messages = await sdk.getSessionMessages(id, { dir: cwd, includeSystemMessages: true, limit: MAX_MESSAGES + 1 });
+      const copiedMessageIds = new Set();
+      // The public message reader drops forkedFrom. The official export API sends raw entries to an
+      // in-memory sink; collect UUIDs only, without touching native transcripts or a sidecar store.
+      if (typeof sdk.importSessionToStore === 'function') {
+        try {
+          let count = 0;
+          await sdk.importSessionToStore(id, { async append(_key, entries) {
+            count += entries.length;
+            if (count > MAX_MESSAGES) throw new Error('История Claude слишком велика для проверки времён.');
+            for (const entry of entries) if (entry.forkedFrom && typeof entry.uuid === 'string') copiedMessageIds.add(entry.uuid);
+          } }, { dir: cwd, includeSubagents: false, batchSize: 500 });
+        } catch {
+          // If provenance is unavailable, showing no historical timer is safer than claiming a fresh cache.
+          for (const frame of messages) copiedMessageIds.add(frame.uuid);
+        }
+      }
+      thread.turns = claudeHistoryTurns(messages, { cwd, sessionId: id, copiedMessageIds });
       const usage = claudeHistoryUsage(messages, { sessionId: id });
       if (usage) return { thread, tokenUsage: { last: usage.last, total: usage.total }, usageMessageIds: usage.messageIds };
     }
     return { thread };
+  }
+
+  /** Copies a native session into a new UUID with the official SDK (the source transcript is untouched). */
+  async fork({ cwd: requested, threadId, title } = {}) {
+    const id = claudeSessionId(threadId);
+    const cwd = await this.cwd(requested);
+    const sdk = await this.sdk();
+    if (typeof sdk.forkSession !== 'function') throw new Error('Установленный SDK Claude не поддерживает ответвление диалога.');
+    const info = await sdk.getSessionInfo(id, { dir: cwd });
+    if (!await this.belongsTo(info, cwd)) throw new Error('Диалог Claude не найден в выбранной папке.');
+    const name = typeof title === 'string' && title.trim() && title.length <= 200 && !/[\r\n\0]/.test(title) ? title.trim() : undefined;
+    const result = await sdk.forkSession(id, { dir: cwd, ...(name ? { title: name } : {}) });
+    if (!UUID.test(text(result?.sessionId))) throw new Error('SDK Claude не вернул идентификатор новой ветки.');
+    return { threadId: claudeThreadId(result.sessionId), sourceThreadId: claudeThreadId(id) };
   }
 }

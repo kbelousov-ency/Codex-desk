@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, ArchiveRestore, EllipsisVertical, Pencil, Trash2 } from 'lucide-react';
+import { Archive, ArchiveRestore, EllipsisVertical, GitFork, Pencil, Trash2 } from 'lucide-react';
 import type { ThreadAction } from './types';
 import './archive.css';
 
@@ -11,7 +11,7 @@ export default function ThreadMenu({ title, threadId, archived = false, archivab
   title: string;
   threadId: string;
   archived?: boolean;
-  /** Claude Code history has no archive state; only rename and delete are offered. */
+  /** Claude Code history has no archive state; rename, fork and delete remain available. */
   archivable?: boolean;
   active?: boolean;
   disabled?: boolean;
@@ -26,7 +26,7 @@ export default function ThreadMenu({ title, threadId, archived = false, archivab
   const visible = open && active && !disabled;
   const actions = archived
     ? [{ action: 'delete' as const, label: 'Удалить', icon: Trash2 }, { action: 'restore' as const, label: 'Восстановить', icon: ArchiveRestore }]
-    : [{ action: 'rename' as const, label: 'Переименовать', icon: Pencil }, ...(archivable ? [{ action: 'archive' as const, label: 'В архив', icon: Archive }] : []), { action: 'delete' as const, label: 'Удалить', icon: Trash2 }];
+    : [{ action: 'rename' as const, label: 'Переименовать', icon: Pencil }, { action: 'fork' as const, label: 'Ответвить', icon: GitFork }, ...(archivable ? [{ action: 'archive' as const, label: 'В архив', icon: Archive }] : []), { action: 'delete' as const, label: 'Удалить', icon: Trash2 }];
   const close = (focus = false) => { setOpen(false); if (focus) trigger.current?.focus(); };
   const show = (last = false) => {
     if (!active || disabled) return;

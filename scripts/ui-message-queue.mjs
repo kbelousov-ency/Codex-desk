@@ -40,6 +40,7 @@ try {
           fixture.calls.push({ sessionId: id, method, params: structuredClone(params) });
           if (method === 'thread/list') return { data: [thread], nextCursor: null };
           if (method === 'thread/resume') return { thread: structuredClone(thread), model: 'fixture', reasoningEffort: 'high' };
+          if (method === 'message/status') return fixture.receipt || { accepted: false, rejected: false };
           if (method === 'turn/steer') {
             if (fixture.failSteer) throw new Error('expectedTurnId no longer active');
             state.emit('item/started', { turnId: params.expectedTurnId, item: { id: `echo-${params.clientUserMessageId}`, type: 'userMessage', clientId: params.clientUserMessageId, content: params.input } });
@@ -47,6 +48,18 @@ try {
             return { turnId: params.expectedTurnId };
           }
           if (method === 'turn/start') {
+            if (fixture.echoTimeout) {
+              state.turn = 'accepted-before-timeout';
+              state.emit('turn/started', { turn: { id: state.turn, status: 'inProgress', items: [] } });
+              state.emit('item/completed', { turnId: state.turn, item: { id: 'provider-echo', clientId: params.clientUserMessageId, type: 'userMessage', content: params.input } });
+              throw new Error('Transport timeout after write');
+            }
+            if (fixture.unrelatedTimeout) {
+              state.turn = 'uncertain-turn';
+              state.emit('turn/started', { turn: { id: state.turn, status: 'inProgress', items: [] } });
+              state.emit('item/completed', { turnId: state.turn, item: { id: 'other-message', clientId: 'other-client-id', type: 'userMessage', content: params.input } });
+              throw new Error('Transport timeout after write');
+            }
             if (fixture.failSend) throw new Error('Transport timeout after write');
             if (fixture.holdSend) await new Promise(resolve => { fixture.resolveSend = resolve; });
             state.turn = `sent-${fixture.calls.filter(call => call.method === 'turn/start').length}`;
@@ -117,8 +130,11 @@ try {
   await queue().getByText('Отправка не подтверждена. Проверьте историю перед повтором.', { exact: true }).waitFor();
   assert.equal(await queue().getByRole('button', { name: 'Продолжить очередь', exact: true }).isDisabled(), true);
   await settle(); assert.equal((await starts()).length, 4, 'Uncertain sends never retry automatically');
-  await page.evaluate(() => { window.__queue.failSend = false; });
-  await queue().getByRole('button', { name: 'Проверено: повторить', exact: true }).click();
+  await queue().getByRole('button', { name: 'Проверить отправку', exact: true }).click();
+  await queue().getByText(/Подтверждение не найдено/).waitFor();
+  assert.equal((await starts()).length, 4, 'Missing history ID never authorizes retry');
+  await page.evaluate(() => { window.__queue.failSend = false; window.__queue.receipt = { accepted: false, rejected: true }; });
+  await queue().getByRole('button', { name: 'Проверить отправку', exact: true }).click();
   await queue().getByRole('button', { name: 'Продолжить очередь', exact: true }).click();
   await page.waitForFunction(() => window.__queue.calls.filter(call => call.method === 'turn/start').length === 5);
 
@@ -160,7 +176,7 @@ try {
   await page.evaluate(() => { window.__queue.failFlush = true; }); await complete();
   await queue().getByText('Не удалось сохранить очередь. Сообщение не отправлено.', { exact: true }).waitFor();
   assert.equal((await starts()).length, 6);
-  assert.equal(await queue().getByRole('button', { name: 'Проверено: повторить', exact: true }).count(), 0);
+  assert.equal(await queue().getByRole('button', { name: 'Проверить отправку', exact: true }).count(), 0);
   await page.evaluate(() => { window.__queue.failFlush = false; });
   await queue().getByRole('button', { name: 'Удалить из очереди', exact: true }).click();
   await page.getByRole('button', { name: 'Повторить сохранение', exact: true }).click();
@@ -200,6 +216,27 @@ try {
   await page.screenshot({ path: 'artifacts/message-queue-940.png' });
   const bounds = await queue().evaluate(node => { const rect = node.getBoundingClientRect(); return { left: rect.left, right: rect.right, width: innerWidth }; });
   assert.ok(bounds.left >= 0 && bounds.right <= bounds.width + 1);
+  // Ordinary composer timeout: a matching exact echo is accepted; identical text with another ID is not.
+  await tab('b'); await page.evaluate(() => window.__queue.sessions.b.complete());
+  await composer().fill('Обычная отправка с задержкой ACK');
+  await page.evaluate(() => { window.__queue.echoTimeout = true; window.__queue.receipt = null; });
+  await view().getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+  await page.waitForFunction(() => window.__queue.calls.filter(call => call.method === 'turn/start').length === 7);
+  await settle(); assert.equal(await composer().inputValue(), '');
+  assert.equal(await view().locator('.pending-message').count(), 0);
+  await page.evaluate(() => window.__queue.sessions.b.complete());
+  await page.evaluate(() => { window.__queue.echoTimeout = false; window.__queue.unrelatedTimeout = true; });
+  await composer().fill('Одинаковый текст другого сообщения');
+  await view().getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
+  await view().locator('.pending-message').waitFor();
+  assert.equal(await composer().inputValue(), 'Одинаковый текст другого сообщения');
+  await view().locator('.pending-message').getByRole('button', { name: 'Проверить отправку', exact: true }).click();
+  await settle(); assert.equal((await starts()).length, 8); assert.equal(await view().locator('.pending-message').count(), 1);
+  const last = (await starts()).at(-1);
+  await page.evaluate(id => window.__queue.sessions.b.emit('message/receipt', { clientUserMessageId: id, accepted: true, rejected: false, turnId: 'uncertain-turn', status: 'inProgress' }), last.params.clientUserMessageId);
+  await view().locator('.pending-message').getByRole('button', { name: 'Проверить отправку', exact: true }).click();
+  await settle(); assert.equal(await composer().inputValue(), ''); assert.equal(await view().locator('.pending-message').count(), 0);
+  assert.equal((await starts()).length, 8, 'Late ACK reconciles without repeating the task');
   assert.deepEqual(errors, []);
   console.log('PASS: exact steer precondition/text/images and echo reconciliation; stale-turn image race and steer rejection preserve draft; ordered queue, edit/delete, preserved draft, durable uncertain checkpoint and write failure prevents request, no automatic retry, stop/failure/disconnect/approval guards, restart pause, per-tab isolation and narrow layout. Mock bridge only, no model calls.');
 } catch (error) {

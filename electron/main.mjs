@@ -18,6 +18,7 @@ import { ClaudeThreadManagement } from './claude-threads.mjs';
 import { HistorySearch } from './history-search.mjs';
 import { BookmarkStore } from './bookmarks.mjs';
 import { searchProjectFiles, readProjectFile } from './file-viewer.mjs';
+import { saveConversation } from './conversation-export.mjs';
 import { ThreadActionCoordinator, ThreadManagement } from './thread-management.mjs';
 import { McpConfigService } from './mcp-service.mjs';
 import { readAttachment, hydrateAttachmentPreviews } from './attachments.mjs';
@@ -439,6 +440,7 @@ function installHandlers() {
     return bookmarks.save({ ...value, cwd });
   });
   workspaceHandle('host:removeBookmark', (_record, _event, id) => bookmarks.remove(id));
+  workspaceHandle('host:exportConversation', (record, event, value) => saveConversation(value, options => dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), options)));
   workspaceHandle('host:listArchivedThreads', (record, event, cursor) => management(record, event).listArchivedThreads(cursor));
   workspaceHandle('host:searchThreads', (record, event, options) => management(record, event).searchThreads(options));
   workspaceHandle('host:readArchivedThread', async (record, event, options) => {
@@ -768,9 +770,9 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
   const record = { window: win, sessions: new Map(), defaultSessionId: null, historySession: null, closingProjects: new Set() };
   if (checkpoint) {
     record.restoration = { kind: restoreKind, activeIndex: checkpoint.activeIndex, tabs: checkpoint.tabs.map(tab => {
-      if (tab.archivedThread) return { id: `archive:${tab.archivedThread.id}`, cwd: tab.archivedThread.cwd || '', archivedThread: tab.archivedThread, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor };
+      if (tab.archivedThread) return { id: `archive:${tab.archivedThread.id}`, cwd: tab.archivedThread.cwd || '', archivedThread: tab.archivedThread, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor, pinned: tab.pinned };
       const created = addSession(record, tab.settings);
-      return { ...created, thread: tab.thread, draft: tab.draft, attachments: tab.attachments, settings: tab.settings, queue: tab.queue, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor, preservedDraft: tab.preservedDraft };
+      return { ...created, thread: tab.thread, draft: tab.draft, attachments: tab.attachments, settings: tab.settings, queue: tab.queue, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor, preservedDraft: tab.preservedDraft, pinned: tab.pinned, pendingMessage: tab.pendingMessage };
     }) };
   } else if (cwd) addSession(record, { ...settings, cwd });
   const contentsId = win.webContents.id;

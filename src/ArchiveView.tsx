@@ -12,6 +12,8 @@ import { errorText, folderName } from './useCodex';
 import './archive-view.css';
 import { readScrollAnchor, restoreScrollAnchor } from './scroll-anchor';
 import { useMessageJump, type MessageJump } from './useMessageJump';
+import ExportConversation from './ExportConversation';
+import { Download } from 'lucide-react';
 
 export default function ArchiveView({ thread, active, initialScrollTop, initialScrollAnchor, workspace, jump }: { thread: Thread; active: boolean; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; workspace: WorkspaceControls; jump?: MessageJump }) {
   const [items, setItems] = useState<Item[]>([]);
@@ -21,6 +23,7 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const [showSearch, setShowSearch] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const chatRef = useRef<HTMLDivElement>(null);
   const savedScroll = useRef(initialScrollTop || 0);
   const scrollAnchor = useRef(initialScrollAnchor);
@@ -82,7 +85,7 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
       <div className="sidebar-bottom"><div className="local-engine"><Archive size={12} /><span>Архив Codex</span></div></div>
     </aside>
     <main className="main-column">
-      <header className="topbar"><Archive size={16} /><div className="breadcrumbs"><span>{folderName(thread.cwd || '') || 'Архив'}</span><strong>{thread.name || thread.preview || 'Диалог'}</strong></div><button ref={searchButtonRef} type="button" className="icon-button" aria-label="Поиск в чате" title="Поиск в чате (Ctrl+F)" aria-expanded={showSearch} onClick={openSearch}><Search size={17} /></button><span className="archive-readonly-badge">Только чтение</span></header>
+      <header className="topbar"><Archive size={16} /><div className="breadcrumbs"><span>{folderName(thread.cwd || '') || 'Архив'}</span><strong>{thread.name || thread.preview || 'Диалог'}</strong></div><button ref={searchButtonRef} type="button" className="icon-button" aria-label="Поиск в чате" title="Поиск в чате (Ctrl+F)" aria-expanded={showSearch} onClick={openSearch}><Search size={17} /></button><button type="button" className="icon-button" aria-label="Экспорт беседы" title="Экспорт беседы" disabled={!items.length || loading} onClick={() => setShowExport(true)}><Download size={17} /></button><span className="archive-readonly-badge">Только чтение</span></header>
       <div ref={chatRef} className="chat-scroll" onScroll={event => {
         if (!active || !restoredScroll.current) return;
         savedScroll.current = event.currentTarget.scrollTop;
@@ -101,5 +104,6 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
       <div className="composer-area"><UpdateNotice /></div>
       <div className="archive-readonly-footer"><Archive size={16} /><span>Диалог в архиве. Восстановите его, чтобы продолжить переписку.</span><button className="secondary-button" disabled={workspace.actionBusy} onClick={() => workspace.threadAction?.('restore', thread.cwd || '', thread)}><RotateCcw size={14} />Восстановить</button></div>
     </main>
+    {showExport && active && <ExportConversation key={thread.id} items={items} turnWork={turnWork} title={thread.name || thread.preview || "Диалог"} provider="Codex" cwd={thread.cwd || ""} hasEarlier={Boolean(cursor)} loading={loading} onLoadEarlier={async () => { if (cursor) await load(cursor); }} onClose={() => setShowExport(false)} onSave={file => window.codex.exportConversation(file)} />}
   </div></BridgeContext.Provider>;
 }

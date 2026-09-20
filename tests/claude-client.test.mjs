@@ -535,3 +535,28 @@ test('agent/capabilities lists commands, agents and MCP status from documented c
   const degraded = await failing.client.request('agent/capabilities', {});
   assert.equal(degraded.mcpServers, null); assert.match(degraded.mcpError, /недоступно/); assert.equal(degraded.commands.length, 2);
 });
+
+
+test('ordinary Claude sends preserve the client UUID in the native frame and user echo', async t => {
+  const h = harness(); t.after(() => h.client.stop()); await h.client.start();
+  const { thread } = await h.client.request('thread/start');
+  const id = 'bbbbbbbb-1111-2222-3333-444444444444';
+  await h.client.request('turn/start', { threadId: thread.id, clientUserMessageId: id, input: [{ type: 'text', text: 'Exact delivery ID' }] });
+  assert.equal(h.frames.at(-1).uuid, id);
+  const echo = h.events.find(event => event.params.item?.type === 'userMessage').params.item;
+  assert.equal(echo.id, id); assert.equal(echo.clientId, id);
+});
+
+test('public task status updates survive main turn completion without exposing nested agent frames', async t => {
+  const h = await running(t);
+  h.child.send({ type: 'system', subtype: 'task_started', task_id: 'task-1', tool_use_id: 'agent-tool', description: 'Review files' });
+  h.child.send({ type: 'system', subtype: 'task_progress', task_id: 'task-1', summary: 'Reading files' });
+  h.child.send(result(h.turn.id));
+  h.child.send({ type: 'system', subtype: 'task_notification', task_id: 'task-1', status: 'failed', summary: 'Tool error', output_file: '/task-output' });
+  const task = h.events.filter(event => event.params.item?.type === 'subAgentTask').at(-1);
+  assert.equal(task.params.turnId, h.turn.id); assert.equal(task.params.item.status, 'failed');
+  assert.equal(task.params.item.description, 'Review files'); assert.equal(task.params.item.result, 'Tool error');
+  const itemCount = h.events.length;
+  h.child.send({ type: 'assistant', parent_tool_use_id: 'agent-tool', message: { content: [{ type: 'text', text: 'nested content' }] } });
+  assert.equal(h.events.length, itemCount);
+});

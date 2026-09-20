@@ -14,6 +14,7 @@ export type ComposerFiles = { images: Attachment[]; paths: string[]; message?: s
 export type QueuedMessage = { id: string; text: string; attachments: Attachment[]; state?: 'waiting' | 'uncertain' };
 export type MessageQueueState = { items: QueuedMessage[]; paused: boolean; reason?: string; threadId?: string; cwd?: string };
 export type PreservedDraft = { text: string; attachments: Attachment[] };
+export type PendingMessage = { threadId: string; clientUserMessageId: string; kind: 'start' | 'steer'; text: string; attachments: Attachment[] };
 export type ScrollAnchor = { itemId: string; offset: number };
 export type NotificationKind = 'completed' | 'question' | 'approval' | 'error';
 export type NotificationPreferences = { enabled: boolean; sound: boolean; completed: boolean; question: boolean; approval: boolean; error: boolean };
@@ -23,7 +24,7 @@ export type Item = { id: string; type: string; turnId?: string; complete?: boole
 // Internal timestamps are milliseconds; App Server turn timestamps are seconds.
 export type TurnWork = { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; answerStartedAt?: number };
 export type Thread = { id: string; name?: string; preview?: string; cwd?: string; updatedAt?: number; turns?: any[]; provider?: AgentProvider; [key: string]: any };
-export type ThreadAction = 'rename' | 'archive' | 'delete' | 'restore';
+export type ThreadAction = 'rename' | 'archive' | 'delete' | 'restore' | 'fork';
 export type ArchivedThreadPage = { thread: Thread; items: Item[]; turns: any[]; nextCursor: string | null };
 export type Request = { id: number | string; method: string; params: any };
 export type Model = { id: string; model: string; displayName: string; hidden?: boolean; isDefault?: boolean; defaultReasoningEffort: string; supportedReasoningEfforts: { reasoningEffort: string; description: string }[]; inputModalities?: string[] };
@@ -33,9 +34,9 @@ export type WorktreeInfo = { path: string; branch: string; created: boolean; roo
 export type WorktreeEntry = { path: string; branch: string | null; head: string | null; detached: boolean; bare: boolean; main: boolean; current: boolean; dirty: boolean | null; ahead: number | null; behind: number | null };
 export type WorktreeSummary = { root: string; mainBranch: string | null; mainPath: string | null; worktrees: WorktreeEntry[] };
 export type WorktreeMergePreview = { branch: string; target: string; mainPath: string; worktreePath: string; commits: { hash: string; subject: string }[]; stat: string; ahead: number | null; behind: number | null; mainDirty: boolean; worktreeDirty: boolean; blocked: string | null };
-export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
+export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; pinned?: boolean; pendingMessage?: PendingMessage };
 export type UpdateSnapshot = { version: 1; activeIndex: number; tabs: UpdateTabSnapshot[] };
-export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor };
+export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; pinned?: boolean; pendingMessage?: PendingMessage };
 export type UpdateStatus = { state: 'awaiting' | 'waiting' | 'manual' | 'preparing' | 'error'; message?: string };
 export type WorkspaceInfo = { projects: string[]; sessions: SessionInfo[]; restore?: { activeIndex: number; tabs: RestoredTab[]; kind?: 'workspace' | 'update' } };
 export type BuildInfo = { channel: 'stable' | 'nightly' | 'development'; version: string; buildId?: string; builtAt?: string };
@@ -107,6 +108,7 @@ export interface WorkspaceBridge extends CodexBridge {
   getBuildInfo(): Promise<BuildInfo>;
   getDiagnosticsStatus(): Promise<DiagnosticsStatus>;
   exportDiagnostics(): Promise<{ canceled: boolean; path?: string }>;
+  exportConversation(file: { filename: string; content: string; format: 'markdown' | 'html' }): Promise<{ canceled: boolean; path?: string }>;
   openDiagnosticsFolder(): Promise<void>;
   reportRendererError(report: RendererErrorReport): void;
   getWorkspace(): Promise<WorkspaceInfo>;
