@@ -1,6 +1,7 @@
 param(
   [string]$Installer = '',
   [switch]$Cleanup,
+  [switch]$Update,
   [string]$RunDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
@@ -46,14 +47,29 @@ function Read-InstallLocation {
   } finally { $hive.Dispose() }
 }
 
-function Assert-NoInstalledProduct {
+function Assert-NoInstalledProduct([string]$TestInstallPath = '') {
   foreach ($scope in @([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryHive]::LocalMachine)) {
     foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
       $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey($scope, $view)
       try {
         foreach ($name in @($installKey, $uninstallKey)) {
           $key = $hive.OpenSubKey($name)
-          if ($null -ne $key) { $key.Dispose(); throw 'A Codex Desk installation already exists. Test refused before mutation.' }
+          if ($null -ne $key) {
+            try {
+              if (-not $TestInstallPath -or $scope -ne [Microsoft.Win32.RegistryHive]::CurrentUser) {
+                throw 'A Codex Desk installation already exists. Test refused before mutation.'
+              }
+              if ($name -eq $installKey) {
+                $registeredPath = [string]$key.GetValue('InstallLocation')
+                if (-not $registeredPath -or [IO.Path]::GetFullPath($registeredPath).TrimEnd('\') -ne $TestInstallPath) {
+                  throw 'Registry belongs to another installation. Test refused.'
+                }
+              } else {
+                $expectedCommand = '"' + (Join-Path $TestInstallPath 'Uninstall Codex Desk.exe') + '" /currentuser'
+                if ([string]$key.GetValue('UninstallString') -ne $expectedCommand) { throw 'Unexpected test uninstall command.' }
+              }
+            } finally { $key.Dispose() }
+          }
         }
         $uninstall = $hive.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Uninstall')
         if ($null -ne $uninstall) {
@@ -63,7 +79,9 @@ function Assert-NoInstalledProduct {
               if ($null -eq $key) { continue }
               try {
                 if ([string]$key.GetValue('DisplayName') -match '^Codex Desk(?:\s|$)') {
-                  throw 'An existing Codex Desk product was found. Test refused before mutation.'
+                  if (-not $TestInstallPath -or $scope -ne [Microsoft.Win32.RegistryHive]::CurrentUser -or $name -ne $installerGuid) {
+                    throw 'An existing Codex Desk product was found. Test refused before mutation.'
+                  }
                 }
               } finally { $key.Dispose() }
             }
@@ -93,20 +111,49 @@ function Read-ShortcutTarget([string]$Path) {
   finally { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell) }
 }
 
-if ($Cleanup) {
-  if (-not $RunDirectory) { throw '-Cleanup requires -RunDirectory.' }
+function Save-InstalledSnapshot {
+  # Retain the original external backups across upgrades; refresh only test-owned hashes.
+  Assert-InstallTree $installPath
+  foreach ($snapshotPath in $snapshotPaths) { Assert-PlainPath $snapshotPath }
+  $state.installedHashes = @($snapshotPaths | ForEach-Object { if (Test-Path -LiteralPath $_ -PathType Leaf) { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash } else { '' } })
+  $uninstaller = Join-Path $installPath 'Uninstall Codex Desk.exe'
+  $capturedUninstaller = Join-Path $RunDirectory 'test-uninstaller.exe'
+  Assert-PlainPath $capturedUninstaller
+  if (Test-Path -LiteralPath $uninstaller -PathType Leaf) {
+    [IO.File]::Copy($uninstaller, $capturedUninstaller, $true)
+    $state.uninstallerHash = (Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256).Hash
+  }
+  $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
+}
+
+function Assert-InstalledApp {
+  $location = Read-InstallLocation
+  if (-not $location -or [IO.Path]::GetFullPath($location).TrimEnd('\') -ne $installPath) { throw 'Installer did not use the isolated test path.' }
+  Assert-NoInstalledProduct $installPath
+  $exe = Join-Path $installPath 'Codex Desk.exe'
+  if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Installed executable missing.' }
+  foreach ($shortcut in $snapshotPaths[0..1]) {
+    if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf) -or (Read-ShortcutTarget $shortcut) -ne $exe) { throw ('Incorrect installed shortcut: ' + $shortcut) }
+  }
+}
+
+if ($Cleanup -and $Update) { throw '-Cleanup and -Update cannot be combined.' }
+if ($Cleanup -or $Update) {
+  if (-not $RunDirectory) { throw '-Cleanup and -Update require -RunDirectory.' }
   $RunDirectory = Assert-RunDirectory $RunDirectory
   $statePath = Join-Path $RunDirectory 'snapshot.json'
+  Assert-PlainPath $statePath
   $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
   $installPath = Join-Path $RunDirectory 'install'
-  if ($state.installPath -ne $installPath -or $state.installerGuid -ne $installerGuid) { throw 'Unexpected test snapshot.' }
+  if ($state.installPath -ne $installPath -or $state.installerGuid -ne $installerGuid -or $state.files.Count -ne $snapshotPaths.Count) { throw 'Unexpected test snapshot.' }
   Assert-InstallTree $installPath
   $location = Read-InstallLocation
-  if ($location -and [IO.Path]::GetFullPath($location).TrimEnd('\') -ne $installPath) { throw 'Registry belongs to another installation. Cleanup refused.' }
+  if ($location -and [IO.Path]::GetFullPath($location).TrimEnd('\') -ne $installPath) { throw 'Registry belongs to another installation. Test refused.' }
+  Assert-NoInstalledProduct $installPath
   foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name = 'Codex Desk.exe'")) {
-    if (-not $process.ExecutablePath) { throw 'Cannot identify a running Codex Desk. Cleanup refused.' }
+    if (-not $process.ExecutablePath) { throw 'Cannot identify a running Codex Desk. Test refused.' }
     if ([IO.Path]::GetFullPath($process.ExecutablePath).StartsWith($installPath + '\', [StringComparison]::OrdinalIgnoreCase)) {
-      throw 'Close the test app before cleanup. No process will be terminated.'
+      throw 'Close the test app before update or cleanup. No process will be terminated.'
     }
   }
   for ($i = 0; $i -lt $snapshotPaths.Count; $i++) {
@@ -117,18 +164,25 @@ if ($Cleanup) {
       $currentHash = (Get-FileHash -LiteralPath $snapshot.path -Algorithm SHA256).Hash
       $expectedHash = if ($state.installedHashes.Count -gt $i) { $state.installedHashes[$i] } else { '' }
       if ($currentHash -ne $expectedHash -and $currentHash -ne $snapshot.hash) {
-        throw ('External file changed since the test; cleanup refused: ' + $snapshot.path)
+        throw ('External file changed since the test; update/cleanup refused: ' + $snapshot.path)
       }
     }
     if ($snapshot.existed) {
       $backup = Join-Path $RunDirectory $snapshot.backup
+      Assert-PlainPath $backup
       if ((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -ne $snapshot.hash) { throw 'Snapshot backup hash mismatch.' }
     }
   }
   $uninstaller = Join-Path $RunDirectory 'test-uninstaller.exe'
+  Assert-PlainPath $uninstaller
   if ($location) {
     if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) { throw 'Captured test uninstaller is missing.' }
     if ((Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256).Hash -ne $state.uninstallerHash) { throw 'Captured uninstaller hash mismatch.' }
+  }
+}
+
+if ($Cleanup) {
+  if ($location) {
     # _?= must be the final, unquoted NSIS argument, even when the path contains spaces.
     $process = Start-Process -FilePath $uninstaller -ArgumentList ('/S _?=' + $installPath) -WindowStyle Hidden -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw ('Uninstaller failed: ' + $process.ExitCode) }
@@ -157,10 +211,33 @@ if ($Cleanup) {
   exit 0
 }
 
-if ($RunDirectory) { throw '-RunDirectory is accepted only with -Cleanup.' }
+if ($RunDirectory -and -not $Update) { throw '-RunDirectory is accepted only with -Cleanup or -Update.' }
 if (-not $Installer) { $Installer = Join-Path $deskRoot 'release\installer\Codex Desk Setup 0.1.0.exe' }
 $Installer = [IO.Path]::GetFullPath($Installer)
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw 'Build the installer first.' }
+if ($Update) {
+  Assert-InstalledApp
+  $installedUninstaller = Join-Path $installPath 'Uninstall Codex Desk.exe'
+  if ((Get-FileHash -LiteralPath $installedUninstaller -Algorithm SHA256).Hash -ne $state.uninstallerHash) { throw 'Installed uninstaller changed since the test.' }
+  try {
+    try {
+      # Omit /D to exercise registry-based discovery of the existing installation.
+      $process = Start-Process -FilePath $Installer -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+    } finally {
+      # Partial upgrades may already have replaced shortcuts, cache or the uninstaller.
+      Save-InstalledSnapshot
+    }
+    if ($process.ExitCode -ne 0) { throw ('Installer update failed: ' + $process.ExitCode) }
+    Assert-InstalledApp
+    $result = @{ status = 'updated'; runDirectory = $RunDirectory; installPath = $installPath; executable = (Join-Path $installPath 'Codex Desk.exe'); exitCode = $process.ExitCode }
+    $result | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunDirectory 'update-result.json') -Encoding UTF8
+    $result | ConvertTo-Json
+  } catch {
+    Write-Warning ('Test snapshot retained for cleanup: ' + $RunDirectory)
+    throw
+  }
+  exit 0
+}
 Assert-NoInstalledProduct
 foreach ($snapshotPath in $snapshotPaths) { Assert-PlainPath $snapshotPath }
 $RunDirectory = Assert-RunDirectory (Join-Path $artifactRoot ('installer-test-' + [Guid]::NewGuid().ToString('N')))
@@ -182,20 +259,14 @@ $statePath = Join-Path $RunDirectory 'snapshot.json'
 $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
 try {
   # /S suppresses automatic application launch. /D must be last, without quotes.
-  $process = Start-Process -FilePath $Installer -ArgumentList ('/S /D=' + $installPath) -WindowStyle Hidden -Wait -PassThru
-  $location = Read-InstallLocation
-  if (-not $location -or [IO.Path]::GetFullPath($location).TrimEnd('\') -ne $installPath) { throw 'Installer did not use the isolated test path.' }
-  $uninstaller = Join-Path $installPath 'Uninstall Codex Desk.exe'
-  [IO.File]::Copy($uninstaller, (Join-Path $RunDirectory 'test-uninstaller.exe'))
-  $state.uninstallerHash = (Get-FileHash -LiteralPath $uninstaller -Algorithm SHA256).Hash
-  $state.installedHashes = @($snapshotPaths | ForEach-Object { if (Test-Path -LiteralPath $_ -PathType Leaf) { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash } else { '' } })
-  $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $statePath -Encoding UTF8
-  if ($process.ExitCode -ne 0) { throw ('Installer failed: ' + $process.ExitCode) }
-  $exe = Join-Path $installPath 'Codex Desk.exe'
-  if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw 'Installed executable missing.' }
-  foreach ($shortcut in $snapshotPaths[0..1]) {
-    if (-not (Test-Path -LiteralPath $shortcut -PathType Leaf) -or (Read-ShortcutTarget $shortcut) -ne $exe) { throw ('Incorrect installed shortcut: ' + $shortcut) }
+  try {
+    $process = Start-Process -FilePath $Installer -ArgumentList ('/S /D=' + $installPath) -WindowStyle Hidden -Wait -PassThru
+  } finally {
+    Save-InstalledSnapshot
   }
+  if ($process.ExitCode -ne 0) { throw ('Installer failed: ' + $process.ExitCode) }
+  Assert-InstalledApp
+  $exe = Join-Path $installPath 'Codex Desk.exe'
   $result = @{ status = 'installed'; runDirectory = $RunDirectory; installPath = $installPath; executable = $exe; exitCode = $process.ExitCode }
   $result | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunDirectory 'install-result.json') -Encoding UTF8
   $result | ConvertTo-Json
