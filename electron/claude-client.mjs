@@ -71,13 +71,18 @@ function permissionMode(params, fallback) {
  * No SDK prompt replacement, credential reads, global config writes or model calls at startup.
  */
 export class ClaudeClient extends EventEmitter {
-  constructor({ executable = 'claude', cwd, settings = {}, history, attachmentsDirectory, spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics, diagnosticContext = {} } = {}) {
+  constructor({ executable = 'claude', cwd, settings = {}, history, attachmentsDirectory, spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics, diagnosticContext = {}, env } = {}) {
     super();
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) throw new TypeError('requestTimeoutMs must be positive.');
+    if (env !== undefined && (!env || typeof env !== 'object' || Array.isArray(env))) throw new TypeError('env must be an object.');
+    // Extra variables (a host-managed CLAUDE_CODE_OAUTH_TOKEN) are merged over the inherited environment only when given.
+    this.env = env;
     this.executable = executable; this.cwd = cwd; this.settings = { ...settings };
     this.history = history; this.attachmentsDirectory = attachmentsDirectory;
     this._spawn = spawnImpl; this._timeout = requestTimeoutMs; this._diagnostics = diagnostics; this._diagnosticContext = diagnosticContext;
     this._session = null; this._startPromise = null; this._active = null; this._thread = null; this._relaunch = null;
+    // A stopped transport may still own a live native process until exit/close.
+    this._processes = new Set();
     this._mutation = false; this._generation = 0; this.state = 'stopped'; this.capabilities = CLAUDE_CAPABILITIES;
   }
 
@@ -106,8 +111,11 @@ export class ClaudeClient extends EventEmitter {
       mode, bypassEnabled: mode === 'bypassPermissions', resumed: resume, sent: false, blocks: new Map(), messageId: null };
     this._session = session; this._status('starting');
     try {
-      const child = this._spawn(this.executable, args, { cwd: this.cwd, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = this._spawn(this.executable, args, { cwd: this.cwd, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'], ...(this.env ? { env: { ...process.env, ...this.env } } : {}) });
       session.child = child;
+      this._processes.add(child);
+      const release = () => { this._processes.delete(child); child.off('exit', release); child.off('close', release); };
+      child.once('exit', release); child.once('close', release);
       child.on('error', error => this._end(session, new Error(safeText(error.message)), 'error'));
       child.on('exit', (code, signal) => this._end(session, new Error(`Claude CLI завершился (${signal || code || 0}).`), 'stopped'));
       child.stdin.on('error', () => this._end(session, new Error('Ошибка отправки в Claude CLI.'), 'error'));
@@ -720,5 +728,29 @@ export class ClaudeClient extends EventEmitter {
     this._startPromise = null;
     if (this._session && !this._session.ended) this._end(this._session, new Error('Claude остановлен.'), 'stopped');
     else if (this.state !== 'stopped') this._status('stopped');
+  }
+  /** Stop transport and wait for native processes to release shared CLI state before login. */
+  async stopAndWait(timeoutMs = 5_000) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError('timeoutMs must be positive.');
+    const children = [...this._processes].filter(child => child.exitCode == null && child.signalCode == null);
+    if (!children.length) { this.stop(); return; }
+    await new Promise((resolve, reject) => {
+      const waiting = new Map();
+      const cleanup = () => {
+        clearTimeout(timer);
+        for (const [child, done] of waiting) { child.off('exit', done); child.off('close', done); }
+        waiting.clear();
+      };
+      const timer = setTimeout(() => { cleanup(); reject(new Error('Claude CLI ещё завершает процесс. Повторите вход после его завершения.')); }, timeoutMs);
+      for (const child of children) {
+        const done = () => {
+          child.off('exit', done); child.off('close', done); waiting.delete(child);
+          if (!waiting.size) { cleanup(); resolve(); }
+        };
+        waiting.set(child, done); child.once('exit', done); child.once('close', done);
+      }
+      // Register before stop(): test doubles and already-exiting children can emit synchronously.
+      try { this.stop(); } catch (error) { cleanup(); reject(error); }
+    });
   }
 }

@@ -146,8 +146,12 @@ export class WindowSession {
   constructor({ settings = {}, persistSettings = async () => {}, send = () => {}, onCwd = () => {},
     createClient = options => new CodexClient(options), resolveDirectory = directoryPath,
     resolveExecutable = findCodex, fallbackCwd = process.cwd(), launchTerminal = launchSessionTerminal, threadActions = null,
-    diagnostics = null, diagnosticContext = {}, createClaudeClient = options => new ClaudeClient(options), resolveClaudeExecutable = findClaude, attachmentsDirectory, claudeHistory } = {}) {
+    diagnostics = null, diagnosticContext = {}, createClaudeClient = options => new ClaudeClient(options), resolveClaudeExecutable = findClaude, attachmentsDirectory, claudeHistory, claudeAuth = null,
+    claudeEnvironment = async () => ({}), claudeGate = null } = {}) {
     this.settings = cleanSettings(settings);
+    // Host-managed variables for Claude CLI processes (long-lived OAuth token) and the shared start gate.
+    this.claudeEnvironment = claudeEnvironment;
+    this.claudeGate = claudeGate;
     this.persistSettings = persistSettings;
     this.send = send;
     this.onCwd = onCwd;
@@ -156,6 +160,7 @@ export class WindowSession {
     this.resolveClaudeExecutable = resolveClaudeExecutable;
     this.attachmentsDirectory = attachmentsDirectory;
     this.claudeHistory = claudeHistory;
+    this.claudeAuth = claudeAuth;
     this.resolveDirectory = resolveDirectory;
     this.resolveExecutable = resolveExecutable;
     this.fallbackCwd = fallbackCwd;
@@ -188,6 +193,7 @@ export class WindowSession {
   }
 
   assertLocalControl() {
+    this.claudeAuth?.assertLocalControl(this);
     if (this.terminal) throw new Error('Диалог открыт в терминале. Закройте терминал, чтобы продолжить здесь.');
     if (this.mcpRefreshing) throw new Error('Дождитесь обновления MCP-серверов.');
   }
@@ -227,6 +233,12 @@ export class WindowSession {
     const nextExecutable = await (provider === 'claude' ? this.resolveClaudeExecutable : this.resolveExecutable)(this.settings.executable);
     this.assertActive(generation);
     if (this.bootstrap && this.client && this.currentCwd === cwd && this.executable === nextExecutable) return this.bootstrap;
+    let claudeEnv = {};
+    if (provider === 'claude') {
+      claudeEnv = await this.claudeEnvironment();
+      this.assertActive(generation);
+      if (!claudeEnv || typeof claudeEnv !== 'object') claudeEnv = {};
+    }
     const previous = this.client;
     this.mcpConfigService?.dispose(); this.mcpConfigService = null;
     this.client = null;
@@ -240,7 +252,7 @@ export class WindowSession {
     this.settings = { ...this.settings, cwd };
     this.executable = nextExecutable;
     this.onCwd(cwd);
-    const owned = (provider === 'claude' ? this.createClaudeClient : this.createClient)({ executable: nextExecutable, cwd, ...(provider === 'claude' ? { settings: this.settings, attachmentsDirectory: this.attachmentsDirectory, history: this.claudeHistory } : {}), ...(this.diagnostics ? {
+    const owned = (provider === 'claude' ? this.createClaudeClient : this.createClient)({ executable: nextExecutable, cwd, ...(provider === 'claude' ? { settings: this.settings, attachmentsDirectory: this.attachmentsDirectory, history: this.claudeHistory, ...(Object.keys(claudeEnv).length ? { env: claudeEnv } : {}) } : {}), ...(this.diagnostics ? {
       diagnostics: this.diagnostics, diagnosticContext: { ...this.diagnosticContext, projectId: this.diagnostics.id(cwd) },
     } : {}) });
     this.client = owned;
@@ -292,7 +304,8 @@ export class WindowSession {
       });
     }
     try {
-      const initialize = await owned.start();
+      // Claude processes sharing one credentials file start one at a time, so an expired OAuth token is refreshed once.
+      const initialize = provider === 'claude' && this.claudeGate ? await this.claudeGate.run(() => owned.start()) : await owned.start();
       checkCurrent();
       const models = [];
       let cursor;
@@ -359,7 +372,9 @@ export class WindowSession {
       if (method === 'thread/compact/start') { this.compactingThreads.add(params.threadId); this.compactingTurnIds.set(params.threadId, null); }
     }
     let result;
-    try { result = await owned.request(method, params); }
+    // The first usage read after a long idle is what triggers the CLI's token refresh; serialize it across Claude tabs.
+    const gated = method === 'usage/read' && this.settings.provider === 'claude' && this.claudeGate;
+    try { result = gated ? await this.claudeGate.run(() => owned.request(method, params)) : await owned.request(method, params); }
     catch (error) {
       if (method === 'thread/compact/start') { this.compactingThreads.delete(params.threadId); this.compactingTurnIds.delete(params.threadId); }
       if (['turn/start', 'turn/steer'].includes(method) && params.clientUserMessageId && typeof error.code === 'number' && !uncertainDelivery(error)) this.rememberMessage(params.threadId, params.clientUserMessageId, { accepted: false, rejected: true });
@@ -469,10 +484,18 @@ export class WindowSession {
       if (thread?.id !== threadId) throw new Error('Codex вернул другой диалог.');
       if (thread.cwd && path.resolve(thread.cwd).toLowerCase() !== path.resolve(cwd).toLowerCase()) throw new Error('Диалог находится в другой рабочей папке.');
       if (thread.status?.type === 'active' || thread.turns?.some(turn => turn.status === 'inProgress') || this.activeThreadTurns.has(threadId) || this.requests.size || this.pendingMutations) throw new Error('Дождитесь завершения работы и подтверждений Codex.');
+      let terminalEnv;
+      if (provider === 'claude') {
+        // The interactive resume must authenticate the same way as the tab, otherwise it competes for the shared refresh token.
+        const extra = await this.claudeEnvironment();
+        this.assertActive(generation);
+        if (this.terminal !== terminal || this.client !== owned) throw new Error('Подключение Codex изменилось.');
+        if (extra && typeof extra === 'object' && Object.keys(extra).length) terminalEnv = { ...process.env, ...extra };
+      }
       terminal.paused = true;
       this.stop();
       const terminalGeneration = this.generation;
-      const child = this.launchTerminal({ executable, cwd, threadId, model, effort, access, ...(provider === 'claude' ? { provider } : {}) });
+      const child = this.launchTerminal({ executable, cwd, threadId, model, effort, access, ...(provider === 'claude' ? { provider } : {}), ...(terminalEnv ? { env: terminalEnv } : {}) });
       terminal.child = child;
       return await new Promise((resolve, reject) => {
         let settled = false;

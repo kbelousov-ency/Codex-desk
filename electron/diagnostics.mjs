@@ -20,6 +20,7 @@ const EVENTS = new Set([
   'transport.start', 'transport.ready', 'transport.end', 'transport.exit', 'transport.diagnostic',
   'rpc.start', 'rpc.complete', 'rpc.failed', 'rpc.respond', 'rpc.serverRequest', 'rpc.notification',
   'codex.notification', 'codex.serverRequest', 'codex.version', 'claude.version',
+  'claude.token.saved', 'claude.token.cleared',
   'terminal.opened', 'terminal.closed', 'terminal.failed', 'unknown',
 ]);
 const CHANNELS = new Set([
@@ -38,7 +39,10 @@ const CHANNELS = new Set([
   'host:previewGitRollback', 'host:applyGitRollback', 'host:listGitRollbacks', 'host:previewUndoGitRollback', 'host:undoGitRollback',
   'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:reportRendererError',
   'host:openDiagnosticsFolder', 'host:rendererError', 'host:getBuildInfo', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate',
+  'host:getClaudeAuthStatus', 'host:loginClaude', 'host:getClaudeToken', 'host:setClaudeToken', 'host:clearClaudeToken', 'host:setupClaudeToken',
   'codex:start', 'codex:request', 'codex:respond', 'unknown',
+  'setup:state', 'setup:scan', 'setup:install', 'setup:chooseExecutable', 'setup:previewConfig', 'setup:applyConfig',
+  'setup:authStatus', 'setup:login', 'setup:openPortal', 'setup:openGitWebsite', 'setup:complete',
 ]);
 const METHODS = new Set([
   'initialize', 'initialized', 'thread/start', 'thread/resume', 'thread/read', 'thread/list',

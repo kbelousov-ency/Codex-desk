@@ -13,28 +13,51 @@ export async function directoryPath(value) {
   return resolved;
 }
 
-export async function findCodex(preferred) {
+export function codexNativeCandidates({ env = process.env, home = env.USERPROFILE || os.homedir(), platform = process.platform } = {}) {
+  const binary = platform === 'win32' ? 'codex.exe' : 'codex';
+  const candidates = [path.join(home, '.local', 'bin', binary)];
+  if (platform === 'win32') {
+    if (env.CODEX_INSTALL_DIR && path.isAbsolute(env.CODEX_INSTALL_DIR)) candidates.unshift(path.join(env.CODEX_INSTALL_DIR, binary));
+    if (env.LOCALAPPDATA) candidates.push(path.join(env.LOCALAPPDATA, 'Programs', 'OpenAI', 'Codex', 'bin', binary));
+    const codexHome = env.CODEX_HOME && path.isAbsolute(env.CODEX_HOME) ? env.CODEX_HOME : path.join(home, '.codex');
+    candidates.push(path.join(codexHome, 'packages', 'standalone', 'current', 'bin', binary), path.join(codexHome, 'packages', 'standalone', 'current', binary));
+  }
+  return candidates;
+}
+
+function npmCodexCandidates(root, arch) {
+  const triple = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
+  return [path.join(root, 'node_modules', '@openai', `codex-win32-${arch === 'arm64' ? 'arm64' : 'x64'}`, 'vendor', triple, 'codex', 'codex.exe'),
+    path.join(root, 'vendor', triple, 'codex', 'codex.exe')];
+}
+
+export async function findCodex(preferred, options = {}) {
+  const { env = process.env, home = env.USERPROFILE || os.homedir(), platform = process.platform, arch = process.arch, run = execFileAsync } = options;
   if (preferred) {
     if (!path.isAbsolute(preferred)) throw new Error('Укажите полный путь к Codex.');
-    await access(preferred);
-    if (process.platform === 'win32' && path.extname(preferred).toLowerCase() !== '.exe') throw new Error('Выберите исполняемый файл codex.exe.');
+    if (platform === 'win32' && path.extname(preferred).toLowerCase() !== '.exe') throw new Error('Выберите исполняемый файл codex.exe.');
+    if (!(await stat(preferred)).isFile()) throw new Error('Выберите исполняемый файл codex.exe.');
     return preferred;
   }
+  const candidates = [];
   try {
-    const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', ['codex'], { windowsHide: true, timeout: 5000 });
+    const { stdout } = await run(platform === 'win32' ? 'where.exe' : 'which', ['codex'], { env, shell: false, windowsHide: true, timeout: 5000 });
     for (const candidate of stdout.trim().split(/\r?\n/)) {
-      if (process.platform !== 'win32' || candidate.toLowerCase().endsWith('.exe')) return candidate;
+      if (!candidate) continue;
+      if (platform !== 'win32' || candidate.toLowerCase().endsWith('.exe')) candidates.push(candidate);
+      else if (/\.cmd$/i.test(candidate)) candidates.push(...npmCodexCandidates(path.join(path.dirname(candidate), 'node_modules', '@openai', 'codex'), arch));
     }
-    // npm installs a .cmd shim on Windows; launch its native binary directly.
-    const nativeRoot = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@openai', 'codex', 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'codex', 'codex.exe');
-    await access(nativeRoot);
-    return nativeRoot;
-  } catch { /* Fall through to an installed VS Code Codex binary. */ }
-  for (const extensionRoot of [path.join(os.homedir(), '.vscode', 'extensions'), path.join(os.homedir(), '.vscode-insiders', 'extensions')]) {
+  } catch { /* PATH may be stale immediately after native installation. */ }
+  candidates.push(...codexNativeCandidates({ env, home, platform, arch }));
+  if (platform === 'win32' && env.APPDATA) candidates.push(...npmCodexCandidates(path.join(env.APPDATA, 'npm', 'node_modules', '@openai', 'codex'), arch));
+  for (const candidate of [...new Set(candidates)]) {
+    try { if ((await stat(candidate)).isFile()) return candidate; } catch { /* Try the next installation. */ }
+  }
+  for (const extensionRoot of [path.join(home, '.vscode', 'extensions'), path.join(home, '.vscode-insiders', 'extensions')]) {
     try {
       const versions = (await readdir(extensionRoot)).filter(name => name.startsWith('openai.chatgpt-')).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
       for (const version of versions) {
-        const binary = path.join(extensionRoot, version, 'bin', process.platform === 'win32' ? `windows-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}` : `${process.platform === 'darwin' ? 'macos' : 'linux'}-${process.arch === 'arm64' ? 'aarch64' : 'x86_64'}`, process.platform === 'win32' ? 'codex.exe' : 'codex');
+        const binary = path.join(extensionRoot, version, 'bin', platform === 'win32' ? `windows-${arch === 'arm64' ? 'aarch64' : 'x86_64'}` : `${platform === 'darwin' ? 'macos' : 'linux'}-${arch === 'arm64' ? 'aarch64' : 'x86_64'}`, platform === 'win32' ? 'codex.exe' : 'codex');
         try { await access(binary); return binary; } catch { /* Try next version. */ }
       }
     } catch { /* This editor is not installed. */ }
@@ -42,18 +65,27 @@ export async function findCodex(preferred) {
   throw new Error('Codex не найден. Установите Codex CLI или выберите codex.exe в настройках подключения.');
 }
 
-export async function findClaude(preferred) {
+function npmClaudeCandidates(root, arch) {
+  return [path.join(root, 'bin', 'claude.exe'), path.join(root, 'node_modules', '@anthropic-ai', `claude-code-win32-${arch === 'arm64' ? 'arm64' : 'x64'}`, 'claude.exe')];
+}
+
+export async function findClaude(preferred, { env = process.env, home = env.USERPROFILE || os.homedir(), platform = process.platform, arch = process.arch, run = execFileAsync } = {}) {
   if (preferred) {
-    if (!path.isAbsolute(preferred) || (process.platform === 'win32' && path.extname(preferred).toLowerCase() !== '.exe')) throw new Error('Выберите установленный claude.exe.');
-    await access(preferred); return preferred;
+    if (!path.isAbsolute(preferred) || (platform === 'win32' && path.extname(preferred).toLowerCase() !== '.exe')) throw new Error('Выберите установленный claude.exe.');
+    if (!(await stat(preferred)).isFile()) throw new Error('Выберите установленный claude.exe.');
+    return preferred;
   }
-  const candidates = [path.join(os.homedir(), '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude')];
+  const candidates = [path.join(home, '.local', 'bin', platform === 'win32' ? 'claude.exe' : 'claude')];
   try {
-    const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', ['claude'], { windowsHide: true, timeout: 5000 });
-    candidates.push(...stdout.trim().split(/\r?\n/).filter(Boolean));
+    const { stdout } = await run(platform === 'win32' ? 'where.exe' : 'which', ['claude'], { env, shell: false, windowsHide: true, timeout: 5000 });
+    for (const candidate of stdout.trim().split(/\r?\n/).filter(Boolean)) {
+      candidates.push(candidate);
+      if (platform === 'win32' && /\.cmd$/i.test(candidate)) candidates.push(...npmClaudeCandidates(path.join(path.dirname(candidate), 'node_modules', '@anthropic-ai', 'claude-code'), arch));
+    }
   } catch { /* Native home installation remains available without PATH. */ }
+  if (platform === 'win32' && env.APPDATA) candidates.push(...npmClaudeCandidates(path.join(env.APPDATA, 'npm', 'node_modules', '@anthropic-ai', 'claude-code'), arch));
   for (const candidate of candidates) {
-    if (process.platform === 'win32' && !candidate.toLowerCase().endsWith('.exe')) continue;
+    if (platform === 'win32' && !candidate.toLowerCase().endsWith('.exe')) continue;
     try { if ((await stat(candidate)).isFile()) return candidate; } catch { /* Try another known executable. */ }
   }
   throw new Error('Claude Code не найден. Установите Claude Code CLI и войдите в него, либо выберите claude.exe в настройках подключения.');

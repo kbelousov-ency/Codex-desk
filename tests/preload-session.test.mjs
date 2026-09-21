@@ -21,6 +21,26 @@ async function fixture() {
   return { bridge, ipc, calls, sends };
 }
 
+test('setup bridge exposes fixed workspace operations and removable progress subscription', async () => {
+  const { bridge, calls, ipc } = await fixture();
+  await bridge.setup.state();
+  await bridge.setup.scan();
+  await bridge.setup.install('claude');
+  await bridge.setup.previewConfig();
+  await bridge.setup.applyConfig({ previewId: 'opaque-id', replaceExisting: true });
+  await bridge.setup.authStatus('claude');
+  await bridge.setup.login('codex');
+  await bridge.setup.complete({ provider: 'claude' });
+  assert.deepEqual(calls.map(call => call[0]), ['setup:state', 'setup:scan', 'setup:install', 'setup:previewConfig', 'setup:applyConfig', 'setup:authStatus', 'setup:login', 'setup:complete']);
+  assert.equal(bridge.forSession('a').setup, undefined);
+  const events = [];
+  const remove = bridge.setup.onProgress(progress => events.push(progress));
+  ipc.emit('setup:progress', {}, { component: 'claude', stage: 'installing' });
+  remove();
+  ipc.emit('setup:progress', {}, { component: 'codex', stage: 'done' });
+  assert.equal(events.length, 1);
+});
+
 test('preload scopes RPC and colliding approval IDs to the selected session', async () => {
   const { bridge, calls } = await fixture();
   const a = bridge.forSession('a');
@@ -43,6 +63,12 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
   await a.reloadMcp();
   await b.checkMcp();
   await a.openTerminal({ threadId: 'thread-a', model: 'configured-model', effort: 'high', access: 'auto' });
+  await a.getClaudeAuthStatus();
+  await b.loginClaude();
+  await a.getClaudeToken();
+  await b.setClaudeToken('token-value');
+  await a.clearClaudeToken();
+  await b.setupClaudeToken();
   assert.deepEqual(calls, [
     ['codex:start', { cwd: 'project-a' }, 'a'],
     ['codex:request', 'turn/interrupt', { turnId: 'turn-b' }, 'b'],
@@ -62,6 +88,12 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
     ['host:reloadMcp', 'a'],
     ['host:checkMcp', 'b'],
     ['host:openTerminal', { threadId: 'thread-a', model: 'configured-model', effort: 'high', access: 'auto' }, 'a'],
+    ['host:getClaudeAuthStatus', 'a'],
+    ['host:loginClaude', 'b'],
+    ['host:getClaudeToken', 'a'],
+    ['host:setClaudeToken', 'token-value', 'b'],
+    ['host:clearClaudeToken', 'a'],
+    ['host:setupClaudeToken', 'b'],
   ]);
   assert.throws(() => bridge.forSession(null), /Некорректная/);
 });

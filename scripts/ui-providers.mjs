@@ -27,7 +27,14 @@ try {
     const cwd = 'C:/Fixtures/AGENTS';
     const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
     const sessions = {}, calls = [];
-    const fixture = window.__providers = { sessions, calls, image, create: [], failNext: false };
+    const fixture = window.__providers = { sessions, calls, image, create: [], failNext: false, auth: { loggedIn: false, loginInProgress: false }, token: { configured: false, encryptionAvailable: true }, authStatusError: '', authLoginError: '' };
+    fixture.finishAuth = (result = {}) => {
+      Object.assign(fixture.auth, { loginInProgress: false, ...result });
+      for (const state of Object.values(sessions)) if (state.provider === 'claude') {
+        if (fixture.auth.loggedIn) state.fail = false;
+        for (const listener of state.listeners) listener({ type: 'auth', data: { state: 'closed', loggedIn: fixture.auth.loggedIn } });
+      }
+    };
     const make = (id, provider) => {
       const claude = provider === 'claude';
       const settings = { cwd, provider, model: claude ? 'fixture-sonnet' : 'fixture-astra', effort: claude ? 'high' : 'ultra', access: 'workspace-write' };
@@ -36,9 +43,26 @@ try {
       const emit = state.emit = (method, params) => { for (const listener of state.listeners) listener({ type: 'notification', data: { method, params } }); };
       state.complete = () => { const turnId = state.activeTurn; emit('item/completed', { threadId: thread().id, turnId, item: { id: `answer-${turnId}`, type: 'agentMessage', text: 'Ответ Claude' } }); emit('turn/completed', { threadId: thread().id, turn: { id: turnId, status: 'completed', items: [], error: null } }); state.activeTurn = null; };
       state.bridge = {
-        async start() { if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: true, steer: true, terminal: true, mcp: !claude, archive: !claude, usage: claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
+        async start() { calls.push({ id, provider, method: 'start', authBusy: claude && fixture.auth.loginInProgress }); if (claude && fixture.auth.loginInProgress) { for (const listener of state.listeners) listener({ type: 'auth', data: { state: 'opened' } }); throw new Error('Дождитесь завершения входа в Claude'); } if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: true, steer: true, terminal: true, mcp: !claude, archive: !claude, usage: claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
         async getSettings() { return { ...settings }; },
         async setSettings(patch) { calls.push({ id, method: 'setSettings', patch: { ...patch } }); Object.assign(settings, patch); },
+        async getClaudeAuthStatus() {
+          calls.push({ id, provider, method: 'getClaudeAuthStatus' });
+          if (fixture.authStatusError) throw new Error(fixture.authStatusError);
+          return { ...fixture.auth };
+        },
+        async loginClaude() {
+          calls.push({ id, provider, method: 'loginClaude' });
+          if (fixture.authLoginError) throw new Error(fixture.authLoginError);
+          if (fixture.auth.loginInProgress) throw new Error('Вход уже запущен');
+          fixture.auth.loginInProgress = true;
+          for (const session of Object.values(sessions)) if (session.provider === 'claude') for (const listener of session.listeners) listener({ type: 'auth', data: { state: 'opened' } });
+          return { started: true };
+        },
+        async getClaudeToken() { calls.push({ id, provider, method: 'getClaudeToken' }); return { ...fixture.token }; },
+        async setClaudeToken() { calls.push({ id, provider, method: 'setClaudeToken' }); fixture.token = { configured: true, encryptionAvailable: true, savedAt: new Date().toISOString() }; return { ...fixture.token }; },
+        async clearClaudeToken() { calls.push({ id, provider, method: 'clearClaudeToken' }); fixture.token = { configured: false, encryptionAvailable: true }; return { ...fixture.token }; },
+        async setupClaudeToken() { calls.push({ id, provider, method: 'setupClaudeToken' }); return { started: true }; },
         async request(method, params = {}) {
           calls.push({ id, provider, method, params: structuredClone(params) });
           if (method === 'thread/list') return { data: [], nextCursor: null };
@@ -155,6 +179,40 @@ try {
   assert.match(await effective.locator('[data-effective="mcp"] [data-mcp-status="failed"]').innerText(), /atlassian ошибка\s*timeout/);
   assert.equal((await calls('agent/capabilities')).every(call => call.provider === 'claude'), true, 'details are read only for the Claude tab');
   assert.equal((await calls('getMcpConfig')).length, 0, 'Claude settings never access the Codex MCP editor');
+  const authPanel = () => view().getByRole('region', { name: 'Авторизация Claude Code', exact: true });
+  const authLogin = () => authPanel().getByRole('button', { name: 'Войти через браузер', exact: true });
+  const authCheck = () => authPanel().getByRole('button', { name: 'Проверить вход', exact: true });
+  await authPanel().getByText('Вход не выполнен', { exact: true }).waitFor();
+  assert.equal(await authPanel().getByRole('alert').count(), 0, 'An unauthenticated CLI is a normal status, not a read failure');
+  await page.evaluate(() => { window.__providers.authStatusError = 'Не удалось проверить CLI'; });
+  await authCheck().click();
+  await authPanel().getByRole('alert').filter({ hasText: 'Не удалось проверить CLI' }).waitFor();
+  await authPanel().getByText('Статус входа неизвестен', { exact: true }).waitFor();
+  await page.evaluate(() => { window.__providers.authStatusError = ''; window.__providers.authLoginError = 'Не удалось открыть окно входа'; });
+  await authCheck().click();
+  await authPanel().getByText('Вход не выполнен', { exact: true }).waitFor();
+  await authLogin().click();
+  await authPanel().getByRole('alert').filter({ hasText: 'Не удалось открыть окно входа' }).waitFor();
+  assert.equal(await authLogin().isEnabled(), true, 'A failed launch can be retried');
+  await page.evaluate(() => { window.__providers.authLoginError = ''; });
+  await authLogin().click();
+  await authPanel().getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
+  assert.equal(await authLogin().isDisabled(), true, 'Authentication cannot be launched twice');
+  assert.equal(await authCheck().isEnabled(), true, 'The native status remains available while the login window is open');
+  assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).isDisabled(), true, 'Login locks operations in the Claude tab');
+  await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await authPanel().getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
+  await page.evaluate(() => window.__providers.finishAuth());
+  await authPanel().getByText('Вход не выполнен', { exact: true }).waitFor();
+  assert.equal(await authPanel().getByText('Вход выполнен', { exact: true }).count(), 0, 'Closing the auth window does not claim successful login');
+  await authLogin().click();
+  await page.evaluate(() => window.__providers.finishAuth({ loggedIn: true, email: 'claude-fixture@example.test', authMethod: 'claude.ai', subscriptionType: 'max' }));
+  await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
+  await authPanel().getByText('claude-fixture@example.test', { exact: true }).waitFor();
+  await ready();
+  assert.equal((await calls('turn/start')).length, 0, 'Checking status and browser login never send model requests');
+  assert.equal((await calls('getClaudeAuthStatus')).every(call => call.provider === 'claude'), true);
   await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await draft().fill('Изучи материалы');
   await view().getByRole('button', { name: 'Добавить файлы', exact: true }).click();
@@ -162,6 +220,11 @@ try {
   assert.match(await draft().inputValue(), /brief\.pdf/);
   await view().getByRole('button', { name: 'Отправить сообщение', exact: true }).click();
   await view().getByRole('button', { name: 'Остановить выполнение', exact: true }).waitFor();
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
+  assert.equal(await authLogin().isDisabled(), true, 'Login waits for the active Claude task');
+  assert.equal(await authCheck().isEnabled(), true, 'Reading auth status does not require interrupting the task');
+  await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   const sent = (await calls('turn/start'))[0];
   assert.equal(sent.provider, 'claude');
   assert.equal(sent.params.model, 'fixture-sonnet');
@@ -241,18 +304,106 @@ try {
   assert.match(await view().locator('.cache-control .cache-countdown').innerText(), /Кэш ≈ (?:39:5\d|40:00)/, 'the estimate counts from the stored answer time, not from opening');
   assert.equal((await calls('turn/start')).length, turnsBeforeResume, 'opening history sends nothing to the model');
   await page.screenshot({ path: 'artifacts/provider-claude-history.png' });
+  // Authentication preserves the current transcript, exact settings and unsent draft.
+  await draft().fill('Черновик до повторного входа');
+  const resumeBeforeAuth = (await calls('thread/resume')).length;
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
+  await authLogin().click();
+  await authPanel().getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
+  await page.evaluate(() => window.__providers.finishAuth({ loggedIn: true }));
+  await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
+  await ready();
+  await page.waitForFunction(count => window.__providers.calls.filter(call => call.method === 'thread/resume').length > count, resumeBeforeAuth);
+  assert.equal((await calls('thread/resume')).at(-1).params.threadId, 'claude:history-1', 'Auth reconnect resumes the same Claude thread');
+  assert.equal(await draft().inputValue(), 'Черновик до повторного входа');
+  assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).getAttribute('data-value'), 'fixture-sonnet');
+  assert.equal(await view().getByRole('combobox', { name: 'Глубина размышлений', exact: true }).getAttribute('data-value'), 'high');
+  await view().getByText('Сохранённый вопрос Claude', { exact: true }).waitFor();
+  assert.equal((await calls('turn/start')).length, turnsBeforeResume);
+  await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await activate('session-2');
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  assert.equal(await authPanel().count(), 0, 'The Claude authorization controls are not shown for Codex');
+  await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
+  const codexMcpReads = (await calls('getMcpConfig')).length;
   await page.evaluate(() => { window.__providers.failNext = true; });
   await choose('Агент', 'claude');
   await view().getByRole('alert').filter({ hasText: 'Claude CLI не найден' }).waitFor();
   assert.equal(await view().getByRole('combobox', { name: 'Агент', exact: true }).getAttribute('data-value'), 'claude', 'A missing Claude CLI never falls back to Codex');
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
   await view().getByRole('dialog').getByText(/Подключения Claude Code настраиваются/).waitFor();
-  assert.equal((await calls('getMcpConfig')).length, 0, 'Failed Claude startup also cannot expose the Codex MCP editor');
+  assert.equal((await calls('getMcpConfig')).length, codexMcpReads, 'Failed Claude startup also cannot expose the Codex MCP editor');
+  await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
+  assert.equal(await authLogin().isEnabled(), true, 'Login can be launched after failed bootstrap, without a thread');
+  await authLogin().click();
+  await page.evaluate(() => window.__providers.finishAuth({ loggedIn: true }));
+  await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
+  await ready();
+  assert.equal(await view().getByRole('combobox', { name: 'Агент', exact: true }).getAttribute('data-value'), 'claude');
   await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await choose('Агент', 'codex');
   await ready();
   assert.equal(await page.evaluate(() => window.__providers.create.at(-1).cwd), 'C:/Fixtures/AGENTS', 'Changing provider after a failed connection keeps the project folder');
+  // A newly created Claude tab learns about a global login from its rejected start.
+  await activate('session-1');
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
+  await authLogin().click();
+  await authPanel().getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
+  await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
+  await activate('session-2');
+  const startsBeforeWaitingTab = (await calls('start')).length;
+  const turnsBeforeWaitingTab = (await calls('turn/start')).length;
+  await choose('Агент', 'claude');
+  await view().locator('.connection-pill').getByText('Вход в Claude', { exact: true }).waitFor();
+  const waitingTab = await page.locator('.session-tab.active').getAttribute('data-session-id');
+  const blockedStart = (await calls('start')).slice(startsBeforeWaitingTab).find(call => call.id === waitingTab);
+  assert.equal(blockedStart?.authBusy, true, 'The new tab receives auth opened and a busy rejection during bootstrap');
+  assert.equal(await view().getByRole('alert').count(), 0, 'Auth busy during bootstrap does not show a red connection error');
+  await draft().fill('Черновик вкладки, открытой во время входа');
+  assert.equal(await view().getByRole('button', { name: 'Отправить сообщение', exact: true }).isDisabled(), true);
+  assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).isDisabled(), true);
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await authPanel().getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
+  assert.equal(await authLogin().isDisabled(), true, 'The new tab cannot start a second login');
+  await authCheck().click();
+  await authPanel().getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
+  assert.equal(await view().getByRole('alert').count(), 0);
+  await page.evaluate(() => window.__providers.finishAuth({ loggedIn: true }));
+  await ready();
+  await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
+  const waitingTabStarts = (await calls('start')).filter(call => call.id === waitingTab);
+  assert.deepEqual(waitingTabStarts.map(call => call.authBusy), [true, false], 'Global auth completion reconnects the waiting tab once');
+  assert.equal(await draft().inputValue(), 'Черновик вкладки, открытой во время входа');
+  assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).getAttribute('data-value'), 'fixture-sonnet');
+  assert.equal(await view().getByRole('alert').count(), 0);
+  assert.equal((await calls('turn/start')).length, turnsBeforeWaitingTab, 'The waiting draft is preserved without sending it');
+  await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
+  // Setup/config changes use provider-tagged lifecycle events for Codex as well.
+  // The other agent must ignore them, and restored settings/drafts must survive.
+  await activate('initial-codex');
+  await draft().fill('Черновик Codex до настройки');
+  const codexStartsBeforeSetup = (await calls('start')).filter(call => call.provider === 'codex').length;
+  const claudeStartsBeforeSetup = (await calls('start')).filter(call => call.provider === 'claude').length;
+  const turnsBeforeSetup = (await calls('turn/start')).length;
+  await page.evaluate(() => {
+    for (const session of Object.values(window.__providers.sessions)) for (const listener of session.listeners) listener({ type: 'auth', data: { provider: 'codex', state: 'opened', message: 'Применяем конфигурацию Codex' } });
+  });
+  await view().getByText('Применяем конфигурацию Codex', { exact: true }).waitFor();
+  assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).isDisabled(), true);
+  assert.equal(await view().getByRole('button', { name: 'Отправить сообщение', exact: true }).isDisabled(), true);
+  await page.evaluate(() => {
+    for (const session of Object.values(window.__providers.sessions)) for (const listener of session.listeners) listener({ type: 'auth', data: { provider: 'codex', state: 'closed', message: 'Конфигурация Codex применена' } });
+  });
+  await ready();
+  await view().getByText('Конфигурация Codex применена', { exact: true }).waitFor();
+  assert.equal(await draft().inputValue(), 'Черновик Codex до настройки');
+  assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).getAttribute('data-value'), 'fixture-astra');
+  assert.equal(await view().getByRole('combobox', { name: 'Глубина размышлений', exact: true }).getAttribute('data-value'), 'ultra');
+  assert.equal((await calls('start')).filter(call => call.provider === 'codex').length > codexStartsBeforeSetup, true);
+  assert.equal((await calls('start')).filter(call => call.provider === 'claude').length, claudeStartsBeforeSetup);
+  assert.equal((await calls('turn/start')).length, turnsBeforeSetup);
   assert.deepEqual(errors, []);
   console.log('PASS: Codex/Claude selection opens isolated tabs; drafts/models/effort/access survive; capability gates protect compact/steer/MCP; files/images, speaker labels and queued messages work. Mock CLI bridges; no model calls.');
 } catch (error) {

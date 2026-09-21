@@ -14,6 +14,12 @@ function forSession(sessionId) {
     getSettings: () => ipcRenderer.invoke('host:getSettings', sessionId),
     setSettings: (settings) => ipcRenderer.invoke('host:setSettings', settings, sessionId),
     openTerminal: (options) => ipcRenderer.invoke('host:openTerminal', options, sessionId),
+    getClaudeAuthStatus: () => ipcRenderer.invoke('host:getClaudeAuthStatus', sessionId),
+    loginClaude: () => ipcRenderer.invoke('host:loginClaude', sessionId),
+    getClaudeToken: () => ipcRenderer.invoke('host:getClaudeToken', sessionId),
+    setClaudeToken: (token) => ipcRenderer.invoke('host:setClaudeToken', token, sessionId),
+    clearClaudeToken: () => ipcRenderer.invoke('host:clearClaudeToken', sessionId),
+    setupClaudeToken: () => ipcRenderer.invoke('host:setupClaudeToken', sessionId),
     getMcpConfig: () => ipcRenderer.invoke('host:getMcpConfig', sessionId),
     previewMcpImport: (text) => ipcRenderer.invoke('host:previewMcpImport', text, sessionId),
     saveMcpImport: (options) => ipcRenderer.invoke('host:saveMcpImport', options, sessionId),
@@ -44,6 +50,24 @@ function forSession(sessionId) {
 }
 
 contextBridge.exposeInMainWorld('codex', {
+  setup: {
+    state: () => ipcRenderer.invoke('setup:state'),
+    scan: () => ipcRenderer.invoke('setup:scan'),
+    install: id => ipcRenderer.invoke('setup:install', id),
+    chooseExecutable: id => ipcRenderer.invoke('setup:chooseExecutable', id),
+    previewConfig: () => ipcRenderer.invoke('setup:previewConfig'),
+    applyConfig: options => ipcRenderer.invoke('setup:applyConfig', options),
+    authStatus: provider => ipcRenderer.invoke('setup:authStatus', provider),
+    login: provider => ipcRenderer.invoke('setup:login', provider),
+    openPortal: () => ipcRenderer.invoke('setup:openPortal'),
+    openGitWebsite: () => ipcRenderer.invoke('setup:openGitWebsite'),
+    complete: options => ipcRenderer.invoke('setup:complete', options),
+    onProgress: listener => {
+      const handler = (_event, progress) => listener(progress);
+      ipcRenderer.on('setup:progress', handler);
+      return () => ipcRenderer.removeListener('setup:progress', handler);
+    },
+  },
   ...forSession(),
   getBuildInfo: () => ipcRenderer.invoke('host:getBuildInfo'),
   searchHistory: (options) => ipcRenderer.invoke('host:searchHistory', options),

@@ -1,14 +1,17 @@
+import type { SetupBridge } from './setup-types';
 export type Access = 'inherited' | 'auto' | 'read-only' | 'workspace-write' | 'danger-full-access';
 export type AgentProvider = 'codex' | 'claude';
 export type AgentCapabilities = { compact: boolean; steer: boolean; terminal: boolean; mcp: boolean; archive: boolean; usage?: boolean };
 export type AgentDetails = { commands: { name: string; description: string; builtin: boolean }[]; agents: { name: string; description: string }[]; mcpServers: { name: string; status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'; error?: string; scope?: string }[] | null; mcpError?: string };
 export type UsageWindow = { key: string; label: string; utilization: number | null; resetsAt: string | null };
 export type UsageLimits = { available: boolean; subscription?: string | null; windows: UsageWindow[]; updatedAt?: string; message?: string };
+export type ClaudeAuthStatus = { loggedIn: boolean; authMethod?: string; email?: string; subscriptionType?: string; apiProvider?: string; configDirectory?: string; loginInProgress: boolean };
+export type ClaudeTokenInfo = { configured: boolean; savedAt?: string; encryptionAvailable: boolean; error?: string; restarted?: number; busy?: number };
 export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string; provider?: AgentProvider };
 /** Where a tab's effective value came from: restored tab snapshot, saved agent defaults, CLI configuration, a built-in default, or the user's choice in this tab. */
 export type SettingSource = 'tab' | 'saved' | 'cli' | 'default' | 'selected';
 export type SettingSources = { model: SettingSource; effort: SettingSource; access: SettingSource };
-export type BridgeEvent = { type: 'notification' | 'serverRequest' | 'status' | 'diagnostic' | 'terminal' | 'mcp'; data: any };
+export type BridgeEvent = { type: 'notification' | 'serverRequest' | 'status' | 'diagnostic' | 'terminal' | 'mcp' | 'auth'; data: any };
 export type Attachment = { name: string; dataUrl: string; path?: string };
 export type ComposerFiles = { images: Attachment[]; paths: string[]; message?: string };
 export type QueuedMessage = { id: string; text: string; attachments: Attachment[]; state?: 'waiting' | 'uncertain' };
@@ -86,6 +89,12 @@ export interface CodexBridge {
   undoGitRollback(options: { previewId: string }): Promise<{ path: string }>;
   chooseExecutable(): Promise<string | null>;
   openTerminal(options: { threadId: string; model: string; effort: string; access: Access }): Promise<{ threadId: string }>;
+  getClaudeAuthStatus(): Promise<ClaudeAuthStatus>;
+  loginClaude(): Promise<{ started: true }>;
+  getClaudeToken(): Promise<ClaudeTokenInfo>;
+  setClaudeToken(token: string): Promise<ClaudeTokenInfo>;
+  clearClaudeToken(): Promise<ClaudeTokenInfo>;
+  setupClaudeToken(): Promise<{ started: true }>;
   getMcpConfig(): Promise<McpConfigInfo>;
   previewMcpImport(text: string): Promise<McpImportPreview>;
   saveMcpImport(options: { previewId: string; replaceExisting: boolean }): Promise<McpSaveResult>;
@@ -93,6 +102,7 @@ export interface CodexBridge {
   checkMcp(): Promise<McpConnectionReport>;
 }
 export interface WorkspaceBridge extends CodexBridge {
+  setup?: SetupBridge;
   searchHistory(options: { query: string; cwd: string; provider: AgentProvider | 'all'; cursor?: string }): Promise<HistorySearchPage>;
   resolveHistoryTarget(options: { cwd: string; provider: AgentProvider; threadId: string }): Promise<Thread>;
   listBookmarks(options?: { cwd?: string; provider?: AgentProvider | 'all' }): Promise<Bookmark[]>;

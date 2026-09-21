@@ -57,6 +57,35 @@ export function buildTerminalLaunch(options, systemRoot = process.env.SystemRoot
       codexArgs.push('-c', `approvals_reviewer=${access === 'auto' ? 'auto_review' : 'user'}`);
     }
   }
+  if (options.env !== undefined && (!options.env || typeof options.env !== 'object' || Array.isArray(options.env))) throw new Error('Некорректное окружение терминала.');
+  return buildInteractiveLaunch({ executable, cwd, codexArgs, provider: options.provider, env: options.env }, systemRoot);
+}
+
+/** Visible console for `claude setup-token`; the CLI prints the long-lived token for the user to copy. */
+export function buildClaudeSetupTokenLaunch(options, systemRoot = process.env.SystemRoot || 'C:\\Windows') {
+  const executable = absolutePath(options?.executable, 'путь к Claude Code');
+  if (path.win32.extname(executable).toLowerCase() !== '.exe') throw new Error('Нужен исполняемый файл Claude Code .exe.');
+  const cwd = absolutePath(options?.cwd, 'путь к папке');
+  return buildInteractiveLaunch({ executable, cwd, codexArgs: ['setup-token'], provider: 'claude', env: options.env }, systemRoot);
+}
+
+/** Use the installed CLI's own browser login, with inherited environment and no prompts. */
+export function buildClaudeAuthLaunch(options, systemRoot = process.env.SystemRoot || 'C:\\Windows') {
+  const executable = absolutePath(options?.executable, 'путь к Claude Code');
+  if (path.win32.extname(executable).toLowerCase() !== '.exe') throw new Error('Нужен исполняемый файл Claude Code .exe.');
+  const cwd = absolutePath(options?.cwd, 'путь к папке');
+  return buildInteractiveLaunch({ executable, cwd, codexArgs: ['auth', 'login', '--claudeai'], provider: 'claude', env: options.env }, systemRoot);
+}
+
+export function buildCodexAuthLaunch(options, systemRoot = process.env.SystemRoot || 'C:\\Windows') {
+  const executable = absolutePath(options?.executable, 'путь к Codex');
+  if (path.win32.extname(executable).toLowerCase() !== '.exe') throw new Error('Нужен исполняемый файл Codex .exe.');
+  const cwd = absolutePath(options?.cwd, 'путь к папке');
+  return buildInteractiveLaunch({ executable, cwd, codexArgs: ['login'], provider: 'codex', env: options.env }, systemRoot);
+}
+
+function buildInteractiveLaunch({ executable, cwd, codexArgs, provider, env }, systemRoot) {
+  const cliName = provider === 'claude' ? 'Claude Code' : 'Codex';
   const script = `$ErrorActionPreference = 'Stop'
 $codexExitCode = 1
 try {
@@ -67,12 +96,12 @@ try {
   $codexExitCode = $LASTEXITCODE
   if ($null -eq $codexExitCode) { $codexExitCode = 1 }
   if ($codexExitCode -ne 0) {
-    [Console]::WriteLine('Codex завершился с кодом ' + $codexExitCode + '.')
+    [Console]::WriteLine('${cliName} завершился с кодом ' + $codexExitCode + '.')
     [Console]::WriteLine('Нажмите Enter, чтобы закрыть терминал.')
     [void][Console]::ReadLine()
   }
 } catch {
-  [Console]::WriteLine('Не удалось открыть сессию Codex: ' + $_.Exception.Message)
+  [Console]::WriteLine('Не удалось запустить ${cliName}: ' + $_.Exception.Message)
   [Console]::WriteLine('Нажмите Enter, чтобы закрыть терминал.')
   [void][Console]::ReadLine()
 }
@@ -91,11 +120,26 @@ try {
   const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(helperScript, 'utf16le').toString('base64')];
   // Windows CreateProcess has a 32767-character command-line limit, including its executable.
   if (powershell.length + args.join(' ').length > 32000) throw new Error('Путь слишком длинный для запуска терминала.');
-  return { executable: powershell, args, options: { cwd, detached: false, stdio: 'ignore', windowsHide: true }, script, helperScript, codexArgs };
+  return { executable: powershell, args, options: { cwd, detached: false, stdio: 'ignore', windowsHide: true, ...(env ? { env } : {}) }, script, helperScript, codexArgs };
 }
 
 /** Caller tracks spawn/error/close and owns unref; the child lives until the TUI exits. */
 export function launchSessionTerminal(options, spawnImpl = spawn) {
   const launch = buildTerminalLaunch(options);
+  return spawnImpl(launch.executable, launch.args, launch.options);
+}
+
+export function launchClaudeAuthTerminal(options, spawnImpl = spawn) {
+  const launch = buildClaudeAuthLaunch(options);
+  return spawnImpl(launch.executable, launch.args, launch.options);
+}
+
+export function launchCodexAuthTerminal(options, spawnImpl = spawn) {
+  const launch = buildCodexAuthLaunch(options);
+  return spawnImpl(launch.executable, launch.args, launch.options);
+}
+
+export function launchClaudeSetupTokenTerminal(options, spawnImpl = spawn) {
+  const launch = buildClaudeSetupTokenLaunch(options);
   return spawnImpl(launch.executable, launch.args, launch.options);
 }

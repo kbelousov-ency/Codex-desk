@@ -2,19 +2,23 @@ param(
   [string]$Installer = '',
   [switch]$Cleanup,
   [switch]$Update,
+  [switch]$Nightly,
   [string]$RunDirectory = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $deskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $deskRoot 'artifacts'))
-$installerGuid = 'c9b20eca-5a9a-5a4d-9498-438701eb97b0'
+$channel = if ($Nightly) { 'nightly' } else { 'stable' }
+$productLabel = if ($Nightly) { 'Codex Desk Nightly' } else { 'Codex Desk' }
+$installerGuid = if ($Nightly) { 'f3d5f7cf-6c7d-5a59-bdfc-1ab813ae4778' } else { 'c9b20eca-5a9a-5a4d-9498-438701eb97b0' }
+$updaterDirectory = if ($Nightly) { 'codex-desk-nightly-updater' } else { 'codex-desk-updater' }
 $installKey = 'Software\' + $installerGuid
 $uninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $installerGuid
 $snapshotPaths = @(
-  (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Codex Desk.lnk'),
-  (Join-Path ([Environment]::GetFolderPath('Programs')) 'Codex Desk.lnk'),
-  (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'codex-desk-updater\installer.exe')
+  (Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) ($productLabel + '.lnk')),
+  (Join-Path ([Environment]::GetFolderPath('Programs')) ($productLabel + '.lnk')),
+  (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) ($updaterDirectory + '\installer.exe'))
 )
 
 function Assert-PlainPath([string]$Path) {
@@ -137,6 +141,58 @@ function Assert-InstalledApp {
   }
 }
 
+function Read-VerifiedInstaller {
+  Assert-PlainPath $Installer
+  $metadataPath = Join-Path ([IO.Path]::GetDirectoryName($Installer)) 'release-info.json'
+  Assert-PlainPath $metadataPath
+  $metadata = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($metadata.channel -ne $channel -or $metadata.installer -ne [IO.Path]::GetFileName($Installer) -or $metadata.buildId -notmatch '^[a-f0-9]{64}$' -or $metadata.sha256 -notmatch '^[a-f0-9]{64}$') {
+    throw 'Installer metadata does not match the requested test channel.'
+  }
+  if ((Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash -ne $metadata.sha256) { throw 'Installer checksum mismatch.' }
+  $source = Join-Path $deskRoot ('release\' + $channel)
+  if ($Nightly) {
+    $queuePath = Join-Path $artifactRoot 'nightly-update\state.json'
+    Assert-PlainPath $queuePath
+    if (Test-Path -LiteralPath $queuePath) {
+      $queue = Get-Content -LiteralPath $queuePath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if ($queue.version -ne 1 -or $queue.buildId -ne $metadata.buildId) { throw 'Rebuild the Nightly installer from the current queued candidate.' }
+      $source = Join-Path $artifactRoot 'nightly-update\app'
+    }
+  }
+  # Independent release verification reads app.asar and hashes the entire source;
+  # paths are arguments to node, never interpolated JavaScript or shell source.
+  $verification = @'
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [root, source, channel, buildId] = process.argv.slice(1);
+const { verifyRelease } = await import(pathToFileURL(path.join(root, 'scripts/release-utils.mjs')));
+const manifest = await verifyRelease(root, source, channel);
+if (manifest.buildId !== buildId) throw new Error('Installer and source build IDs differ.');
+console.log(JSON.stringify(manifest));
+'@
+  $manifestText = & node --input-type=module -e $verification $deskRoot $source $channel $metadata.buildId
+  if ($LASTEXITCODE -ne 0) { throw 'Source release verification failed before installing.' }
+  return ($manifestText | ConvertFrom-Json)
+}
+
+function Assert-InstalledPayload($Manifest) {
+  Assert-InstallTree $installPath
+  $count = 0
+  foreach ($entry in $Manifest.files.PSObject.Properties) {
+    $file = [IO.Path]::GetFullPath((Join-Path $installPath $entry.Name))
+    if (-not $file.StartsWith($installPath + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Manifest path escapes the isolated install directory.' }
+    Assert-PlainPath $file
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.Value) {
+      throw ('Installed payload differs from the verified source: ' + $entry.Name)
+    }
+    $count++
+  }
+  $marker = Get-Content -LiteralPath (Join-Path $installPath 'resources\channel.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($marker.channel -ne $channel -or @($marker.PSObject.Properties).Count -ne 1) { throw 'Installed channel marker differs.' }
+  return $count
+}
+
 if ($Cleanup -and $Update) { throw '-Cleanup and -Update cannot be combined.' }
 if ($Cleanup -or $Update) {
   if (-not $RunDirectory) { throw '-Cleanup and -Update require -RunDirectory.' }
@@ -212,9 +268,17 @@ if ($Cleanup) {
 }
 
 if ($RunDirectory -and -not $Update) { throw '-RunDirectory is accepted only with -Cleanup or -Update.' }
-if (-not $Installer) { $Installer = Join-Path $deskRoot 'release\installer\Codex Desk Setup 0.1.0.exe' }
+if (-not $Installer) {
+  $delivery = if ($Nightly) { Join-Path $artifactRoot 'installer-nightly' } else { Join-Path $deskRoot 'release\installer' }
+  $metadataPath = Join-Path $delivery 'release-info.json'
+  Assert-PlainPath $metadataPath
+  $deliveryMetadata = Get-Content -LiteralPath $metadataPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ([IO.Path]::GetFileName($deliveryMetadata.installer) -ne $deliveryMetadata.installer -or $deliveryMetadata.installer -notlike '*.exe') { throw 'Unexpected installer filename.' }
+  $Installer = Join-Path $delivery $deliveryMetadata.installer
+}
 $Installer = [IO.Path]::GetFullPath($Installer)
 if (-not (Test-Path -LiteralPath $Installer -PathType Leaf)) { throw 'Build the installer first.' }
+$manifest = Read-VerifiedInstaller
 if ($Update) {
   Assert-InstalledApp
   $installedUninstaller = Join-Path $installPath 'Uninstall Codex Desk.exe'
@@ -229,7 +293,8 @@ if ($Update) {
     }
     if ($process.ExitCode -ne 0) { throw ('Installer update failed: ' + $process.ExitCode) }
     Assert-InstalledApp
-    $result = @{ status = 'updated'; runDirectory = $RunDirectory; installPath = $installPath; executable = (Join-Path $installPath 'Codex Desk.exe'); exitCode = $process.ExitCode }
+    $verifiedFiles = Assert-InstalledPayload $manifest
+    $result = @{ status = 'updated'; channel = $channel; buildId = $manifest.buildId; verifiedFiles = $verifiedFiles; runDirectory = $RunDirectory; installPath = $installPath; executable = (Join-Path $installPath 'Codex Desk.exe'); exitCode = $process.ExitCode }
     $result | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunDirectory 'update-result.json') -Encoding UTF8
     $result | ConvertTo-Json
   } catch {
@@ -243,10 +308,11 @@ foreach ($snapshotPath in $snapshotPaths) { Assert-PlainPath $snapshotPath }
 $RunDirectory = Assert-RunDirectory (Join-Path $artifactRoot ('installer-test-' + [Guid]::NewGuid().ToString('N')))
 $installPath = Join-Path $RunDirectory 'install'
 [IO.Directory]::CreateDirectory($RunDirectory) | Out-Null
-$state = [ordered]@{ installerGuid = $installerGuid; installPath = $installPath; files = @(); installedHashes = @(); uninstallerHash = '' }
+$state = [ordered]@{ channel = $channel; installerGuid = $installerGuid; installPath = $installPath; files = @(); installedHashes = @(); uninstallerHash = '' }
 for ($i = 0; $i -lt $snapshotPaths.Count; $i++) {
   $snapshotPath = $snapshotPaths[$i]
   $existed = Test-Path -LiteralPath $snapshotPath -PathType Leaf
+  if ((Test-Path -LiteralPath $snapshotPath) -and -not $existed) { throw ('External snapshot target is not a file: ' + $snapshotPath) }
   $backupName = 'before-' + $i + '.bin'
   $hash = ''
   if ($existed) {
@@ -266,8 +332,9 @@ try {
   }
   if ($process.ExitCode -ne 0) { throw ('Installer failed: ' + $process.ExitCode) }
   Assert-InstalledApp
+  $verifiedFiles = Assert-InstalledPayload $manifest
   $exe = Join-Path $installPath 'Codex Desk.exe'
-  $result = @{ status = 'installed'; runDirectory = $RunDirectory; installPath = $installPath; executable = $exe; exitCode = $process.ExitCode }
+  $result = @{ status = 'installed'; channel = $channel; buildId = $manifest.buildId; verifiedFiles = $verifiedFiles; runDirectory = $RunDirectory; installPath = $installPath; executable = $exe; exitCode = $process.ExitCode }
   $result | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $RunDirectory 'install-result.json') -Encoding UTF8
   $result | ConvertTo-Json
 } catch {

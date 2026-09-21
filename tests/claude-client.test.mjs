@@ -288,6 +288,62 @@ test('initialization timeout fails clearly and terminates owned process', async 
   await assert.rejects(h.client.start(), /не ответил: initialize/); assert.ok(h.child.killed); assert.equal(h.client.state, 'error');
 });
 
+test('stopAndWait after stop waits for every owned native process, not only the latest transport', async () => {
+  const h = harness(); await h.client.start();
+  const first = h.child; first.kill = () => { first.killed = true; return true; };
+  h.client.stop(); await h.client.start();
+  const second = h.child; second.kill = () => { second.killed = true; return true; };
+  h.client.stop();
+  let settled = false;
+  const waiting = h.client.stopAndWait(300).then(() => { settled = true; });
+  await Promise.resolve(); assert.equal(settled, false);
+  second.emit('exit', 0, null);
+  await Promise.resolve(); assert.equal(settled, false, 'an older transport still owns its exiting process');
+  first.emit('exit', 0, null);
+  await waiting;
+  assert.equal(settled, true); assert.equal(h.client.state, 'stopped');
+  assert.equal(h.frames.some(frame => frame.type === 'user'), false, 'shutdown sends no model prompts');
+  await h.client.stopAndWait(20);
+});
+
+test('stopAndWait cancels a pending relaunch and waits for the old process to exit', async () => {
+  const h = harness(); await h.client.start(); await h.client.request('thread/start');
+  const old = h.child; old.kill = () => { old.killed = true; return true; };
+  const restart = h.client.request('thread/start');
+  const cancelled = assert.rejects(restart, /Переподключение Claude остановлено/);
+  assert.equal(old.killed, true);
+  const waiting = h.client.stopAndWait(300);
+  old.emit('exit', 0, null);
+  await Promise.all([waiting, cancelled]);
+  assert.equal(h.spawns.length, 1, 'no replacement process starts after stop');
+});
+
+test('stopAndWait has a bounded failure, cleans listeners and can retry after actual exit', async () => {
+  const h = harness(); await h.client.start();
+  const child = h.child; child.kill = () => { child.killed = true; return true; };
+  const exitListeners = child.listenerCount('exit'), closeListeners = child.listenerCount('close');
+  await assert.rejects(h.client.stopAndWait(20), /Claude CLI ещё завершает процесс/);
+  assert.equal(child.listenerCount('exit'), exitListeners);
+  assert.equal(child.listenerCount('close'), closeListeners);
+  child.emit('exit', 0, null);
+  await h.client.stopAndWait(20);
+  await assert.rejects(h.client.stopAndWait(0), /timeoutMs must be positive/);
+});
+
+test('stopAndWait handles synchronous exit and a failed spawn ending in close', async () => {
+  const synchronous = harness(); await synchronous.client.start(); await synchronous.client.stopAndWait(20);
+  assert.equal(synchronous.child.killed, true);
+  const failed = harness({ initialize: false });
+  const starting = assert.rejects(failed.client.start(), /spawn failed/);
+  await Promise.resolve();
+  failed.child.kill = () => false;
+  failed.child.emit('error', new Error('spawn failed'));
+  await starting;
+  const waiting = failed.client.stopAndWait(300);
+  failed.child.emit('close', -1, null);
+  await waiting;
+});
+
 test('assistant sibling frames sharing API message id keep text and tool blocks', async t => {
   const h = await running(t);
   h.child.send({ type: 'assistant', uuid: 'record-1', message: { id: 'shared', content: [{ type: 'text', text: 'Сейчас проверю' }] } });

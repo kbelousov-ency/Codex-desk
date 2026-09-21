@@ -17,6 +17,7 @@ import UpdateNotice, { UpdateNoticeContext } from './UpdateNotice';
 import { NotificationSettings } from './NotificationSettings';
 import './notifications.css';
 import HistoryLibrary from './HistoryLibrary';
+import SetupGate from './SetupGate';
 
 type Tab = SessionInfo & { bridge?: CodexBridge; initialThread?: Thread; archivedThread?: Thread; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; restoreSettings?: Settings; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; jump?: { itemId: string; turnId?: string; key: number; excerpt?: string }; pinned?: boolean; pendingMessage?: PendingMessage; fork?: { lastTurnId?: string } };
 /** What a closed tab needs to come back: the folder, agent and (if any) the dialog it showed. Processes are not kept. */
@@ -44,7 +45,7 @@ const sameFolder = (a: string, b: string) => a.replace(/\\/g, '/').replace(/\/$/
 export default function Workspace() {
   // Keep the existing single-session fixtures useful for renderer regressions.
   if (!window.codex?.getWorkspace) return <App />;
-  return <TabbedWorkspace />;
+  return <SetupGate><TabbedWorkspace /></SetupGate>;
 }
 
 function TabbedWorkspace() {
@@ -792,6 +793,7 @@ function TabbedWorkspace() {
           <MessageSquare size={32} /><h2>Откройте диалог</h2><p>Выберите рабочую папку или добавьте ещё одну.</p>
           <div className="empty-projects">{projects.map(project => <button className="secondary-button" title={project} key={project} disabled={opening} onClick={() => void open(project)}>{folderName(project)}</button>)}</div>
           <button className="primary-button" aria-label="Выбрать папку проекта" disabled={opening} onClick={() => void open()}><FolderPlus size={16} />Выбрать папку проекта</button>
+          {window.codex.setup && <button className="text-button" onClick={() => window.dispatchEvent(new Event('codex-desk:open-setup'))}>Настроить агентов</button>}
         </>}
       </div><div className="composer-area"><UpdateNotice /></div></main></div></div>}
     </div>

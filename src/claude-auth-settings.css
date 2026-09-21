@@ -1,0 +1,16 @@
+.claude-auth-settings{margin:14px 0;padding:14px 16px;border:1px solid #3c493d;border-radius:9px;background:#20281f}
+.claude-auth-settings h3{margin:0 0 10px;font-size:12px;font-weight:550;color:#c8d6c8}
+.claude-auth-settings>p{margin:10px 0;font-size:11px;line-height:1.75;color:#92a696}
+.claude-auth-settings>p.inline-error{color:#e1ad92;overflow-wrap:anywhere}
+.claude-auth-status{display:flex;align-items:flex-start;gap:7px;font-size:12px;line-height:1.6;color:#c4d2c6}
+.claude-auth-status>svg{margin-top:3px;flex-shrink:0}
+.claude-auth-status small{display:block;font-size:11px;color:#92a696;overflow-wrap:anywhere}
+.claude-auth-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.claude-token{margin-top:16px;padding-top:14px;border-top:1px solid #3c493d}
+.claude-token h4{display:flex;align-items:center;gap:6px;margin:0 0 10px;font-size:12px;font-weight:550;color:#c8d6c8}
+.claude-token>p{margin:10px 0;font-size:11px;line-height:1.75;color:#92a696}
+.claude-token>p.inline-error{color:#e1ad92;overflow-wrap:anywhere}
+.claude-token>p.claude-token-notice{color:#bdcaaa;overflow-wrap:anywhere}
+.claude-token code{font:10px/1.6 'Cascadia Code',Consolas,monospace;color:#b9c9bc;background:#171e18;padding:1px 4px;border-radius:3px}
+.claude-token-form{display:flex;gap:8px;align-items:center;margin-top:12px}
+.claude-token-form .text-input{flex:1;min-width:0;font-family:'Cascadia Code',Consolas,monospace}

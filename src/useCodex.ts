@@ -20,6 +20,7 @@ type CompactionOperation = {
   previousTurns: Set<string>;
 };
 type InterruptedTurn = { threadId: string; turnId: string };
+type AuthCompletion = { loggedIn?: boolean; error?: string; message?: string };
 const STOPPED_NOTICE = 'Выполнение остановлено. Можно продолжить диалог.';
 const providerCapabilities = (provider: AgentProvider): AgentCapabilities => provider === 'claude'
   ? { compact: false, steer: false, terminal: false, mcp: false, archive: false, usage: false }
@@ -74,6 +75,10 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [busy, setBusy] = useState(false);
   const [compacting, setCompacting] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [authInProgress, setAuthInProgress] = useState(false);
+  const authRef = useRef(false);
+  const restoreAuthRef = useRef<(data: AuthCompletion) => Promise<void>>(async () => {});
+  const pendingAuthRestoreRef = useRef<AuthCompletion | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -266,19 +271,19 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   }, [bridge]);
 
   const refreshHistory = useCallback(async (path = cwdRef.current, cursor?: string) => {
-    if (terminalRef.current || !path) return;
+    if (terminalRef.current || authRef.current || !path) return;
     setHistoryLoading(true);
     try {
       const result = await bridge.request('thread/list', { cwd: path, limit: 40, sortKey: 'updated_at', sourceKinds: ['appServer', 'cli', 'vscode'], ...(cursor ? { cursor } : {}) });
       if (path !== cwdRef.current) return;
       setHistory(previous => cursor ? [...previous, ...result.data.filter((t: Thread) => !previous.some(p => p.id === t.id))] : result.data || []);
       setHistoryCursor(result.nextCursor ?? null);
-    } catch (e) { if (!terminalRef.current) setError(`Не удалось загрузить историю: ${errorText(e)}`); }
+    } catch (e) { if (!terminalRef.current && !authRef.current) setError(`Не удалось загрузить историю: ${errorText(e)}`); }
     finally { setHistoryLoading(false); }
   }, [bridge]);
 
   const clearThread = useCallback((preservePending = false) => {
-    if (terminalRef.current) return;
+    if (terminalRef.current || authRef.current) return;
     if (pendingMessageRef.current && !preservePending) { setNotice('Проверьте неподтверждённую отправку перед сменой диалога.'); return; }
     attentionSuppressed.current = false;
     pauseQueue('Диалог отключён. Откройте прежний диалог перед продолжением очереди.');
@@ -314,7 +319,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   }, [invalidateCache, updateInterrupted, pauseQueue]);
 
   const connect = useCallback(async (directory?: string, options?: { keepThread?: boolean }) => {
-    if (connectingRef.current || terminalRef.current) return;
+    if (connectingRef.current || terminalRef.current || authRef.current) return;
     if (directory && pendingMessageRef.current) { setNotice('Проверьте неподтверждённую отправку перед сменой папки.'); return; }
     connectingRef.current = true;
     if (compactionRef.current) {
@@ -355,8 +360,13 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       await saveSettings({ cwd: result.cwd });
       await refreshHistory(result.cwd);
       setUsage(null); setAgentDetails(null); if (providerRef.current === 'claude' && result.capabilities?.usage !== false) void refreshUsage();
-    } catch (e) { invalidateCache(); updateConnection('error'); setError(errorText(e)); }
-    finally { connectingRef.current = false; }
+    } catch (e) { if (!authRef.current) { invalidateCache(); updateConnection('error'); setError(errorText(e)); } }
+    finally {
+      connectingRef.current = false;
+      const pending = pendingAuthRestoreRef.current;
+      pendingAuthRestoreRef.current = null;
+      if (pending) void restoreAuthRef.current(pending);
+    }
   }, [bridge, clearThread, detachThread, refreshHistory, refreshUsage, saveSettings, invalidateCache, updateConnection]);
   void refreshAgentDetails; // declared above for the settings dialog
 
@@ -373,6 +383,21 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     };
     const unsubscribe = bridge.onEvent((event: BridgeEvent) => {
       const data = event.data;
+      if (event.type === 'auth') {
+        if (providerRef.current !== (data.provider || 'claude')) return;
+        if (data.state === 'opened') {
+          if (authRef.current) return;
+          detachThread();
+          authRef.current = true; setAuthInProgress(true);
+          updateConnection('connecting'); setError('');
+          pauseQueue('Изменяются настройки агента. Проверьте диалог перед продолжением очереди.');
+          setNotice(data.message || `Завершите вход в ${providerRef.current === 'claude' ? 'Claude' : 'Codex'} в браузере и окне авторизации.`);
+        } else if (data.state === 'closed') {
+          authRef.current = false; setAuthInProgress(false);
+          void restoreAuthRef.current(data);
+        }
+        return;
+      }
       if (event.type === 'mcp') { invalidateCache(); return; }
       if (event.type === 'terminal') {
         const operation = terminalRef.current;
@@ -383,7 +408,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         } else if (data.state === 'closed' && operation.state !== 'restoring') void restoreTerminalRef.current(data);
         return;
       }
-      if (terminalRef.current) return;
+      if (terminalRef.current || authRef.current) return;
       if (event.type === 'diagnostic') {
         const message = typeof data === 'string' ? data : data.message || JSON.stringify(data);
         setDiagnostics(p => [...p.slice(-79), message]); return;
@@ -592,16 +617,16 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     });
     void connect();
     return unsubscribe;
-  }, [bridge, connect, refreshHistory, restorePreviews, invalidateCache, observeModelResponse, updateConnection, updateLoading, observeTurn, matchCompactionTurn, finishCompaction, updateInterrupted, pauseQueue, reportAttention]);
+  }, [bridge, connect, detachThread, refreshHistory, restorePreviews, invalidateCache, observeModelResponse, updateConnection, updateLoading, observeTurn, matchCompactionTurn, finishCompaction, updateInterrupted, pauseQueue, reportAttention]);
 
   const selectDirectory = async () => {
-    if (terminalRef.current || busy || loading) return;
+    if (terminalRef.current || authRef.current || busy || loading) return;
     try { const selected = await bridge.chooseDirectory(); if (selected && selected !== cwd) await connect(selected); }
     catch (e) { setError(errorText(e)); }
   };
 
   const selectExecutable = async () => {
-    if (terminalRef.current || pendingMessageRef.current) return;
+    if (terminalRef.current || authRef.current || pendingMessageRef.current) return;
     try {
       const path = await bridge.chooseExecutable();
       if (path) { await saveSettings({ executable: path }); await connect(); }
@@ -609,15 +634,15 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   };
 
   const selectModel = (value: string) => {
-    if (terminalRef.current) return;
+    if (terminalRef.current || authRef.current) return;
     const selected = models.find(m => m.model === value);
     const nextEffort = selected?.supportedReasoningEfforts.some(e => e.reasoningEffort === effort) ? effort : selected?.defaultReasoningEffort || '';
     if (value !== model || nextEffort !== effort) invalidateCache();
     setModel(value); setEffort(nextEffort); setSources(previous => ({ ...previous, model: 'selected', effort: 'selected' })); void saveSettings({ model: value, effort: nextEffort });
   };
-  const selectEffort = (value: string) => { if (terminalRef.current) return; if (value !== effort) invalidateCache(); setEffort(value); setSources(previous => ({ ...previous, effort: 'selected' })); void saveSettings({ effort: value }); };
+  const selectEffort = (value: string) => { if (terminalRef.current || authRef.current) return; if (value !== effort) invalidateCache(); setEffort(value); setSources(previous => ({ ...previous, effort: 'selected' })); void saveSettings({ effort: value }); };
   const selectAccess = (value: Access) => {
-    if (terminalRef.current || pendingMessageRef.current) return;
+    if (terminalRef.current || authRef.current || pendingMessageRef.current) return;
     if (value !== access) invalidateCache();
     if (value === 'inherited' && access !== 'inherited' && thread) {
       clearThread(); setNotice(`Открыт новый диалог: доступ будет взят из конфигурации ${agentName(providerRef.current)}. Предыдущий диалог сохранён в истории.`);
@@ -776,6 +801,20 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     if (connectionRef.current !== 'ready') return false;
     if (!previous || threadRef.current?.id !== previous.id || terminalRef.current) return true;
     return resume(previous, true);
+  };
+
+  restoreAuthRef.current = async data => {
+    // A tab created during login may still be finishing its rejected bootstrap.
+    // Reconnect only after that attempt releases the connection guard.
+    if (connectingRef.current) { pendingAuthRestoreRef.current = data; return; }
+    if (authRef.current) return;
+    // Keep this tab's effective model/effort and already confirmed access.
+    restoreSettingsRef.current ??= { provider: providerRef.current, ...(model ? { model } : {}), ...(effort ? { effort } : {}), access };
+    setNotice('Обновляем подключение после настройки…');
+    const restored = await reconnect();
+    if (authRef.current) return;
+    if (data.error) setError(data.error);
+    if (restored) setNotice(data.message || (data.loggedIn ? 'Вход выполнен. Подключение обновлено.' : 'Окно авторизации закрыто. Состояние входа можно проверить в настройках.'));
   };
 
   const loadEarlier = async () => {
@@ -1080,7 +1119,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
 
   return {
     connection, provider, capabilities, cwd, models, model, effort, access, account, config, executable, cliVersion, sources, history, historyCursor, historyLoading,
-    thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, loading, error, notice,
+    thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, authInProgress, loading, error, notice,
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
     cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage, agentDetails, agentDetailsLoading, refreshAgentDetails,
     connect, reconnect, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,

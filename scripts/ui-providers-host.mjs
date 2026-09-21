@@ -123,6 +123,23 @@ try {
   assert.equal(claude.capabilities.usage, true);
   assert.ok(claude.usage && typeof claude.usage.available === 'boolean', 'usage/read answers through the real CLI without a model turn');
   assert.equal(claude.capabilities.terminal, true);
+  // Native auth status is a separate CLI command and remains useful even when
+  // stream bootstrap succeeds without an authenticated account. Never log identity.
+  const auth = await page.evaluate(id => window.codex.forSession(id).getClaudeAuthStatus(), claudeId);
+  assert.equal(typeof auth.loggedIn, 'boolean');
+  assert.equal(auth.loginInProgress, false);
+  assert.ok(Object.keys(auth).every(key => ['loggedIn', 'authMethod', 'email', 'subscriptionType', 'apiProvider', 'configDirectory', 'loginInProgress'].includes(key)), 'Only public auth status fields cross IPC');
+  const rejectedAuth = await page.evaluate(async id => {
+    try { await window.codex.forSession(id).getClaudeAuthStatus(); return false; }
+    catch { return true; }
+  }, codexId);
+  assert.equal(rejectedAuth, true, 'Codex sessions cannot access Claude auth');
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  const authSettings = view().getByRole('region', { name: 'Авторизация Claude Code', exact: true });
+  await authSettings.getByText(auth.loggedIn ? 'Вход выполнен' : 'Вход не выполнен', { exact: true }).waitFor();
+  assert.equal(await authSettings.getByRole('button', { name: 'Войти через браузер', exact: true }).isEnabled(), true);
+  await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
+  checks.push('native Claude auth status through production IPC and settings; login UI available; no browser login or credentials access');
   await rememberCurrent(claude);
   await draft().fill('Черновик Claude сохраняется отдельно');
   await until(async () => {
