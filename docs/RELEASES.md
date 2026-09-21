@@ -1,6 +1,6 @@
 # Release и Nightly
 
-## Перенос Release 0.4.0 и проверка установщика — 2026-09-21
+## Публичный Release 0.4.0 — 2026-09-21
 
 По поручению пользователя «в релиз и заливай» применённая Nightly `336f2badc12c2e8b998d4441d52dc74246e8f8c5dbd434cf756d0b94fc9de9a2` перенесена штатным `release:promote` в `release/stable` без перекомпиляции. Прежний Release `0.3.0`, build ID `379a3a5286b60157245b6511da2ca24bddc01f2e27cb47f1f20cf36d82134281`, сохранён в `release/stable-previous`. Пользовательские окна не закрывались.
 
@@ -9,6 +9,8 @@
 `release:installer` создал `Codex-Desk-Setup-0.4.0.exe`: 100 937 090 байт, SHA-256 `a2b5eabaf2fe22f9a35db6eb2fa5f3086fff25000d73cbed4abfd7dba83fc76b`. Настоящая silent-установка в `artifacts/installer-test-dc0b3725fd464cdfa686357b3e4125bb` завершилась с exit 0, все 72 файла совпали. Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-nIXbZc`): Electron/preload/IPC, изолированные профили и fixture CLI, preview/enable/restart/disable правил обоих агентов, точные backups и восстановление инструкций. Запросов модели и реальных установок CLI не было. Отдельный сценарий обновления предыдущей версии в этой поставке не повторялся; прежняя проверка 0.2.0 → 0.3.0 сохранена ниже. Штатный uninstall завершён (`cleaned`), три внешних файла восстановлены, тестовые установка и реестр удалены.
 
 `release:prepare` подготовил Setup, `SHA256SUMS.txt`, `release-info.json`, `README.txt` и `RELEASE_NOTES.md` в `artifacts/github-release` для разрешённой публикации v0.4.0.
+
+Опубликован [GitHub Release v0.4.0](https://github.com/kbelousov-ency/Codex-desk/releases/tag/v0.4.0) 13:27:12 UTC как обычный **Latest**, не draft/prerelease. Исходники отправлены в `origin/main` коммитом `2529e2d01089f27fb9d273c0662da9d3cb9e7834`; аннотированный тег `v0.4.0` указывает на него. До публикации сверены серверные digest и размеры всех четырёх assets. Публичный API latest без авторизации возвращает `v0.4.0`; штатный `releaseUpdate` предлагает правильный Setup для `0.3.0` и не предлагает обновление для `0.4.0`. Отчёт — `artifacts/github-release/published-verification.json`. SHA-256 app.asar Nightly и Release одинаков: `b959e16b0682f462c672955eb04e654e7821547a7cb952abe9412cef441e97a6`. Записи подготовки и ожидания ниже сохранены как история.
 
 ## Правила памяти для всех проектов — 2026-09-21
 
