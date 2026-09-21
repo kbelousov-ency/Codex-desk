@@ -1,4 +1,21 @@
 # Release и Nightly
+## Подготовка публичного Release 0.2.0 — 2026-09-21
+
+По поручению пользователя «Давай всё в релиз и заливай» применённая Nightly `63ab264a1592a5867a29209fc5500d00b2e527f2655f0e854c4599444e8b51aa` перенесена в `release/stable` без перекомпиляции; прежний Release `32370f9d4980eaf15521f73c062653dd651a0f1d293850508538020a9136c0cd` сохранён в `release/stable-previous`. Nightly была штатно применена: `published` 09:53:31 UTC, `complete` 09:53:31 UTC. При переносе пользовательские окна не закрывались.
+
+Включены [проверка обновлений](UPDATES.md), [версионирование](VERSIONING.md), копирование адресов [ссылок](FILE_LINKS.md) и устойчивый значок Windows. Полный `npm.cmd run check` прошёл: TypeScript, 486 passed / 2 skipped, production Vite. Manifest Nightly/Release и совпадение 46 host/preload/dist файлов с исходниками проверены. Готовый Release прошёл настоящий Electron/preload/IPC: обновления (`artifacts/app-updates-host-bGhv15`), ссылки/clipboard (`artifacts/links host-pAI6aN`), icon/identity (`artifacts/app-identity-cBzq1g`). Использованы изолированные профили и fixture CLI, production ярлыки сохранены, model turns 0. Подготовка установщика и публикационные результаты записываются ниже после фактического завершения; исторические записи ожидания прежних кандидатов сохранены.
+
+## Онлайн-обновления и версии — 2026-09-21
+
+Следующий выпуск исходников — `0.2.0`: [проверка GitHub Releases и предложение обновления](UPDATES.md). [Правила SemVer](VERSIONING.md) определяют повышение версии и подготовку публичной поставки через `release:prepare`; история изменений — [CHANGELOG.md](../CHANGELOG.md). Новые имена Setup: `Codex-Desk-Setup-X.Y.Z.exe` и отдельный `Codex-Desk-Nightly-Setup-X.Y.Z.exe`; исторические имена ниже сохранены. Подготовка не публикует GitHub Release и не продвигает Nightly. Опубликованная `0.1.0` ещё не умеет проверять обновления и требует первого ручного перехода.
+
+Nightly `c47649b570a87cefebfb716babe507f278b5d9dd9ea8be1b2f4f2ee6f0b7cc57`, версия `0.2.0`, собрана `npm.cmd run package` и поставлена в штатную очередь `artifacts/nightly-update/app` 08:36:44 UTC. Работающий Nightly не закрывался; применение по «Закрыть» в чате или ручному выходу. Release сохранил SHA-256 app.asar `3d4af469a1aac60580db2ffab161d87bb4c2d01735d85fbaf5f30ecafce3f1b1`.
+
+Проверки: `npm.cmd run check` — TypeScript, 483 passed / 2 skipped, production Vite. App-updates browser fixture и регрессии build-channel/nightly-restore/tabs-browser прошли. Настоящие Electron/preload/IPC на исходниках (`artifacts/app-updates-host-5hP3Ya`) и готовом exe (`artifacts/app-updates-host-7bjggc`) проверили guards чужого окна/frame, события, настройки/restart и сохранность CLI без сети/моделей. Manifest 72 файлов и побайтное совпадение 45 host/preload/dist файлов подтверждены (`artifacts/app-updates-live/package-verification.json`). Проверены подготовка публикации и команды повышения версии на отдельных fixture.
+
+Живая проверка упакованного `AppUpdateService` через настоящий Electron `net.fetch` обнаружила публичный `v0.1.0` (`artifacts/app-updates-live-electron-XOgS25/live-electron-result.json`): один запрос метаданных, искусственная текущая версия `0.0.0`, 0 скачиваний/открытий браузера/модельных запросов.
+
+`npm.cmd run package:installer` создал проверочный `artifacts/installer-nightly/Codex-Desk-Nightly-Setup-0.2.0.exe`, 100 919 843 байт, SHA-256 `d3777983527a523f9e1c01f0200ec5ae3ffc76c7ada2873de3da444183da8ced`. Setup собран из этого же проверенного кандидата; установку/удаление в этой задаче не повторяли, NSIS flow сохранён. Перенос в Release и публикация `v0.2.0` не выполнялись.
 
 ## Перенос `32370f9d4980` в Release — 2026-09-21
 
@@ -166,6 +183,17 @@ Helper ждёт завершения задач во всех вкладках, 
 Проверенная поставка механизма: Nightly build ID `865c482f18f0d050de28ed10fde7dfc02f7c6cea7960fc0f28002d9d0dac886c`; Release остался `74e2c7c166098278d75de1987e9ed1035b24aebd5e2763baf537959a21f1ea47`. 198 Node-тестов прошли, один Windows file-symlink skipped. Проверены renderer restore, tabs/resume/access/cache, packaged bootstrap с настоящим Codex без model turn. `test:nightly-update-host` использует полную отдельную копию exe в `artifacts/nightly-update-host-ieuqIu`, JSONL fixture и настоящий helper: ожидание активного хода, замена файлов, новый PID, восстановление двух вкладок/активного диалога/черновика/картинки/access, повторное чтение снимка из восстановленного renderer без скрытого продолжения. 21 актуальный host/preload/dist файл в итоговом app.asar совпадает с исходниками и dist. Пользовательское окно Release не закрывалось.
 
 ## Идентификация и данные
+### Повторный пустой значок — 2026-09-21
+
+У работающего Nightly `c47649b570a8` вновь отображался стандартный значок. `ExtractIconEx` и `WM_GETICON` подтвердили правильные иконки EXE/окна (`artifacts/icon-current/exe.png`, `window.png`). В отличие от случая 19 сентября, Start Menu `Codex Desk.lnk` уже ссылался на существующий `release/nightly/Codex Desk.exe`, AUMID `local.codex.desk.nightly`; поле icon снова пустое. Само `,0` допустимо как fallback EXE и не доказывает точную причину текущего сбоя кэша Explorer.
+
+Проверен исходник [Electron v44.4.1 windows_toast_activator.cc](https://github.com/electron/electron/blob/v44.4.1/shell/browser/notifications/win/windows_toast_activator.cc): `EnsureShortcut` выбирает имя по PE ProductName (`Codex Desk`, общее у каналов), проверяет target/cwd/AUMID/ToastActivatorCLSID и при несовпадении пересоздаёт ярлык без IconLocation. Регистрация асинхронна после `Notification.isSupported()`, поэтому одноразовое исправление сразу после вызова недостаточно. Менять PE для каждого канала нельзя без нарушения переноса проверенных байтов Nightly в Release; общая регистрация уведомлений остаётся ограничением Electron.
+
+`electron/windows-shell-icon.mjs` публикует ICO атомарно в `<userData>/shell-icons/icon-<sha256>.ico`, сохраняет старые версии для ссылок Shell и восстанавливает повреждённый файл. Этот путь не исчезает при транзакционной замене каталога Nightly. `main.mjs` задаёт его окну, appIconPath и уведомлениям; app details устанавливаются до первого show. Production watcher следит только за `Codex Desk.lnk` и частично обновляет icon/index лишь при совпадении target текущего exe и AppID; cwd/args/CLSID сохраняются, запись самого watcher не вызывает цикл. TEST и нестандартные профили не следят за production ярлыком. Ошибки `app.shellIcon` не блокируют запуск.
+
+Действующий ярлык исправлен тем же helper без закрытия Nightly, backup и точный before/after — `artifacts/icon-current/start-menu-before.lnk`, `repair-result.json`; выполнен SHChangeNotify только для этого ярлыка. Визуальное восстановление значка текущего окна не подтверждено; постоянный appIconPath начнёт действовать после штатного перезапуска.
+
+Проверены targeted Node tests значка/identity/notifications/diagnostics, TypeScript и Vite при `npm.cmd run package`. Настоящий Electron `test:app-identity` прошёл на исходниках (`artifacts/app-identity-gXFXty`) и готовом exe (`artifacts/app-identity-D1GmwS`): побайтовый ICO, real fs.watch после поздней перезаписи, partial shortcut update, preservation CLSID/args/cwd и foreign/no-op guards, неизменность production ярлыков, 0 model turns. Nightly `63ab264a1592a5867a29209fc5500d00b2e527f2655f0e854c4599444e8b51aa` стоит в штатной очереди и ждёт «Закрыть» либо ручного выхода. Manifest 72 файлов и 3 изменённых host-файла сверены с исходниками. Release app.asar сохранил SHA-256 `3d4af469a1aac60580db2ffab161d87bb4c2d01735d85fbaf5f30ecafce3f1b1`.
 
 ### Значок панели задач и тестовые ярлыки — 2026-09-19
 

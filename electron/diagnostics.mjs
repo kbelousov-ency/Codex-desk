@@ -11,7 +11,7 @@ const VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)(?:\.\d{1,4}){0,
 const DATE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
 const LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 const EVENTS = new Set([
-  'app.start', 'app.ready', 'app.quit', 'app.fatal', 'app.unhandled', 'app.childGone', 'app.profile',
+  'app.start', 'app.ready', 'app.quit', 'app.fatal', 'app.unhandled', 'app.childGone', 'app.profile', 'app.shellIcon',
   'window.created', 'window.closed', 'window.loadFailed', 'window.unresponsive',
   'window.rendererGone', 'window.preloadError', 'window.openFailed',
   'session.created', 'session.disposed', 'ipc.start', 'ipc.complete', 'ipc.failed',

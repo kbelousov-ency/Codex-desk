@@ -13,3 +13,5 @@
 .build-details dd{margin:0;color:#bed0c4;user-select:text}
 .diagnostics-content>.build-details-unavailable{padding-top:13px;color:#819689;font-size:11px}
 @media(max-width:1200px){.brand:has(.build-badge){gap:5px;font-size:17px}.brand:has(.build-badge) .brand-mark{width:26px;height:26px;flex-shrink:0}.brand .version-badge.build-badge{font-size:6.5px;letter-spacing:.35px;padding:2px 3px}}
+
+.brand button.version-badge.build-badge{cursor:pointer}.brand button.build-badge:hover{filter:brightness(1.2)}

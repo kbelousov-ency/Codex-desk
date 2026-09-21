@@ -70,6 +70,15 @@ contextBridge.exposeInMainWorld('codex', {
   },
   ...forSession(),
   getBuildInfo: () => ipcRenderer.invoke('host:getBuildInfo'),
+  getAppUpdateStatus: () => ipcRenderer.invoke('host:getAppUpdateStatus'),
+  checkAppUpdates: () => ipcRenderer.invoke('host:checkAppUpdates'),
+  setAppUpdatePreferences: (patch) => ipcRenderer.invoke('host:setAppUpdatePreferences', patch),
+  openAppUpdateDownload: () => ipcRenderer.invoke('host:openAppUpdateDownload'),
+  onAppUpdateStatus: (listener) => {
+    const handler = (_event, status) => listener(status);
+    ipcRenderer.on('host:appUpdateStatus', handler);
+    return () => ipcRenderer.removeListener('host:appUpdateStatus', handler);
+  },
   searchHistory: (options) => ipcRenderer.invoke('host:searchHistory', options),
   resolveHistoryTarget: (options) => ipcRenderer.invoke('host:resolveHistoryTarget', options),
   listBookmarks: (options) => ipcRenderer.invoke('host:listBookmarks', options),

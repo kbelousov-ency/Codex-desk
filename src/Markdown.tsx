@@ -34,8 +34,11 @@ export default function Markdown({ children }: { children: string }) {
       return <a className="markdown-link" href={href} title={href} onClick={event => {
         event.preventDefault(); void open(href);
       }} onContextMenu={event => {
-        if (kind !== 'file') return;
         event.preventDefault(); void open(href, true);
+      }} onKeyDown={event => {
+        if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+          event.preventDefault(); void open(href, true);
+        }
       }}>{label}</a>;
     },
     img: ({ alt }) => <span className="muted">[Изображение{alt ? `: ${alt}` : ''}]</span>,

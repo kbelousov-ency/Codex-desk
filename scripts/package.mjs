@@ -6,6 +6,8 @@ import path from 'node:path';
 import { checkedTree, fileChecksums, publishNightly, removeChecked, withReleaseLock } from './release-utils.mjs';
 import { assertNoPendingUpdate, findNightlyInstance, launchUpdateHelper, queueNightlyUpdate } from './nightly-update.mjs';
 
+import { assertReleaseVersion } from './release-version.mjs';
+
 // Only Nightly is built from source. Release is promoted from these exact bytes.
 const root = process.cwd();
 let queuedBuildId;
@@ -15,6 +17,7 @@ try {
     await assertNoPendingUpdate(root);
     await findNightlyInstance(root);
     const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+    assertReleaseVersion(manifest.version);
     const work = path.join(root, 'artifacts', 'channel-build');
     await removeChecked(root, work);
     const stage = path.join(work, 'app');

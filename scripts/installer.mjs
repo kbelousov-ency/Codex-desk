@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { checkedPath, removeChecked, verifyRelease, withReleaseLock } from './release-utils.mjs';
 import { createInstallerBranding } from './installer-branding.mjs';
+import { installerFilename } from './release-version.mjs';
 
 // Default distributes approved Release bytes; --nightly produces an isolated
 // review installer. Neither mode compiles renderer or promotes a release.
@@ -46,7 +47,7 @@ try {
       main: 'electron/main.mjs', author: 'Codex Desk contributors',
       homepage: 'https://github.com/kbelousov-ency/Codex-desk',
     }));
-    const filename = `${label} Setup ${approved.version}.exe`;
+    const filename = installerFilename(approved.version, channel);
     const branding = await createInstallerBranding(root, path.join(work, 'branding'));
     // Keep the approved executable filename while giving the candidate its own
     // installation folder. Preserve the original Release default for upgrades.
@@ -86,13 +87,14 @@ try {
     const hash = createHash('sha256');
     for await (const chunk of createReadStream(path.join(output, filename))) hash.update(chunk);
     const sha256 = hash.digest('hex');
+    const size = (await lstat(path.join(output, filename))).size;
     const delivery = channel === 'nightly' ? path.join(root, 'artifacts', 'installer-nightly') : path.join(root, 'release', 'installer');
     const next = channel === 'nightly' ? path.join(root, 'artifacts', '.installer-nightly-incoming') : path.join(root, 'release', '.installer-incoming');
     await removeChecked(root, next);
     await mkdir(next);
     await cp(path.join(output, filename), path.join(next, filename));
     await writeFile(path.join(next, 'SHA256SUMS.txt'), `${sha256}  ${filename}\n`);
-    await writeFile(path.join(next, 'release-info.json'), JSON.stringify({ channel, version: approved.version, buildId: approved.buildId, builtAt: approved.builtAt, installer: filename, sha256 }, null, 2));
+    await writeFile(path.join(next, 'release-info.json'), JSON.stringify({ format: 1, channel, version: approved.version, buildId: approved.buildId, builtAt: approved.builtAt, installer: filename, sha256, size }, null, 2));
     await writeFile(path.join(next, 'README.txt'), '\uFEFF' + [
       `${label} — установка для Windows 10/11, x64`, '',
       `1. Запустите ${filename}.`,

@@ -1,6 +1,6 @@
 {
   "name": "codex-desk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local desktop interface for Codex CLI",
   "type": "module",
@@ -86,7 +86,13 @@
     "test:mcp-host": "node scripts/ui-mcp-host.mjs",
     "test:mcp-native": "node scripts/mcp-native-smoke.mjs",
     "test:chat-search": "node scripts/ui-chat-search.mjs",
-    "test:search-host": "node scripts/ui-search-host.mjs"
+    "test:search-host": "node scripts/ui-search-host.mjs",
+    "release:prepare": "node scripts/prepare-release.mjs",
+    "version:patch": "npm version patch --no-git-tag-version --ignore-scripts",
+    "version:minor": "npm version minor --no-git-tag-version --ignore-scripts",
+    "version:major": "npm version major --no-git-tag-version --ignore-scripts",
+    "test:app-updates": "node scripts/ui-app-updates.mjs",
+    "test:app-updates-host": "node scripts/ui-app-updates-host.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.278",

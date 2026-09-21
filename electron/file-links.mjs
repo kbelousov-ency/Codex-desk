@@ -120,24 +120,37 @@ export async function openLink({ target, cwd, shell, assertActive = () => {} }) 
   if (error) throw new Error(`Не удалось открыть файл: ${error}`);
 }
 
-export async function showLocalPathMenu({ target, cwd, shell, Menu, window, options, assertActive = () => {} }) {
-  await resolveLocalLink(target, cwd);
+export async function showLocalPathMenu({ target, cwd, shell, clipboard, Menu, window, options, assertActive = () => {} }) {
+  checkedTarget(target);
+  const web = /^https?:\/\//i.test(target);
+  let localAvailable = false;
+  if (!web) {
+    try { await resolveLocalLink(target, cwd); localAvailable = true; }
+    catch { /* Copying the link does not require access to the file. */ }
+  }
   assertActive();
   return new Promise((resolve, reject) => {
     let selected = false;
     const choose = action => () => {
       selected = true;
-      // Check again after the user has chosen: the file or tab may have changed.
-      void resolveLocalLink(target, cwd).then(resolved => {
-        assertActive();
-        return action(resolved);
-      }).then(resolve, reject);
+      void Promise.resolve().then(action).then(resolve, reject);
     };
-    const items = [];
-    if (options?.askCodex === true) {
-      items.push({ label: 'Спросить Codex', click: choose(resolved => ({ action: 'askCodex', path: resolved })) });
+    const chooseLocal = action => choose(async () => {
+      // Check again after the user has chosen: the file or tab may have changed.
+      const resolved = await resolveLocalLink(target, cwd);
+      assertActive();
+      return action(resolved);
+    });
+    const items = [{ label: 'Копировать ссылку', click: choose(() => {
+      assertActive();
+      clipboard.writeText(target);
+    }) }];
+    if (!web) {
+      if (options?.askCodex === true) {
+        items.push({ label: 'Спросить Codex', enabled: localAvailable, click: chooseLocal(resolved => ({ action: 'askCodex', path: resolved })) });
+      }
+      items.push({ label: 'Открыть в проводнике', enabled: localAvailable, click: chooseLocal(resolved => { shell.showItemInFolder(resolved); }) });
     }
-    items.push({ label: 'Открыть в проводнике', click: choose(resolved => { shell.showItemInFolder(resolved); }) });
     const menu = Menu.buildFromTemplate(items);
     menu.popup({ window, callback: () => setImmediate(() => { if (!selected) resolve(); }) });
   });

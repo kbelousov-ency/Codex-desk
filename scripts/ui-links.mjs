@@ -83,7 +83,10 @@ try {
     ['Строка исходника', '/E:/My projects/CodexDesk/src/App.tsx:48'],
     ['Строка README', 'README.md:12'],
     ['Строка и столбец Python', 'main.py:20:4'],
-    ['Документация', 'https://example.test/docs?q=codex'],
+    ['Документация', 'https://example.test/docs?q=codex&lang=ru#пример'],
+    ['Несуществующий файл', 'missing/report.md:15'],
+    ['Файл вне проекта', 'C:/Other/project/result.txt'],
+    ['Обычный URL', 'https://example.test/plain?q=hello%20world#section'],
   ];
   const blocked = [
     ['JavaScript запрещён', 'javascript:alert%281%29'],
@@ -92,7 +95,7 @@ try {
     ['VBScript запрещён', 'vbscript:msgbox%281%29'],
     ['Произвольная схема запрещена', 'customapp:launch'],
   ];
-  const markdown = '# Файлы из ответа Codex\n\n' + [...cases, ...blocked].map(([label, href]) => `- [${label}](<${href}>)`).join('\n');
+  const markdown = '# Файлы из ответа Codex\n\n' + [...cases, ...blocked].map(([label, href]) => label === 'Обычный URL' ? `- ${href}` : `- [${label}](<${href}>)`).join('\n');
   const populate = async id => {
     await ready();
     await view().getByRole('textbox', { name: 'Сообщение Codex', exact: true }).fill('Покажи ссылки');
@@ -107,7 +110,7 @@ try {
     }, { id, markdown });
     await view().getByText('Посмотреть интерфейс', { exact: true }).waitFor();
   };
-  const link = label => view().locator('.markdown-link').filter({ hasText: new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`) });
+  const link = label => view().getByRole('link', { name: label === 'Обычный URL' ? 'https://example.test/plain?q=hello%20world#section' : label, exact: true });
   const checkAction = async (id, kind, label, href, trigger) => {
     const before = await actions(id);
     await trigger(link(label));
@@ -123,12 +126,9 @@ try {
   assert.deepEqual(await actions('session-B'), []);
   for (const [label, href] of cases) {
     await checkAction('session-A', 'open', label, href, element => element.click());
-    if (!href.startsWith('https:')) await checkAction('session-A', 'menu', label, href, element => element.click({ button: 'right' }));
+    await checkAction('session-A', 'menu', label, href, element => element.click({ button: 'right' }));
   }
-  const beforeWebMenu = await actions('session-A');
-  await link('Документация').click({ button: 'right' });
-  await page.keyboard.press('Escape');
-  assert.deepEqual(await actions('session-A'), beforeWebMenu, 'Web context menu must not invoke a file action');
+  await checkAction('session-A', 'menu', ...cases[7], async element => { await element.focus(); await page.keyboard.press('Shift+F10'); });
   await checkAction('session-A', 'open', ...cases[0], async element => { await element.focus(); await page.keyboard.press('Enter'); });
 
   const beforeBlocked = await actions('session-A');
@@ -156,7 +156,7 @@ try {
   await activate('session-A');
   await page.screenshot({ path: 'artifacts/links-browser.png' });
   assert.deepEqual(errors, []);
-  console.log('PASS: rendered Markdown file/EXE, relative/encoded/Unicode/file-URL/line links, click/Enter, local context callback, web links, blocked schemes, visible action errors and scoped tab isolation. Fake bridges only; no shell, Electron IPC or model requests.');
+  console.log('PASS: rendered Markdown file/EXE, relative/encoded/Unicode/file-URL/line links, click/Enter, context menu for every local/web link and bare URL, Shift+F10, blocked schemes, visible action errors and scoped tab isolation. Fake bridges only; no shell, Electron IPC or model requests.');
 } catch (error) {
   if (page && !page.isClosed()) await page.screenshot({ path: 'artifacts/links-browser-failure.png' });
   throw error;

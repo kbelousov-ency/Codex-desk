@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, Notification, safeStorage, shell } from 'electron';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -32,8 +32,10 @@ import { captureUpdateCheckpoint, createUpdateCheckpoint } from './update-checkp
 import { captureWorkspaceState, createWorkspaceState, createWorkspaceSaveHandshake } from './workspace-state.mjs';
 import { NotificationService, NotificationSettingsStore } from './notification-service.mjs';
 import { applicationIdentity } from './app-identity.mjs';
+import { persistShellIcon, watchShellShortcutIcon } from './windows-shell-icon.mjs';
 import { SetupService } from './setup-service.mjs';
 import { SetupAuth, setupProvider } from './setup-auth.mjs';
+import { AppUpdateService, AppUpdateStore } from './app-updates.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let buildInfo = {};
@@ -51,6 +53,9 @@ const standardChannelPaths = resolveChannelPaths({ appData: app.getPath('appData
 const isolatedProfile = path.resolve(channelPaths.userData).toLowerCase() !== path.resolve(standardChannelPaths.userData).toLowerCase();
 const identity = applicationIdentity(releaseInfo.channel, process.env.CODEX_DESK_TEST === '1' || isolatedProfile ? process.pid : undefined);
 const applicationName = identity.name;
+let windowIcon = path.join(here, 'icon.ico');
+let shellIcon = app.getPath('exe');
+let stopWatchingShellIcon;
 app.setName(applicationName);
 app.setPath('userData', channelPaths.userData);
 app.setAppUserModelId(identity.appId);
@@ -66,6 +71,19 @@ process.on('uncaughtExceptionMonitor', error => diagnostics.error('app.fatal', e
 process.on('unhandledRejection', error => diagnostics.error('app.unhandled', error));
 app.on('child-process-gone', (_event, details) => diagnostics.record('error', 'app.childGone', { reason: details.reason, exitCode: details.exitCode }));
 const windows = new Map();
+const appUpdates = new AppUpdateService({
+  buildInfo: releaseInfo,
+  store: new AppUpdateStore(path.join(channelPaths.userData, 'updates.json')),
+  fetch: (url, options) => net.fetch(url, options),
+  openExternal: url => shell.openExternal(url),
+  // Test/isolated profiles must not poll GitHub, including packaged host tests.
+  networkAllowed: process.env.CODEX_DESK_TEST !== '1' && !isolatedProfile && process.platform === 'win32' && process.arch === 'x64',
+  publish: status => {
+    for (const { window } of windows.values()) {
+      if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('host:appUpdateStatus', status);
+    }
+  },
+});
 const threadActions = new ThreadActionCoordinator();
 // A long-lived `claude setup-token` credential, encrypted with DPAPI, keeps the app's Claude processes off the
 // shared single-use refresh token that Claude Desktop, IDE extensions and parallel tabs otherwise race for.
@@ -376,6 +394,10 @@ function installHandlers() {
     }
   });
   workspaceHandle('host:getBuildInfo', () => releaseInfo);
+  workspaceHandle('host:getAppUpdateStatus', () => appUpdates.status());
+  workspaceHandle('host:checkAppUpdates', () => appUpdates.check());
+  workspaceHandle('host:setAppUpdatePreferences', (_record, _event, patch) => appUpdates.setPreferences(patch));
+  workspaceHandle('host:openAppUpdateDownload', () => appUpdates.openDownload());
   workspaceHandle('host:getDiagnosticsStatus', async () => {
     await diagnostics.flush();
     const status = diagnostics.status();
@@ -608,7 +630,7 @@ function installHandlers() {
     const thread = await management(record, event).readArchivedMetadata(options?.threadId);
     const assertActive = () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); };
     const params = { target: options?.target, cwd: thread.cwd, shell, assertActive };
-    if (options?.menu) return showLocalPathMenu({ ...params, Menu, window: record.window });
+    if (options?.menu) return showLocalPathMenu({ ...params, clipboard, Menu, window: record.window });
     return openLink(params);
   });
   workspaceHandle('host:listProjectThreads', async (record, event, cwd, cursor) => {
@@ -894,7 +916,7 @@ function installHandlers() {
   handle('host:showPathMenu', args => args.length < 3 && typeof args[1] === 'string' ? 1 : 2, ({ session, window }, target, options) => {
     const generation = session.generation;
     const cwd = session.currentCwd;
-    return showLocalPathMenu({ target, cwd, shell, Menu, window, options, assertActive: () => {
+    return showLocalPathMenu({ target, cwd, shell, clipboard, Menu, window, options, assertActive: () => {
       session.assertActive(generation);
       if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Откройте ссылку повторно.');
     } });
@@ -912,13 +934,14 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
   if (quitting) return null;
   const win = new BrowserWindow({
     width: 1480, height: 960, minWidth: 940, minHeight: 640,
-    title: `Codex Desk — ${channelLabel}`, icon: path.join(here, 'icon.ico'), backgroundColor: '#101311', autoHideMenuBar: true,
+    title: `Codex Desk — ${channelLabel}`, icon: windowIcon, show: false, backgroundColor: '#101311', autoHideMenuBar: true,
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   if (process.platform === 'win32') win.setAppDetails({
-    appId: identity.appId, appIconPath: app.getPath('exe'), appIconIndex: 0,
+    appId: identity.appId, appIconPath: shellIcon, appIconIndex: 0,
     relaunchCommand: `"${app.getPath('exe')}"`, relaunchDisplayName: identity.name,
   });
+  win.show();
   const record = { window: win, sessions: new Map(), defaultSessionId: null, historySession: null, closingProjects: new Set() };
   if (checkpoint) {
     record.restoration = { kind: restoreKind, activeIndex: checkpoint.activeIndex, tabs: checkpoint.tabs.map(tab => {
@@ -1008,6 +1031,22 @@ else {
   });
   app.whenReady().then(async () => {
     const initialized = await initializeChannelProfile(channelPaths);
+    if (process.platform === 'win32') {
+      try {
+        shellIcon = await persistShellIcon({ source: windowIcon, userData: channelPaths.userData });
+        windowIcon = shellIcon;
+        notifications.icon = shellIcon;
+        // Electron's PE ProductName is shared by both channels. It asynchronously
+        // recreates this shortcut for notifications, dropping IconLocation.
+        // Watch only production registrations and patch only this process's link.
+        if (app.isPackaged && process.env.CODEX_DESK_TEST !== '1' && !isolatedProfile) {
+          stopWatchingShellIcon = watchShellShortcutIcon({
+            shell, shortcut: path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Codex Desk.lnk'),
+            executable: app.getPath('exe'), appId: identity.appId, icon: shellIcon,
+          }, { onError: error => diagnostics.error('app.shellIcon', error) });
+        }
+      } catch (error) { diagnostics.error('app.shellIcon', error); }
+    }
     setupInitiallyNew = !['settings.json', 'workspace.json', 'workspace-state.json'].some(name => existsSync(path.join(channelPaths.userData, name)));
     setupService = new SetupService({
       directory: channelPaths.userData, initialExisting: !setupInitiallyNew,
@@ -1043,6 +1082,8 @@ else {
       catch (error) { diagnostics.error('window.openFailed', error); dialog.showErrorBox("Восстановление рабочего места", error.message); }
     }
     const win = await createWindow(undefined, checkpoint, restoreKind);
+    // A settings/network failure must never prevent the workspace from opening.
+    void appUpdates.start().catch(error => diagnostics.error('update.failed', error));
     const executable = app.getPath('exe');
     const executableDirectory = path.dirname(executable);
     if (app.isPackaged && releaseInfo.channel === 'nightly' && path.basename(executableDirectory).toLowerCase() === 'nightly') {
@@ -1061,7 +1102,9 @@ else {
     quitting = true;
     setupAuth.dispose();
     claudeAuth.dispose();
+    stopWatchingShellIcon?.();
     const closeUpdater = updater?.close();
+    const closeAppUpdates = appUpdates.close();
     void (async () => {
       await setupService?.waitForIdle();
       setupService?.dispose();
@@ -1079,7 +1122,7 @@ else {
         record.historySession?.dispose();
         record.management?.dispose();
       }
-      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), bookmarks.flush(), claudeToken.flush(), closeUpdater]);
+      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), bookmarks.flush(), claudeToken.flush(), closeUpdater, closeAppUpdates]);
       diagnostics.record('info', 'app.quit');
       await diagnostics.flush();
       settingsFlushed = true; app.quit();

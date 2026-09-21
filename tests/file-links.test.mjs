@@ -104,7 +104,14 @@ test('missing paths, traversal and cross-project symlinks cannot reach the shell
     openPath: () => assert.fail('outside files must not be opened'),
     showItemInFolder: () => assert.fail('outside files must not be revealed'),
   };
-  const Menu = { buildFromTemplate: () => assert.fail('outside files must not show a menu') };
+  const Menu = {
+    buildFromTemplate: items => {
+      assert.deepEqual(items.map(item => item.label), ['Копировать ссылку', 'Спросить Codex', 'Открыть в проводнике']);
+      assert.notEqual(items[0].enabled, false, 'Copying text is allowed outside the project');
+      for (const item of items.slice(1)) assert.equal(item.enabled, false, `${item.label} must stay unavailable outside the project`);
+      return { popup: options => options.callback() };
+    },
+  };
   for (const target of [
     '%2e%2e%2foutside%2fprivate.txt',
     `${pathToFileURL(cwd).pathname}/%2e%2e/outside/private.txt`,
@@ -112,7 +119,7 @@ test('missing paths, traversal and cross-project symlinks cannot reach the shell
   ]) {
     await assert.rejects(resolveLocalLink(target, cwd), /за пределами/);
     await assert.rejects(openLink({ target, cwd, shell }), /за пределами/);
-    await assert.rejects(showLocalPathMenu({ target, cwd, shell, Menu }), /за пределами/);
+    assert.equal(await showLocalPathMenu({ target, cwd, shell, Menu, options: { askCodex: true } }), undefined);
   }
   const link = path.join(cwd, 'junction');
   try { await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir'); }
@@ -124,7 +131,7 @@ test('missing paths, traversal and cross-project symlinks cannot reach the shell
   const encodedLink = pathToFileURL(path.join(link, 'private.txt')).pathname;
   await assert.rejects(resolveLocalLink(encodedLink, cwd), /за пределами/);
   await assert.rejects(openLink({ target: encodedLink, cwd, shell }), /за пределами/);
-  await assert.rejects(showLocalPathMenu({ target: encodedLink, cwd, shell, Menu }), /за пределами/);
+  assert.equal(await showLocalPathMenu({ target: encodedLink, cwd, shell, Menu, options: { askCodex: true } }), undefined);
 });
 
 test('opening invokes shell.openPath for files including executables and openExternal only for HTTP(S)', async t => {
@@ -149,9 +156,10 @@ test('opening invokes shell.openPath for files including executables and openExt
 function menuFixture(onPopup) {
   return {
     buildFromTemplate: items => {
-      assert.equal(items.length, 1);
-      assert.equal(items[0].label, 'Открыть в проводнике');
-      return { popup: options => onPopup(items[0], options) };
+      assert.deepEqual(items.map(item => item.label), ['Копировать ссылку', 'Открыть в проводнике']);
+      const reveal = items.find(item => item.label === 'Открыть в проводнике');
+      assert.notEqual(reveal.enabled, false);
+      return { popup: options => onPopup(reveal, options) };
     },
   };
 }
@@ -196,7 +204,8 @@ test('native menu propagates shell errors and checks file existence again after 
 function askMenuFixture(onPopup) {
   return {
     buildFromTemplate: items => {
-      assert.deepEqual(items.map(item => item.label), ['Спросить Codex', 'Открыть в проводнике']);
+      assert.deepEqual(items.map(item => item.label), ['Копировать ссылку', 'Спросить Codex', 'Открыть в проводнике']);
+      for (const item of items) assert.notEqual(item.enabled, false);
       return { popup: options => onPopup(items, options) };
     },
   };
@@ -211,7 +220,7 @@ test('Ask Codex returns canonical paths for files and folders without launching 
   const Menu = askMenuFixture((items, options) => {
     // Native closure can notify before delivering the selected item's click.
     options.callback();
-    queueMicrotask(() => items[0].click());
+    queueMicrotask(() => items.find(item => item.label === 'Спросить Codex').click());
   });
   for (const input of [path.basename(target), '.']) {
     assert.deepEqual(await showLocalPathMenu({ target: input, cwd, shell, Menu, options: { askCodex: true } }), {
@@ -228,7 +237,7 @@ test('Ask Codex menu cancellation and reveal resolve without an action result; o
   assert.equal(await showLocalPathMenu({ target, cwd, shell, options, Menu: askMenuFixture((_items, popup) => popup.callback()) }), undefined);
   assert.deepEqual(revealed, []);
   assert.equal(await showLocalPathMenu({ target, cwd, shell, options, Menu: askMenuFixture((items, popup) => {
-    items[1].click(); popup.callback();
+    items.find(item => item.label === 'Открыть в проводнике').click(); popup.callback();
   }) }), undefined);
   assert.deepEqual(revealed, [await realpath(target)]);
   assert.equal(await showLocalPathMenu({ target, cwd, shell, options: { askCodex: false }, Menu: menuFixture((_item, popup) => popup.callback()) }), undefined);
@@ -240,7 +249,7 @@ test('Ask Codex rechecks file existence after the native menu opens', async t =>
   const ready = new Promise(resolve => { opened = resolve; });
   let select;
   const pending = showLocalPathMenu({ target, cwd, options: { askCodex: true }, Menu: askMenuFixture((items, popup) => {
-    select = () => { items[0].click(); popup.callback(); };
+    select = () => { items.find(item => item.label === 'Спросить Codex').click(); popup.callback(); };
     opened();
   }) });
   await ready;
@@ -256,8 +265,137 @@ test('Ask Codex rejects a closed session or changed working folder after the nat
     let checks = 0;
     await assert.rejects(showLocalPathMenu({ target, cwd, options: { askCodex: true },
       assertActive: () => { checks++; if (!active) throw new Error(message); },
-      Menu: askMenuFixture((items, popup) => { active = false; items[0].click(); popup.callback(); }),
+      Menu: askMenuFixture((items, popup) => { active = false; items.find(item => item.label === 'Спросить Codex').click(); popup.callback(); }),
     }), { message });
     assert.equal(checks, 2, 'The session is checked before opening the menu and again before returning the selected path');
+  }
+});
+
+
+function copyMenuFixture(onPopup, checkItems = () => {}) {
+  return {
+    buildFromTemplate: items => {
+      assert.equal(items[0].label, 'Копировать ссылку');
+      assert.notEqual(items[0].enabled, false);
+      checkItems(items);
+      return { popup: options => onPopup(items[0], options) };
+    },
+  };
+}
+
+test('copy preserves HTTP(S), encoded local paths, file URLs and source positions without opening them', async t => {
+  const { cwd, target } = await fixture(t);
+  const copied = [];
+  const clipboard = { writeText: value => { copied.push(value); } };
+  const shell = {
+    openPath: () => assert.fail('Copy must not open a file'),
+    openExternal: () => assert.fail('Copy must not open a browser'),
+    showItemInFolder: () => assert.fail('Copy must not reveal a file'),
+  };
+  const links = [
+    'https://EXAMPLE.test/a%20b?q=%D1%82%D0%B5%D1%81%D1%82&x=1#section',
+    'http://example.test:80/path?key=value#L12',
+    target,
+    `${encodeURIComponent(path.basename(target))}:12:4`,
+    `${pathToFileURL(target).pathname}#L12-L15`,
+    `${pathToFileURL(target).href}#L12`,
+  ];
+  for (const link of links) {
+    const web = /^https?:/.test(link);
+    const Menu = copyMenuFixture((item, popup) => {
+      // The close callback may arrive just before the selected item's click.
+      popup.callback();
+      queueMicrotask(() => item.click());
+    }, items => {
+      assert.deepEqual(items.map(item => item.label), web ? ['Копировать ссылку'] : ['Копировать ссылку', 'Спросить Codex', 'Открыть в проводнике']);
+      for (const item of items) assert.notEqual(item.enabled, false);
+    });
+    assert.equal(await showLocalPathMenu({ target: link, cwd, shell, clipboard, Menu, options: { askCodex: true } }), undefined);
+    assert.equal(copied.at(-1), link, 'The complete original href is copied without URL normalization or removing source positions');
+  }
+  assert.deepEqual(copied, links);
+});
+
+test('missing files, links outside the project and unavailable projects remain copyable with file actions disabled', async t => {
+  const { base, cwd, target } = await fixture(t);
+  const outside = path.join(base, 'outside.txt');
+  await writeFile(outside, 'outside the project');
+  const cases = [
+    { target: 'missing.txt', cwd },
+    { target: outside, cwd },
+    { target: '../outside.txt', cwd },
+    { target: `${pathToFileURL(outside).pathname}:18`, cwd },
+    { target, cwd: path.join(base, 'missing-project') },
+    { target, cwd: undefined },
+  ];
+  const copied = [];
+  const clipboard = { writeText: value => { copied.push(value); } };
+  const shell = {
+    openPath: () => assert.fail('Unavailable files must not be opened'),
+    showItemInFolder: () => assert.fail('Unavailable files must not be revealed'),
+  };
+  const Menu = copyMenuFixture((item, popup) => { item.click(); popup.callback(); }, items => {
+    assert.deepEqual(items.map(item => item.label), ['Копировать ссылку', 'Спросить Codex', 'Открыть в проводнике']);
+    for (const item of items.slice(1)) assert.equal(item.enabled, false);
+  });
+  for (const input of cases) assert.equal(await showLocalPathMenu({ ...input, shell, clipboard, Menu, options: { askCodex: true } }), undefined);
+  assert.deepEqual(copied, cases.map(input => input.target));
+});
+
+test('copy menu cancellation leaves the clipboard untouched, including after an unavailable file lookup', async t => {
+  const { cwd, target } = await fixture(t);
+  const clipboard = { writeText: () => assert.fail('Cancellation must not overwrite the clipboard') };
+  const Menu = copyMenuFixture((_item, popup) => popup.callback());
+  for (const link of ['https://example.test/path', target, 'missing.txt']) {
+    assert.equal(await showLocalPathMenu({ target: link, cwd, clipboard, Menu }), undefined);
+  }
+});
+
+test('copy still works if a file disappears while its native menu is open', async t => {
+  const { cwd, target } = await fixture(t);
+  const copied = [];
+  let opened;
+  const ready = new Promise(resolve => { opened = resolve; });
+  let select;
+  const pending = showLocalPathMenu({ target, cwd, clipboard: { writeText: value => { copied.push(value); } },
+    Menu: copyMenuFixture((item, popup) => {
+      select = () => { item.click(); popup.callback(); };
+      opened();
+    }),
+  });
+  await ready;
+  await unlink(target);
+  select();
+  assert.equal(await pending, undefined);
+  assert.deepEqual(copied, [target]);
+});
+
+test('copy rejects a stale session before display or selection and propagates clipboard failures', async t => {
+  const { cwd, target } = await fixture(t);
+  const clipboard = { writeText: () => assert.fail('A stale session must not overwrite the clipboard') };
+  await assert.rejects(showLocalPathMenu({ target, cwd, clipboard,
+    assertActive: () => { throw new Error('Вкладка закрыта.'); },
+    Menu: { buildFromTemplate: () => assert.fail('A closed session must not open its menu') },
+  }), /Вкладка закрыта/);
+  for (const link of [target, 'https://example.test/path', 'missing.txt']) {
+    for (const message of ['Вкладка закрыта.', 'Рабочая папка изменилась.']) {
+      let active = true;
+      await assert.rejects(showLocalPathMenu({ target: link, cwd, clipboard,
+        assertActive: () => { if (!active) throw new Error(message); },
+        Menu: copyMenuFixture((item, popup) => { active = false; item.click(); popup.callback(); }),
+      }), { message });
+    }
+  }
+  await assert.rejects(showLocalPathMenu({ target, cwd,
+    clipboard: { writeText: () => { throw new Error('Clipboard unavailable'); } },
+    Menu: copyMenuFixture((item, popup) => { item.click(); popup.callback(); }),
+  }), /Clipboard unavailable/);
+});
+
+test('invalid clipboard targets are rejected before the native menu is shown', async () => {
+  const Menu = { buildFromTemplate: () => assert.fail('Invalid text must not reach a native menu') };
+  const clipboard = { writeText: () => assert.fail('Invalid text must not be copied') };
+  for (const target of ['', '  ', null, 42, 'x'.repeat(32769), 'https://example.test/\ntext', 'bad\u0000path']) {
+    await assert.rejects(showLocalPathMenu({ target, clipboard, Menu }), /Некорректная ссылка или путь/);
   }
 });

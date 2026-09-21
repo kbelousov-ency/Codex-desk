@@ -42,6 +42,20 @@ export type UpdateSnapshot = { version: 1; activeIndex: number; tabs: UpdateTabS
 export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; pinned?: boolean; pendingMessage?: PendingMessage };
 export type UpdateStatus = { state: 'awaiting' | 'waiting' | 'manual' | 'preparing' | 'error'; message?: string };
 export type WorkspaceInfo = { projects: string[]; sessions: SessionInfo[]; restore?: { activeIndex: number; tabs: RestoredTab[]; kind?: 'workspace' | 'update' } };
+export type AppUpdateStatus = {
+  currentVersion: string;
+  channel: 'stable' | 'nightly' | 'development';
+  enabled: boolean;
+  supported: boolean;
+  phase: 'idle' | 'checking' | 'available' | 'up-to-date' | 'error' | 'disabled';
+  checkedAt?: string;
+  latestVersion?: string;
+  releaseUrl?: string;
+  downloadUrl?: string;
+  releaseNotes?: string;
+  error?: string;
+  skippedVersion?: string;
+};
 export type BuildInfo = { channel: 'stable' | 'nightly' | 'development'; version: string; buildId?: string; builtAt?: string };
 export type DiagnosticsStatus = { enabled: boolean; directory: string | null; error?: string };
 export type RendererErrorReport = { kind: 'error' | 'unhandledrejection' | 'react'; name?: string; message?: string; stack?: string; componentStack?: string };
@@ -116,6 +130,11 @@ export interface WorkspaceBridge extends CodexBridge {
   getWindowFocus(): Promise<boolean>;
   onWindowFocus(listener: (focused: boolean) => void): () => void;
   getBuildInfo(): Promise<BuildInfo>;
+  getAppUpdateStatus(): Promise<AppUpdateStatus>;
+  checkAppUpdates(): Promise<AppUpdateStatus>;
+  setAppUpdatePreferences(patch: { enabled?: boolean; skippedVersion?: string | null }): Promise<AppUpdateStatus>;
+  openAppUpdateDownload(): Promise<void>;
+  onAppUpdateStatus(listener: (status: AppUpdateStatus) => void): () => void;
   getDiagnosticsStatus(): Promise<DiagnosticsStatus>;
   exportDiagnostics(): Promise<{ canceled: boolean; path?: string }>;
   exportConversation(file: { filename: string; content: string; format: 'markdown' | 'html' }): Promise<{ canceled: boolean; path?: string }>;

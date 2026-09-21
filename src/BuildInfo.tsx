@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
+import { OpenAppUpdatesContext } from './AppUpdateContext';
 import type { BuildInfo } from './types';
 import './build-info.css';
 
@@ -42,8 +43,10 @@ function description(info: BuildInfo) {
 }
 
 export function BuildBadge() {
+  const openUpdates = useContext(OpenAppUpdatesContext);
   const info = useBuildInfo();
   const title = info ? description(info) : info === null ? 'Сведения о сборке недоступны' : 'Загружаем сведения о сборке…';
+  if (openUpdates) return <button type="button" className={`version-badge build-badge ${info?.channel || 'unknown'}`} title={title} aria-label={`Обновления приложения · ${title}`} onClick={openUpdates}>{info ? labels[info.channel] : info === null ? '—' : '…'}</button>;
   return <span className={`version-badge build-badge ${info?.channel || 'unknown'}`} title={title} aria-label={title}>{info ? labels[info.channel] : info === null ? '—' : '…'}</span>;
 }
 
