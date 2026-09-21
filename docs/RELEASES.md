@@ -1,5 +1,27 @@
 # Release и Nightly
 
+## Перенос Release 0.4.0 и проверка установщика — 2026-09-21
+
+По поручению пользователя «в релиз и заливай» применённая Nightly `336f2badc12c2e8b998d4441d52dc74246e8f8c5dbd434cf756d0b94fc9de9a2` перенесена штатным `release:promote` в `release/stable` без перекомпиляции. Прежний Release `0.3.0`, build ID `379a3a5286b60157245b6511da2ca24bddc01f2e27cb47f1f20cf36d82134281`, сохранён в `release/stable-previous`. Пользовательские окна не закрывались.
+
+Перед переносом manifest 72 файлов проверен; все 49 файлов host/preload/dist и поставляемых инструкций побайтно совпали с исходниками (`artifacts/release-040-package-verification.json`). Сохранённый полный `check` и проверки новой функции перечислены ниже; повторная сборка Nightly не требовалась.
+
+`release:installer` создал `Codex-Desk-Setup-0.4.0.exe`: 100 937 090 байт, SHA-256 `a2b5eabaf2fe22f9a35db6eb2fa5f3086fff25000d73cbed4abfd7dba83fc76b`. Настоящая silent-установка в `artifacts/installer-test-dc0b3725fd464cdfa686357b3e4125bb` завершилась с exit 0, все 72 файла совпали. Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-nIXbZc`): Electron/preload/IPC, изолированные профили и fixture CLI, preview/enable/restart/disable правил обоих агентов, точные backups и восстановление инструкций. Запросов модели и реальных установок CLI не было. Отдельный сценарий обновления предыдущей версии в этой поставке не повторялся; прежняя проверка 0.2.0 → 0.3.0 сохранена ниже. Штатный uninstall завершён (`cleaned`), три внешних файла восстановлены, тестовые установка и реестр удалены.
+
+`release:prepare` подготовил Setup, `SHA256SUMS.txt`, `release-info.json`, `README.txt` и `RELEASE_NOTES.md` в `artifacts/github-release` для разрешённой публикации v0.4.0.
+
+## Правила памяти для всех проектов — 2026-09-21
+
+Nightly **0.4.0**, build ID `336f2badc12c2e8b998d4441d52dc74246e8f8c5dbd434cf756d0b94fc9de9a2`, собрана `npm.cmd run package` и поставлена в штатную очередь 12:59:17 UTC (`host_awaiting`). Включены [поставляемые правила памяти](MEMORY_RULES.md): шаг мастера, раздел настроек, точный просмотр, отдельное включение/отключение Codex и Claude через их глобальные инструкции с backup и сохранением пользовательского текста. Пользовательский Nightly не закрывался; применение — по «Закрыть» в чате или ручному выходу.
+
+Версия `0.3.0` уже была публичной; прежняя формулировка в VERSIONING о ней как о следующей версии оказалась устаревшей и исправлена по записи публикации ниже. Новая совместимая функция получила MINOR `0.4.0`; содержимое и тег `v0.3.0` не менялись.
+
+Проверки: `npm.cmd run check` — TypeScript, 518 passed / 2 skipped, production Vite. После двух дополнительных fault-сценариев финальные 21/21 тестов сервиса памяти прошли отдельно. Browser `ui-memory-rules` и `ui-setup` прошли, включая ошибки, конфликты, клавиатурный фокус и узкий экран. `ui-setup-host` прошёл на исходниках (`artifacts/setup-host-rP3TJw`) и готовом exe (`artifacts/setup-host-nTZcRK`): настоящие Electron/preload/IPC, изолированные профили и fixture CLI, оба агента, preview без записи, точные backup, restart и побайтное восстановление пользовательских инструкций после disable. Model turns, реальные установки CLI и изменения пользовательских профилей — 0.
+
+Manifest кандидата проверен; 49 файлов host/preload/dist и текстов инструкций в app.asar побайтно совпали с исходниками (`artifacts/memory-rules-package-verification.json`). SHA-256 app.asar Nightly — `b959e16b0682f462c672955eb04e654e7821547a7cb952abe9412cef441e97a6`. Release сохранил `192d0a9cf5a2810ca241e955c86a7cbd0ef7cdf1c1249d792f125e16f0185ce2`.
+
+Проверочный Setup `artifacts/installer-nightly/Codex-Desk-Nightly-Setup-0.4.0.exe`: 100 938 694 байт, SHA-256 `e80868014215283385e02dbd8e7d5232ab130ff3f79327a08e782c6901e157b8`. Создан `npm.cmd run package:installer` из тех же проверенных байтов кандидата. Реальная установка/удаление Setup на этой задаче не повторялись; NSIS-сценарий не менялся. Продвижение в Release и публикация не выполнялись.
+
 ## Публичный Release 0.3.0 — 2026-09-21
 
 По поручению пользователя «в релиз и заливай» (сообщение в английской раскладке `d htkbp b pfkbdfq`) применённая Nightly `379a3a5286b60157245b6511da2ca24bddc01f2e27cb47f1f20cf36d82134281` перенесена в `release/stable` без перекомпиляции. Прежняя `0.2.0`, build ID `63ab264a1592a5867a29209fc5500d00b2e527f2655f0e854c4599444e8b51aa`, сохранена в `release/stable-previous`. Nightly штатно применялась: `published` 12:14:19 UTC, `complete` 12:14:20 UTC. Пользовательские окна во время переноса не закрывались.

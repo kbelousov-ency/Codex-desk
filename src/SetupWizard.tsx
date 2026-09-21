@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, CheckCheck, CircleAlert, CircleCheck, Download, ExternalLink, FileCheck2, FileText, FolderOpen, GitBranch, KeyRound, LoaderCircle, RefreshCw, Settings2, ShieldCheck, Terminal, X } from 'lucide-react';
 import AgentLogo from './AgentLogo';
+import MemoryRulesSettings from './MemoryRulesSettings';
 import type { AgentProvider } from './types';
 import type { SetupAuthStatus, SetupComponentId, SetupConfigPreview, SetupProgress, SetupScan } from './setup-types';
 import './setup-wizard.css';
@@ -9,6 +10,7 @@ const steps = [
   { label: 'Агенты', detail: 'Выбор и установка', icon: Terminal },
   { label: 'Конфигурация', detail: 'Ваши настройки Codex', icon: FileText },
   { label: 'Вход в аккаунт', detail: 'Подключение агентов', icon: KeyRound },
+  { label: 'Память', detail: 'Правила для всех проектов', icon: FileCheck2 },
   { label: 'Готово', detail: 'Можно начинать', icon: CheckCheck },
 ];
 const names: Record<SetupComponentId, string> = { codex: 'Codex CLI', claude: 'Claude Code CLI', git: 'Git' };
@@ -35,6 +37,9 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
   const [authWaiting, setAuthWaiting] = useState<Partial<Record<AgentProvider, number>>>({});
   const [preferred, setPreferred] = useState<AgentProvider>('codex');
   const [providerTouched, setProviderTouched] = useState(false);
+  const [memoryBusy, setMemoryBusy] = useState(false);
+  const memoryLock = useRef(false);
+  const onMemoryBusyChange = useCallback((value: boolean) => { memoryLock.current = value; setMemoryBusy(value); }, []);
   const mounted = useRef(false);
   const operationLock = useRef(false);
   const authLocks = useRef(new Set<AgentProvider>());
@@ -42,13 +47,13 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
   const title = useRef<HTMLHeadingElement>(null);
   const configPreview = useRef<HTMLElement>(null);
   const dismiss = useRef(() => {});
-  const busy = Boolean(operation) || authChecking.length > 0;
+  const busy = Boolean(operation) || authChecking.length > 0 || memoryBusy;
   const installed = (id: SetupComponentId) => scan?.components.some(component => component.id === id && component.status === 'installed') ?? false;
   const available = providers.filter(installed);
   const pending = (['codex', 'claude', 'git'] as SetupComponentId[]).filter(id => selected[id] && !installed(id));
 
   const run = useCallback(async (name: string, action: () => Promise<void>) => {
-    if (operationLock.current || authLocks.current.size) return;
+    if (operationLock.current || authLocks.current.size || memoryLock.current) return;
     operationLock.current = true;
     setOperation(name); setError('');
     try { await action(); }
@@ -136,7 +141,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismiss.current(); }
       if (event.key !== 'Tab') return;
-      const nodes = Array.from(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]') || []).filter(node => node.getClientRects().length > 0);
+      const nodes = Array.from(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], summary, [tabindex="0"]') || []).filter(node => node.getClientRects().length > 0);
       const first = nodes[0]; const last = nodes[nodes.length - 1];
       if (!first) { event.preventDefault(); title.current?.focus(); return; }
       if (event.shiftKey && (document.activeElement === first || !nodes.includes(document.activeElement as HTMLElement))) { event.preventDefault(); last.focus(); }
@@ -202,11 +207,12 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
     if (mounted.current) setAuthWaiting(current => ({ ...current, [provider]: Date.now() }));
   });
 
-  const titles = ['Настроим ваше рабочее место', 'Настройки Codex — из вашего файла', 'Подключите свои аккаунты', available.length ? 'Всё для первого диалога' : 'Настройка сохранена'];
+  const titles = ['Настроим ваше рабочее место', 'Настройки Codex — из вашего файла', 'Подключите свои аккаунты', 'Память ваших проектов', available.length ? 'Всё для первого диалога' : 'Настройка сохранена'];
   const subtitles = [
     'Выберите агентов, с которыми хотите работать. Уже установленные программы подключатся автоматически.',
     'Загрузите конфигурацию с портала или используйте текущие настройки. Этот шаг можно пропустить.',
     'Войдите один раз, чтобы продолжить работу в Codex Desk. Можно завершить этот шаг позже.',
+    'Просмотрите рекомендуемые правила и включите их отдельно для каждого агента. Можно продолжить без включения и вернуться к этому в настройках.',
     'Ниже — результат настройки. К этому мастеру всегда можно вернуться из настроек приложения.',
   ];
 
@@ -284,7 +290,9 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
             <div className="setup-footnote"><ShieldCheck size={16} /><p>Вход выполняется средствами самого агента. Codex Desk использует уже сохранённую авторизацию.</p></div>
           </>}
 
-          {step === 3 && <>
+          {step === 3 && <MemoryRulesSettings providers={available} showTitle={false} onBusyChange={onMemoryBusyChange} />}
+
+          {step === 4 && <>
             <div className="setup-finish-mark"><CheckCheck size={32} /></div>
             <div className="setup-result-list">{providers.map(provider => <div className="setup-result-row" key={provider}><AgentLogo provider={provider} size={19} /><strong>{names[provider]}</strong><span className={installed(provider) ? 'is-good' : ''}>{installed(provider) ? auth[provider] ? authLabels[auth[provider]!.state] : 'Установлен' : 'Установка пропущена'}</span></div>)}<div className="setup-result-row"><FileText size={19} /><strong>Конфигурация Codex</strong><span>{appliedConfig ? 'Применена из файла' : scan?.config.exists ? 'Сохранена текущая' : 'Не добавлена'}</span></div><div className="setup-result-row"><GitBranch size={19} /><strong>Git</strong><span className={installed('git') ? 'is-good' : ''}>{installed('git') ? 'Установлен' : 'Можно добавить позже'}</span></div></div>
             {available.length > 0 && <fieldset className="setup-start-agent"><legend>{initial ? 'С каким агентом начнём?' : 'Агент для новых диалогов'}</legend><div>{available.map(provider => <label key={provider} className={preferred === provider ? 'is-selected' : ''}><input type="radio" name="setup-agent" value={provider} checked={preferred === provider} disabled={busy} onChange={() => { setPreferred(provider); setProviderTouched(true); }} /><AgentLogo provider={provider} size={18} /><span>{provider === 'codex' ? 'Codex' : 'Claude'}</span></label>)}</div></fieldset>}
@@ -294,7 +302,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
         <footer className="setup-footer"><div>{step > 0 ? <button className="setup-button is-quiet" disabled={busy} onClick={() => setStep(current => current - 1)}><ArrowLeft size={15} />Назад</button> : <button className="setup-button is-quiet" disabled={busy} onClick={() => finish(true)}>Настроить позже</button>}</div><div className="setup-footer-actions">
           {step === 0 && pending.length > 0 && scan?.platformSupported && <button className="setup-text-button setup-skip-install" disabled={busy} onClick={next}>Без установки</button>}
           {step === 1 && preview && <button className="setup-text-button" disabled={busy} onClick={next}>Пропустить</button>}
-          {step === 0 ? <button className="setup-button is-primary" disabled={busy || !scan} onClick={() => pending.length > 0 && scan?.platformSupported ? void installSelected() : next()}>{busy ? <LoaderCircle className="setup-spin" size={16} /> : pending.length > 0 && scan?.platformSupported ? <Download size={16} /> : null}{operation === 'install' ? 'Устанавливаем…' : pending.length > 0 && scan?.platformSupported ? 'Установить и продолжить' : 'Продолжить'}{!busy && <ArrowRight size={15} />}</button> : step === 3 ? <button className="setup-button is-primary" disabled={busy} onClick={() => finish(false)}>{operation === 'complete' ? <LoaderCircle className="setup-spin" size={16} /> : null}{available.length ? 'Начать работу' : 'Открыть Codex Desk'}<ArrowRight size={15} /></button> : step === 1 && preview ? <button className="setup-button is-primary" disabled={busy || (preview.exists && !replaceExisting)} onClick={() => void applyConfig(true)}>{operation === 'apply-config' ? <LoaderCircle className="setup-spin" size={16} /> : null}Применить и продолжить<ArrowRight size={15} /></button> : <button className="setup-button is-primary" disabled={busy} onClick={next}>{step === 1 && !appliedConfig ? scan?.config.exists && installed('codex') ? 'Оставить текущую' : 'Пропустить' : step === 2 && available.some(provider => auth[provider]?.state !== 'signed-in' && auth[provider]?.state !== 'provider') ? 'Войти позже' : 'Продолжить'}<ArrowRight size={15} /></button>}
+          {step === 0 ? <button className="setup-button is-primary" disabled={busy || !scan} onClick={() => pending.length > 0 && scan?.platformSupported ? void installSelected() : next()}>{busy ? <LoaderCircle className="setup-spin" size={16} /> : pending.length > 0 && scan?.platformSupported ? <Download size={16} /> : null}{operation === 'install' ? 'Устанавливаем…' : pending.length > 0 && scan?.platformSupported ? 'Установить и продолжить' : 'Продолжить'}{!busy && <ArrowRight size={15} />}</button> : step === 4 ? <button className="setup-button is-primary" disabled={busy} onClick={() => finish(false)}>{operation === 'complete' ? <LoaderCircle className="setup-spin" size={16} /> : null}{available.length ? 'Начать работу' : 'Открыть Codex Desk'}<ArrowRight size={15} /></button> : step === 1 && preview ? <button className="setup-button is-primary" disabled={busy || (preview.exists && !replaceExisting)} onClick={() => void applyConfig(true)}>{operation === 'apply-config' ? <LoaderCircle className="setup-spin" size={16} /> : null}Применить и продолжить<ArrowRight size={15} /></button> : <button className="setup-button is-primary" disabled={busy} onClick={next}>{step === 1 && !appliedConfig ? scan?.config.exists && installed('codex') ? 'Оставить текущую' : 'Пропустить' : step === 2 && available.some(provider => auth[provider]?.state !== 'signed-in' && auth[provider]?.state !== 'provider') ? 'Войти позже' : 'Продолжить'}<ArrowRight size={15} /></button>}
         </div></footer>
       </div>
     </div>

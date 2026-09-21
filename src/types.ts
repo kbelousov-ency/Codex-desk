@@ -1,4 +1,5 @@
 import type { SetupBridge } from './setup-types';
+import type { MemoryRulesBridge } from './memory-rules-types';
 export type Access = 'inherited' | 'auto' | 'read-only' | 'workspace-write' | 'danger-full-access';
 export type AgentProvider = 'codex' | 'claude';
 export type AgentCapabilities = { compact: boolean; steer: boolean; terminal: boolean; mcp: boolean; archive: boolean; usage?: boolean };
@@ -117,6 +118,7 @@ export interface CodexBridge {
 }
 export interface WorkspaceBridge extends CodexBridge {
   setup?: SetupBridge;
+  memoryRules?: MemoryRulesBridge;
   searchHistory(options: { query: string; cwd: string; provider: AgentProvider | 'all'; cursor?: string }): Promise<HistorySearchPage>;
   resolveHistoryTarget(options: { cwd: string; provider: AgentProvider; threadId: string }): Promise<Thread>;
   listBookmarks(options?: { cwd?: string; provider?: AgentProvider | 'all' }): Promise<Bookmark[]>;

@@ -50,6 +50,10 @@ function forSession(sessionId) {
 }
 
 contextBridge.exposeInMainWorld('codex', {
+  memoryRules: {
+    preview: provider => ipcRenderer.invoke('memoryRules:preview', provider),
+    apply: options => ipcRenderer.invoke('memoryRules:apply', options),
+  },
   setup: {
     state: () => ipcRenderer.invoke('setup:state'),
     scan: () => ipcRenderer.invoke('setup:scan'),

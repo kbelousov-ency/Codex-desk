@@ -315,6 +315,12 @@ function addSession(record, settings) {
 }
 
 function installHandlers() {
+  workspaceHandle('memoryRules:preview', (_record, _event, provider) => setupService.previewMemoryRules(provider));
+  workspaceHandle('memoryRules:apply', async (_record, _event, options) => {
+    const result = await setupService.applyMemoryRules(options);
+    if (result.changed) reconnectAfterSetup(options.provider, 'Правила памяти изменены. Начните новый диалог, чтобы использовать их.');
+    return result;
+  });
   workspaceHandle('setup:state', async () => ({ ...await setupService.state(), preferredProvider: (await settingsStore.snapshot()).provider }));
   workspaceHandle('setup:scan', () => setupService.scan());
   workspaceHandle('setup:install', (record, _event, id) => setupService.install(id, progress => {

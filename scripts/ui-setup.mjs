@@ -75,6 +75,20 @@ try {
       async complete(options) { fixture.calls.push({ method: 'complete', options: clone(options) }); },
       onProgress(listener) { fixture.progressListeners.add(listener); return () => fixture.progressListeners.delete(listener); },
     } };
+    if (scenario !== 'manual') {
+      fixture.memory = { enabled: {}, revision: {}, hold: false, release: null };
+      const preview = provider => ({ provider, enabled: Boolean(fixture.memory.enabled[provider]), conflict: null, revision: String(fixture.memory.revision[provider] || 0), instructionPath: 'C:/Fixture/.' + provider + '/' + (provider === 'codex' ? 'AGENTS.md' : 'CLAUDE.md'), procedurePath: 'C:/Fixture/.' + provider + '/reference/memory-compact.md', rulesText: 'Сохраняйте решения и причины. Не запускайте полное сжатие автоматически.', procedureText: '# Сжатие памяти\nСделайте резервную копию, затем проверьте ссылки.' });
+      window.codex.memoryRules = {
+        async preview(provider) { fixture.calls.push({ method: 'memoryPreview', provider }); return preview(provider); },
+        async apply(options) {
+          fixture.calls.push({ method: 'memoryApply', options: clone(options) });
+          if (fixture.memory.hold) await new Promise(resolve => { fixture.memory.release = resolve; });
+          fixture.memory.enabled[options.provider] = options.enabled;
+          fixture.memory.revision[options.provider] = (fixture.memory.revision[options.provider] || 0) + 1;
+          return { ...preview(options.provider), changed: true, backupPaths: ['C:/Fixture/AGENTS.md.backup-memory'] };
+        },
+      };
+    }
   });
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   await page.getByRole('heading', { name: 'Настроим ваше рабочее место' }).waitFor();
@@ -121,6 +135,29 @@ try {
   await page.evaluate(() => { window.__setup.login.claude = 'done'; });
   await page.getByText('fixture@example.test', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+  await page.getByRole('heading', { name: 'Память ваших проектов' }).waitFor();
+  await page.getByRole('button', { name: 'Включить для Codex', exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.__setup.calls.some(call => call.method === 'memoryApply')), false);
+  const memorySummaries = page.locator('[data-memory-provider="codex"] summary');
+  await memorySummaries.nth(0).focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await memorySummaries.nth(1).evaluate(element => element === document.activeElement), true);
+  await page.keyboard.press('Tab');
+  assert.equal(await page.getByRole('button', { name: 'Включить для Codex', exact: true }).evaluate(element => element === document.activeElement), true);
+  await page.evaluate(() => { window.__setup.memory.hold = true; });
+  await page.getByRole('button', { name: 'Включить для Codex', exact: true }).click();
+  await page.waitForFunction(() => window.__setup.memory.release);
+  for (const name of ['Продолжить', 'Назад', 'Настроить позже']) assert.equal(await page.getByRole('button', { name, exact: true }).isDisabled(), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => window.__setup.closed.length), 0);
+  await page.evaluate(() => { window.__setup.memory.hold = false; window.__setup.memory.release(); });
+  await page.getByText('Правила для Codex включены', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Включить для Claude', exact: true }).waitFor();
+  await page.setViewportSize({ width: 800, height: 600 });
+  assert.equal(await page.locator('.setup-footer').evaluate(element => element.getBoundingClientRect().bottom <= innerHeight), true);
+  assert.equal(await page.locator('.setup-dialog').evaluate(element => element.scrollWidth === element.clientWidth), true);
+  await page.screenshot({ path: 'artifacts/setup-memory.png' });
+  await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
   await page.getByRole('heading', { name: 'Всё для первого диалога' }).waitFor();
   await page.getByRole('radio', { name: 'Claude', exact: true }).check();
   await page.screenshot({ path: 'artifacts/setup-finish.png' });
@@ -135,6 +172,9 @@ try {
   await page.getByText('Сначала установите Codex CLI', { exact: true }).waitFor();
   await page.getByRole('button', { name: 'Пропустить', exact: true }).click();
   await page.getByText('Агенты пока не установлены', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+  await page.getByRole('heading', { name: 'Память ваших проектов' }).waitFor();
+  assert.equal(await page.locator('[data-memory-provider]').count(), 0);
   await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
   await page.getByRole('heading', { name: 'Настройка сохранена' }).waitFor();
   assert.equal(await page.getByRole('radio').count(), 0);
@@ -157,6 +197,9 @@ try {
     await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
     await page.getByRole('button', { name: 'Оставить текущую', exact: true }).click();
     await page.getByRole('button', { name: 'Войти позже', exact: true }).click();
+    await page.getByRole('heading', { name: 'Память ваших проектов' }).waitFor();
+    await page.getByText('Настройка правил доступна в установленном приложении Codex Desk.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
     await page.getByText('Агент для новых диалогов', { exact: true }).waitFor();
     assert.equal(await page.getByRole('radio', { name: 'Claude', exact: true }).isChecked(), true);
     if (changeDefault) await page.getByRole('radio', { name: 'Codex', exact: true }).check();
@@ -164,7 +207,7 @@ try {
     assert.deepEqual(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'complete')), [{ method: 'complete', options: changeDefault ? { provider: 'codex', deferred: false } : { deferred: false } }]);
   }
   assert.deepEqual(errors, []);
-  console.log('Setup wizard browser checks passed: installation selection/retry, config confirmation, auth polling, responsive layout, focus, skip/defer and preservation of the default agent. No real CLI or model calls.');
+  console.log('Setup wizard browser checks passed: installation selection/retry, config confirmation, auth polling, explicit memory enable/skip/write lock, responsive layout, focus, skip/defer and preservation of the default agent. No real CLI or model calls.');
 } finally {
   await browser?.close();
   await server.close();

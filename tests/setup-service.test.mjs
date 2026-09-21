@@ -140,6 +140,7 @@ test('install serializes mutations and exposes the active component until done',
   assert.equal(f.service.busy, true);
   assert.equal(f.service.activeComponent, 'codex');
   await assert.rejects(f.service.install('claude'), /Дождитесь/);
+  await assert.rejects(f.service.applyMemoryRules({ provider: 'claude', enabled: true, revision: 'unused' }), /Дождитесь/);
   await assert.rejects(f.service.complete(), /Дождитесь/);
   let idle = false;
   const waiting = f.service.waitForIdle().then(() => { idle = true; });
@@ -348,4 +349,94 @@ test('preview disposal cannot resurrect a pending import after an asynchronous r
   release();
   await assert.rejects(preview, /закрывается/);
   assert.equal(f.service._pending, null);
+});
+
+
+test('memory rules are never applied by setup startup, scan, completion or disposal', async t => {
+  const calls = [];
+  const memoryRules = {
+    preview: async provider => { calls.push(['preview', provider]); return { provider, enabled: false, revision: 'fixture' }; },
+    apply: async options => { calls.push(['apply', options]); },
+  };
+  const f = await fixture(t, { memoryRules });
+  await f.service.state();
+  await f.service.scan();
+  await f.service.complete({ provider: 'codex' });
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await f.service.previewMemoryRules('claude'), { provider: 'claude', enabled: false, revision: 'fixture' });
+  assert.deepEqual(calls, [['preview', 'claude']]);
+  f.service.dispose();
+  assert.throws(() => f.service.previewMemoryRules('codex'), /закрывается/);
+  await assert.rejects(f.service.applyMemoryRules({ provider: 'codex', enabled: true, revision: 'fixture' }), /закрывается/);
+  assert.deepEqual(calls, [['preview', 'claude']]);
+  assert.equal(f.calls.length, 0, 'Local instruction lifecycle must not launch a CLI');
+});
+
+test('memory changes reserve the shared setup mutation and shutdown waits for their completion', async t => {
+  let release, started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const options = { provider: 'claude', enabled: true, revision: 'fixture' };
+  const result = { provider: 'claude', enabled: true, changed: true, backupPaths: ['fixture-backup'] };
+  const applied = [];
+  const f = await fixture(t, { memoryRules: {
+    preview: async provider => ({ provider, enabled: false }),
+    apply: async value => { applied.push(value); started(); await new Promise(resolve => { release = resolve; }); return result; },
+  } });
+  const changing = f.service.applyMemoryRules(options);
+  await ready;
+  assert.equal(f.service.busy, true);
+  assert.equal(f.service.activeComponent, 'claude');
+  await assert.rejects(f.service.install('codex'), /Дождитесь/);
+  await assert.rejects(f.service.complete(), /Дождитесь/);
+  await assert.rejects(f.service.applyMemoryRules({ provider: 'codex', enabled: true, revision: 'fixture' }), /Дождитесь/);
+  assert.deepEqual(await f.service.previewMemoryRules('codex'), { provider: 'codex', enabled: false });
+  let idle = false;
+  const waiting = f.service.waitForIdle().then(() => { idle = true; });
+  await Promise.resolve();
+  assert.equal(idle, false);
+  release();
+  assert.deepEqual(await changing, result);
+  await waiting;
+  assert.equal(idle, true);
+  assert.equal(f.service.busy, false);
+  assert.equal(f.service.activeComponent, null);
+  assert.deepEqual(applied, [options]);
+  assert.equal(f.calls.length, 0);
+});
+
+test('active tasks and invalid providers reject memory mutations before the filesystem service runs', async t => {
+  const guarded = [], applied = [];
+  const f = await fixture(t, { assertMutable: provider => { guarded.push(provider); throw new Error('user task active'); }, memoryRules: {
+    preview: async provider => ({ provider, enabled: false }),
+    apply: async options => applied.push(options),
+  } });
+  assert.deepEqual(await f.service.previewMemoryRules('claude'), { provider: 'claude', enabled: false });
+  assert.deepEqual(guarded, [], 'Reading instructions stays available while a task runs');
+  for (const options of [undefined, {}, { provider: 'git' }, { provider: '__proto__' }]) {
+    await assert.rejects(f.service.applyMemoryRules(options), /Неизвестный агент/);
+  }
+  assert.deepEqual(guarded, []);
+  for (const provider of ['codex', 'claude']) {
+    await assert.rejects(f.service.applyMemoryRules({ provider, enabled: true, revision: 'fixture' }), /user task active/);
+  }
+  assert.deepEqual(guarded, ['codex', 'claude']);
+  assert.deepEqual(applied, []);
+  assert.equal(f.service.busy, false);
+  assert.equal(f.calls.length, 0);
+});
+
+test('failed memory changes release the shared reservation and allow a later retry', async t => {
+  let attempts = 0;
+  const f = await fixture(t, { memoryRules: { apply: async () => {
+    if (++attempts === 1) throw new Error('fixture write failure');
+    return { enabled: true, changed: true, backupPaths: [] };
+  } } });
+  const options = { provider: 'codex', enabled: true, revision: 'fixture' };
+  await assert.rejects(f.service.applyMemoryRules(options), /fixture write failure/);
+  await f.service.waitForIdle();
+  assert.equal(f.service.busy, false);
+  assert.equal(f.service.activeComponent, null);
+  assert.equal((await f.service.applyMemoryRules(options)).enabled, true);
+  assert.equal(attempts, 2);
+  assert.equal(f.calls.length, 0);
 });

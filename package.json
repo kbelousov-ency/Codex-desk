@@ -1,6 +1,6 @@
 {
   "name": "codex-desk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Local desktop interface for Codex CLI",
   "type": "module",
@@ -20,6 +20,7 @@
     "release:installer": "node scripts/installer.mjs",
     "package:installer": "node scripts/installer.mjs --nightly",
     "test:setup": "node scripts/ui-setup.mjs",
+    "test:memory-rules-ui": "node scripts/ui-memory-rules.mjs",
     "test:setup-host": "node scripts/ui-setup-host.mjs",
     "release:rollback": "node scripts/rollback.mjs",
     "release:cleanup": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/cleanup-releases.ps1",

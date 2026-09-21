@@ -6,6 +6,7 @@ import path from 'node:path';
 import os from 'node:os';
 import TOML from '@iarna/toml';
 import { findCodex, findClaude } from './host-utils.mjs';
+import { MemoryRulesService } from './memory-rules.mjs';
 
 const execFileAsync = promisify(execFile);
 const IDS = new Set(['codex', 'claude', 'git']);
@@ -53,10 +54,11 @@ export class SetupService {
   constructor({ directory, env = process.env, home = env.USERPROFILE || os.homedir(), platform = process.platform,
     getSettings = async () => ({}), saveSettings = async () => {}, getClaudeEnvironment = async () => env,
     assertMutable = () => {}, initialExisting = false, hasExistingUser, now = Date.now, run = execFileAsync,
-    finders = {}, beforeConfigCommit = async () => {}, writeBackup = writeFile } = {}) {
+    finders = {}, beforeConfigCommit = async () => {}, writeBackup = writeFile,
+    memoryRules = new MemoryRulesService({ env, home }) } = {}) {
     if (!directory || !path.isAbsolute(directory)) throw new TypeError('SetupService requires an absolute directory.');
     Object.assign(this, { directory, env, home, platform, getSettings, saveSettings, getClaudeEnvironment,
-      assertMutable, initialExisting, hasExistingUser, now, run, beforeConfigCommit, writeBackup });
+      assertMutable, initialExisting, hasExistingUser, now, run, beforeConfigCommit, writeBackup, memoryRules });
     this.finders = {
       codex: (preferred, options) => findCodex(preferred, options),
       claude: (preferred, options) => findClaude(preferred, options),
@@ -75,6 +77,16 @@ export class SetupService {
   get busy() { return Boolean(this._mutation); }
   get activeComponent() { return this._mutation?.component ?? null; }
   async waitForIdle() { await this._mutation?.finished; }
+
+  previewMemoryRules(provider) {
+    this._active();
+    return this.memoryRules.preview(provider);
+  }
+
+  async applyMemoryRules(options) {
+    if (!options || !['codex', 'claude'].includes(options.provider)) throw new Error('Неизвестный агент.');
+    return this._exclusive(options.provider, () => this.memoryRules.apply(options));
+  }
 
   _active() { if (this._disposed) throw new Error('Приложение закрывается.'); }
 
