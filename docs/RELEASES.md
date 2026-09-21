@@ -1,6 +1,6 @@
 # Release и Nightly
 
-## Подготовка Release 0.3.0 — 2026-09-21
+## Публичный Release 0.3.0 — 2026-09-21
 
 По поручению пользователя «в релиз и заливай» (сообщение в английской раскладке `d htkbp b pfkbdfq`) применённая Nightly `379a3a5286b60157245b6511da2ca24bddc01f2e27cb47f1f20cf36d82134281` перенесена в `release/stable` без перекомпиляции. Прежняя `0.2.0`, build ID `63ab264a1592a5867a29209fc5500d00b2e527f2655f0e854c4599444e8b51aa`, сохранена в `release/stable-previous`. Nightly штатно применялась: `published` 12:14:19 UTC, `complete` 12:14:20 UTC. Пользовательские окна во время переноса не закрывались.
 
@@ -10,7 +10,9 @@
 
 Во время подготовки обновления работающий Nightly пересоздал общий Start Menu `Codex Desk.lnk`, и тест дважды отказал до запуска нового Setup (hash guard, затем принадлежность ярлыка). Актуальный ярлык Nightly проверен по target, сохранён рядом с исходным backup и включён в снимок для обратного восстановления; тестовая привязка временно восстановлена из её Desktop-ярлыка. После этого update прошёл; cleanup вернул актуальный пользовательский ярлык. Аудит `shortcut-refresh.json`, исходные snapshot/байты сохранены в тестовом каталоге. Сам guard/production-код не менялся, пользовательский Nightly не завершался.
 
-Подготовлены Setup, `SHA256SUMS.txt`, `release-info.json`, `README.txt` и `RELEASE_NOTES.md` в `artifacts/github-release`; публикация следует отдельным шагом этого же поручения.
+Подготовлены Setup, `SHA256SUMS.txt`, `release-info.json`, `README.txt` и `RELEASE_NOTES.md` в `artifacts/github-release`.
+
+Опубликован [GitHub Release v0.3.0](https://github.com/kbelousov-ency/Codex-desk/releases/tag/v0.3.0) 12:36:07 UTC как обычный **Latest**, не draft/prerelease. Исходники отправлены в `origin/main` коммитом `a91a46c036dd4fb3bb37c4debff9893f664ec0fc`; аннотированный тег `v0.3.0` указывает на него. Перед публикацией сверены серверные digest и размеры всех четырёх assets: Setup, README, SHA256SUMS, release-info. Публичный API latest без авторизации возвращает `v0.3.0`, штатный `releaseUpdate` для `0.2.0` принимает правильную ссылку Setup; отчёт `artifacts/github-release/published-verification.json`. Release/Nightly app.asar имеют одинаковый SHA-256 `192d0a9cf5a2810ca241e955c86a7cbd0ef7cdf1c1249d792f125e16f0185ce2`.
 
 ## Единые описания функций — 2026-09-21
 
