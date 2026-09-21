@@ -62,7 +62,7 @@ export default function WorktreePanel({ cwd, openTabs, onClose, onOpen, onNewTas
   };
   return createPortal(<div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget && !pending) onClose(); }}>
     <section ref={dialog} className="settings-modal worktree-panel" role="dialog" aria-modal="true" aria-label="Задачи проекта" aria-busy={Boolean(pending) || loading}>
-      <div className="modal-header"><div><span className="eyebrow">GIT WORKTREE</span><h2 id="worktree-title">Задачи проекта {summary ? folderName(summary.root) : folderName(cwd)}</h2></div><button className="icon-button" title="Закрыть" aria-label="Закрыть задачи проекта" disabled={Boolean(pending)} onClick={onClose}><X size={19} /></button></div>
+      <div className="modal-header"><div><span className="eyebrow">GIT WORKTREE</span><h2 id="worktree-title">Задачи проекта {summary ? folderName(summary.root) : folderName(cwd)}</h2></div><button className="icon-button" data-tooltip="Закрыть" aria-label="Закрыть задачи проекта" disabled={Boolean(pending)} onClick={onClose}><X size={19} /></button></div>
       <div className="settings-content">
         <p className="muted">Каждая задача живёт в отдельной ветке и папке. Перенос выполняет обычный <code>git merge</code> в основной копии; при конфликтах слияние отменяется и ничего не меняется.</p>
         {error && <div className="alert error-alert" role="alert"><span>{error}</span><button className="icon-button small" aria-label="Скрыть ошибку" onClick={() => setError('')}><X size={14} /></button></div>}
@@ -73,7 +73,7 @@ export default function WorktreePanel({ cwd, openTabs, onClose, onOpen, onNewTas
           return <li key={item.path} className={`worktree-row ${item.main ? 'main' : ''}`} data-worktree-path={item.path} data-worktree-branch={item.branch ?? ''}>
             <div className="worktree-info">
               <strong>{item.main ? <GitBranch size={13} /> : <GitBranchPlus size={13} />}{item.branch ?? (item.detached ? 'без ветки' : '—')}{item.main && <small className="worktree-tag">основная</small>}{item.current && <small className="worktree-tag current">эта папка</small>}</strong>
-              <small title={item.path}>{item.path}</small>
+              <small data-tooltip={item.path}>{item.path}</small>
               <small className="worktree-state">{item.dirty ? 'есть незафиксированные изменения' : item.dirty === false ? 'чисто' : 'состояние неизвестно'}{!item.main && item.ahead !== null && ` · +${item.ahead} коммит(ов)`}{!item.main && item.behind ? ` · отстаёт на ${item.behind}` : ''}{tabs ? ` · вкладок открыто: ${tabs}` : ''}</small>
             </div>
             <div className="worktree-actions">

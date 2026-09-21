@@ -13,7 +13,7 @@ import GitPanel from './GitPanel';
 import ChangeTurnPicker from './ChangeTurnPicker';
 
 export function Diff({ text }: { text: string }) {
-  return <pre className="diff-code" tabIndex={0} aria-label="Добавленные и удалённые строки">{diffLines(text).map(({ line, kind, label }, index) => <span key={index} className={`diff-line diff-${kind}`} title={label ? line : undefined}>{label || line || ' '}{'\n'}</span>)}</pre>;
+  return <pre className="diff-code" tabIndex={0} aria-label="Добавленные и удалённые строки">{diffLines(text).map(({ line, kind, label }, index) => <span key={index} className={`diff-line diff-${kind}`} data-tooltip={label ? line : undefined}>{label || line || ' '}{'\n'}</span>)}</pre>;
 }
 
 export function reasoningText(item: Item) {
@@ -70,11 +70,11 @@ function Activity({ item }: { item: Item }) {
   const title = activityLabel(item) || item.tool || 'Действие';
   const content = item.aggregatedOutput || (item.result ? JSON.stringify(item.result, null, 2) : null);
   return <details className={`activity-item ${failed ? 'failed' : ''}`} open={running || undefined}>
-    <summary><Icon size={15} /><span title={title}>{title}</span>{running ? <LoaderCircle size={13} className="spin" /> : <span className={`activity-status ${failed ? 'failed' : ''}`}>{failed ? 'Ошибка' : 'Готово'}</span>}<ChevronRight size={13} className="disclosure-arrow" /></summary>
+    <summary><Icon size={15} /><span data-tooltip={title}>{title}</span>{running ? <LoaderCircle size={13} className="spin" /> : <span className={`activity-status ${failed ? 'failed' : ''}`}>{failed ? 'Ошибка' : 'Готово'}</span>}<ChevronRight size={13} className="disclosure-arrow" /></summary>
     <div className="activity-body">
       {item.command && <code className="command-text">{item.command}</code>}
       {item.query && <p>{item.query}</p>}
-      {item.changes?.map((change: any) => <div className="activity-file" key={change.path}><FileCode2 size={12} /><span title={change.path}>{folderName(change.path)}</span></div>)}
+      {item.changes?.map((change: any) => <div className="activity-file" key={change.path}><FileCode2 size={12} /><span data-tooltip={change.path}>{folderName(change.path)}</span></div>)}
       {item.prompt && <p>{item.prompt}</p>}
       {content && <pre className="command-output" tabIndex={0}>{content}</pre>}
       {item.error && <div className="inline-error">{typeof item.error === 'string' ? item.error : item.error.message}</div>}
@@ -85,7 +85,7 @@ function Activity({ item }: { item: Item }) {
 
 function LineCounts({ text }: { text: string }) {
   const { added, removed } = diffLineStats(text);
-  return <span className="change-line-counts" title={`Строк в этой правке: добавлено ${added}, удалено ${removed}`}><b className="text-green">+{added}</b><b className="text-red">−{removed}</b></span>;
+  return <span className="change-line-counts" data-tooltip={`Строк в этой правке: добавлено ${added}, удалено ${removed}`}><b className="text-green">+{added}</b><b className="text-red">−{removed}</b></span>;
 }
 
 export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}, active = true, hasEarlier = false, loading = false, onLoadEarlier, onReviewChange, busy = false, mutationsAllowed = true }: {
@@ -147,8 +147,8 @@ export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}
         const repeated = file.edits.length > 1;
         const pathToOpen = last.kind?.move_path || last.kind?.movePath || file.path;
         return <details className="file-diff change-file" key={file.key}>
-          <summary><FileCode2 size={15} /><span className="change-file-heading"><span className="change-path" title={file.path}>{file.label}</span><span className="change-file-meta"><span className={`change-status ${last.status || ''}`} title={repeated ? 'Статус последней правки этого файла' : undefined}>{changeStatus(last)}</span>{repeated ? <span>Правок: {file.edits.length}</span> : last.diff && <LineCounts text={last.diff} />}</span></span><ChevronRight size={14} className="disclosure-arrow" /></summary>
-          <div className="change-file-toolbar"><button className="text-button" title={pathToOpen} onClick={() => void openFile(pathToOpen)} onContextMenu={event => { event.preventDefault(); void openFile(pathToOpen, true); }}>Открыть файл</button><button className="text-button" onClick={() => void openFile(pathToOpen, true)}>В проводнике</button><button type="button" className="text-button expand-diff" aria-label={`Развернуть сравнение ${file.label}`} onClick={() => setReview({ title: file.label, path: pathToOpen, edits: file.edits })}><Maximize2 size={12} />Развернуть</button></div>
+          <summary><FileCode2 size={15} /><span className="change-file-heading"><span className="change-path" data-tooltip={file.path}>{file.label}</span><span className="change-file-meta"><span className={`change-status ${last.status || ''}`} data-tooltip={repeated ? 'Статус последней правки этого файла' : undefined}>{changeStatus(last)}</span>{repeated ? <span>Правок: {file.edits.length}</span> : last.diff && <LineCounts text={last.diff} />}</span></span><ChevronRight size={14} className="disclosure-arrow" /></summary>
+          <div className="change-file-toolbar"><button className="text-button" data-tooltip={pathToOpen} onClick={() => void openFile(pathToOpen)} onContextMenu={event => { event.preventDefault(); void openFile(pathToOpen, true); }}>Открыть файл</button><button className="text-button" onClick={() => void openFile(pathToOpen, true)}>В проводнике</button><button type="button" className="text-button expand-diff" aria-label={`Развернуть сравнение ${file.label}`} onClick={() => setReview({ title: file.label, path: pathToOpen, edits: file.edits })}><Maximize2 size={12} />Развернуть</button></div>
           {file.edits.map((edit, index) => <section className="change-patch" key={edit.key}>
             {repeated && <div className="change-patch-label"><strong>Правка {index + 1}</strong><span className={`change-status ${edit.status || ''}`}>{changeStatus(edit)}</span>{edit.diff && <LineCounts text={edit.diff} />}</div>}
             {(edit.kind?.move_path || edit.kind?.movePath) && <div className="change-move-path">Новое имя: {relativeChangePath((edit.kind.move_path || edit.kind.movePath)!, cwd)}</div>}

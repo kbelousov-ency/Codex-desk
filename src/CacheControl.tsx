@@ -47,7 +47,7 @@ export default function CacheControl({ session, tokens, active = true }: { sessi
   const valid = Number.isFinite(last?.inputTokens) && Number.isFinite(last?.cachedInputTokens) && last.inputTokens >= 0 && last.cachedInputTokens >= 0 && last.cachedInputTokens <= last.inputTokens;
   const writing = Number.isFinite(last?.cacheWriteInputTokens) && last.cacheWriteInputTokens > 0 ? last.cacheWriteInputTokens : null;
   return <details ref={panel} className="cache-control">
-    <summary ref={trigger} aria-label="Настройки кэша" title="Нажмите, чтобы настроить кэш"
+    <summary ref={trigger} aria-label="Настройки кэша" data-tooltip="Нажмите, чтобы настроить кэш"
       onPointerDown={event => event.currentTarget.setAttribute('data-dismissed-focus', 'true')}
       onBlur={event => event.currentTarget.removeAttribute('data-dismissed-focus')}
       onKeyDown={event => { if (event.key !== 'Escape') event.currentTarget.removeAttribute('data-dismissed-focus'); }}><Timer size={13} /><span className="cache-countdown">{title}</span>{cache.enabled && <span className="cache-auto">Автопинг</span>}</summary>

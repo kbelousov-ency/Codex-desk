@@ -89,7 +89,7 @@ try {
   await tab('session-a');
   await view().getByText('Ответ 1', { exact: true }).waitFor();
   await value('Посмотри материалы:');
-  assert.match(await picker().getAttribute('title'), /файл/i, 'The plus control describes files');
+  assert.match(await picker().getAttribute('data-tooltip'), /файл/i, 'The plus control describes files');
   await picker().click(); await settle();
   await value('Посмотри материалы:');
   await view().getByRole('button', { name: 'Удалить draft.png', exact: true }).waitFor();

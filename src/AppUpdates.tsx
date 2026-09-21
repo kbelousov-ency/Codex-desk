@@ -80,7 +80,7 @@ export function AppUpdateBanner({ control, onDetails }: { control: UpdateControl
       <button type="button" className="primary-button" disabled={Boolean(pending)} onClick={control.download}><Download size={13} /> Скачать обновление</button>
       <button type="button" className="text-button" onClick={onDetails}>Подробнее</button>
       <button type="button" className="text-button" disabled={Boolean(pending)} onClick={() => control.save({ skippedVersion: status.latestVersion })}>Пропустить эту версию</button>
-      <button type="button" className="text-button" title="Скрыть предложение до следующего запуска приложения" onClick={control.dismiss}>Позже</button>
+      <button type="button" className="text-button" data-tooltip="Скрыть предложение до следующего запуска приложения" onClick={control.dismiss}>Позже</button>
     </div>
   </aside>;
 }
@@ -124,7 +124,7 @@ export function AppUpdateDialog({ control, onClose }: { control: UpdateControl; 
   const local = status && status.channel !== 'stable';
   return <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="settings-modal app-update-dialog" role="dialog" aria-modal="true" aria-labelledby="app-updates-title" ref={dialog}>
-      <div className="modal-header"><div><div className="eyebrow"><RefreshCw size={12} aria-hidden="true" /> CODEX DESK</div><h2 id="app-updates-title">Обновления приложения</h2></div><button type="button" className="icon-button" aria-label="Закрыть обновления приложения" title="Закрыть" ref={closeButton} onClick={onClose}><X size={18} /></button></div>
+      <div className="modal-header"><div><div className="eyebrow"><RefreshCw size={12} aria-hidden="true" /> CODEX DESK</div><h2 id="app-updates-title">Обновления приложения</h2></div><button type="button" className="icon-button" aria-label="Закрыть обновления приложения" data-tooltip="Закрыть" ref={closeButton} onClick={onClose}><X size={18} /></button></div>
       <div className="settings-content">
         <BuildDetails />
         {!status && !failure && <p className="app-update-status" role="status"><LoaderCircle className="spin" size={15} /> Загружаем сведения об обновлениях…</p>}

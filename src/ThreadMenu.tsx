@@ -78,7 +78,7 @@ export default function ThreadMenu({ title, threadId, archived = false, archivab
   }, [visible, position]);
 
   return <>
-    <button ref={trigger} type="button" className={`thread-menu-trigger ${visible ? 'open' : ''}`} aria-label={`Действия диалога ${title}`} title={disabled ? 'Действия недоступны, пока диалог занят' : 'Действия диалога'} aria-haspopup="menu" aria-expanded={visible} aria-controls={visible ? id : undefined} data-thread-menu-id={threadId} disabled={disabled} onClick={() => visible ? close(true) : show()} onKeyDown={event => {
+    <button ref={trigger} type="button" className={`thread-menu-trigger ${visible ? 'open' : ''}`} aria-label={`Действия диалога ${title}`} data-tooltip={disabled ? 'Действия недоступны, пока диалог занят' : 'Действия диалога'} aria-haspopup="menu" aria-expanded={visible} aria-controls={visible ? id : undefined} data-thread-menu-id={threadId} disabled={disabled} onClick={() => visible ? close(true) : show()} onKeyDown={event => {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(event.key === 'ArrowUp'); }
     }}><EllipsisVertical size={14} /></button>
     {visible && createPortal(<div ref={menu} id={id} className="thread-action-menu" role="menu" aria-label="Действия диалога" style={position} onBlur={event => {

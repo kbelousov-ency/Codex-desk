@@ -86,7 +86,7 @@ export default function ComposerSelect({ label, value, options, icon, disabled, 
   return <div className={`composer-picker ${kind}-select`} ref={root} onBlur={event => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null) && !menu.current?.contains(event.relatedTarget as Node | null)) setOpen(false);
   }}>
-    <button ref={trigger} type="button" className={`composer-select-trigger select-chip ${kind}-select`} role="combobox" aria-label={label} aria-haspopup="listbox" aria-expanded={visible} aria-controls={visible ? id : undefined} aria-activedescendant={visible ? `${id}-${highlight}` : undefined} data-value={value} title={current} disabled={disabled} onClick={() => visible ? setOpen(false) : show()} onKeyDown={event => {
+    <button ref={trigger} type="button" className={`composer-select-trigger select-chip ${kind}-select`} role="combobox" aria-label={label} aria-haspopup="listbox" aria-expanded={visible} aria-controls={visible ? id : undefined} aria-activedescendant={visible ? `${id}-${highlight}` : undefined} data-value={value} data-tooltip={current} disabled={disabled} onClick={() => visible ? setOpen(false) : show()} onKeyDown={event => {
       if (event.key === 'Escape') { event.preventDefault(); setOpen(false); return; }
       if (event.key === 'Tab') { setOpen(false); return; }
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {

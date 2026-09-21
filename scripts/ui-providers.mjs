@@ -264,7 +264,7 @@ try {
   // Plan limits: 5-hour window inline, every window in the popover, /usage as the CLI fallback.
   const usageTrigger = view().getByRole('button', { name: /^Лимит 5 ч: 42 %/ });
   await usageTrigger.waitFor();
-  assert.match(await usageTrigger.getAttribute('title'), /5-часовой сессии: использовано 42 %.*сброс через 1 ч 30 мин/);
+  assert.match(await usageTrigger.getAttribute('data-tooltip'), /5-часовой сессии: использовано 42 %.*сброс через 1 ч 30 мин/);
   await usageTrigger.click();
   const usageDialog = view().getByRole('dialog', { name: 'Лимиты плана Claude', exact: true });
   await usageDialog.waitFor();

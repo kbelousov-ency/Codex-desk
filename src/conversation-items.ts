@@ -1,4 +1,5 @@
 import type { Item } from './types';
+import { agentQuestions } from './agent-questions';
 
 export type ConversationEntry = { type: 'message'; key: string; item: Item } | {
   type: 'work'; key: string; turnId: string; items: Item[]; hasAnswer: boolean;
@@ -11,7 +12,7 @@ export function availableReasoning(item: Item) {
 
 function isWork(item: Item) {
   if (item.type === 'userMessage' || item.type === 'hookPrompt') return false;
-  if (item.type === 'agentMessage') return item.phase === 'commentary' && !!item.text?.trim();
+  if (item.type === 'agentMessage') return item.phase === 'commentary' && !agentQuestions(item).length && !!item.text?.trim();
   if (item.type === 'reasoning') return !!availableReasoning(item);
   if (item.type === 'plan') return !!item.text?.trim();
   return true;
@@ -29,7 +30,7 @@ export function conversationEntries(items: Item[]): ConversationEntry[] {
       group = { entry: { type: 'work', key: `work-${turnId}`, turnId, items: [], hasAnswer: false }, index: Infinity };
       groups.set(turnId, group);
     }
-    if (item.type === 'agentMessage' && item.phase !== 'commentary') {
+    if (item.type === 'agentMessage' && (item.phase !== 'commentary' || agentQuestions(item).length)) {
       group.answerIndex ??= index;
       if (item.phase === 'final_answer') group.entry.hasAnswer = true;
     }
@@ -50,7 +51,7 @@ export function conversationEntries(items: Item[]): ConversationEntry[] {
   const entries: ConversationEntry[] = [];
   for (const { item, index } of assigned) {
     entries.push(...(logsAt.get(index) || []));
-    if (item.type === 'userMessage' || (item.type === 'agentMessage' && item.phase !== 'commentary')) {
+    if (item.type === 'userMessage' || (item.type === 'agentMessage' && (item.phase !== 'commentary' || agentQuestions(item).length))) {
       entries.push({ type: 'message', key: `message-${item.id}`, item });
     }
   }

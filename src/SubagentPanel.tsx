@@ -10,7 +10,7 @@ export default function SubagentPanel({ items, hasEarlier, loading, onLoadEarlie
   return <div className="panel-content subagents-panel">
     {hasEarlier && <button className="text-button" disabled={loading} onClick={onLoadEarlier}>{loading ? 'Загружаем…' : 'Загрузить более ранние задачи'}</button>}
     {!tasks.length ? <div className="panel-empty"><div className="empty-icon"><GitBranch size={24} /></div><h3>Задачи подагентов</h3><p>Здесь появятся поручения, состояния и результаты подагентов этого диалога.</p></div> : tasks.map(task => <section key={task.id} className={`subagent-card ${['failed', 'errored', 'notFound'].includes(task.status) ? 'failed' : ''}`}>
-      <div className="subagent-heading"><strong title={task.name}>{task.name}</strong><span className="subagent-state">{['running', 'pendingInit'].includes(task.status) && <LoaderCircle size={12} className="spin" />}{subagentStatus(task.status)}</span></div>
+      <div className="subagent-heading"><strong data-tooltip={task.name}>{task.name}</strong><span className="subagent-state">{['running', 'pendingInit'].includes(task.status) && <LoaderCircle size={12} className="spin" />}{subagentStatus(task.status)}</span></div>
       {task.model && <small className="muted">{task.model}</small>}
       {task.prompt && <details className="subagent-prompt" open><summary>Задача</summary><Markdown>{task.prompt}</Markdown></details>}
       {task.error && <p className="inline-error" role="alert">{task.error}</p>}

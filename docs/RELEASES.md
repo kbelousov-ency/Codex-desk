@@ -1,4 +1,40 @@
 # Release и Nightly
+
+## Подготовка Release 0.3.0 — 2026-09-21
+
+По поручению пользователя «в релиз и заливай» (сообщение в английской раскладке `d htkbp b pfkbdfq`) применённая Nightly `379a3a5286b60157245b6511da2ca24bddc01f2e27cb47f1f20cf36d82134281` перенесена в `release/stable` без перекомпиляции. Прежняя `0.2.0`, build ID `63ab264a1592a5867a29209fc5500d00b2e527f2655f0e854c4599444e8b51aa`, сохранена в `release/stable-previous`. Nightly штатно применялась: `published` 12:14:19 UTC, `complete` 12:14:20 UTC. Пользовательские окна во время переноса не закрывались.
+
+Выпуск объединяет [передачу задач](AGENT_HANDOFF.md), [ответы на вопросы агента](CHAT_SEARCH.md#выбор-ответа-на-вопрос-агента--2026-09-21), [подсказки интерфейса](UI_FIXES.md#единые-подсказки-функций--2026-09-21) и [плашку версии](UPDATES.md#компактная-плашка-версии--2026-09-21). Финальный `npm.cmd run check` прошёл: TypeScript, 495 passed / 2 skipped, production Vite; renderer `test:agent-handoff` и `test:tooltips` повторены успешно. Manifest 72 файлов и соответствие всех 46 host/preload/dist файлов исходникам проверены. Прежние записи ожидания кандидатов ниже сохраняются как история поставки.
+
+Установщик `release/installer/Codex-Desk-Setup-0.3.0.exe`: 100 930 422 байта, SHA-256 `ab2476cc0d65160a79f0fc8918f395be7d3f534315ac84c281347c36499acc19`. Настоящая silent-установка прежнего `0.2.0` и обновление новым Setup без `/D` прошли в `artifacts/installer-test-3f31daa64ca94cfeb987ebed5862a679`: exit 0, все 72 файла совпали. Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-Hl0wvF`), без модельных запросов. После штатного uninstall статус `cleaned`, восстановлены три внешних файла, тестовая установка/реестр удалены.
+
+Во время подготовки обновления работающий Nightly пересоздал общий Start Menu `Codex Desk.lnk`, и тест дважды отказал до запуска нового Setup (hash guard, затем принадлежность ярлыка). Актуальный ярлык Nightly проверен по target, сохранён рядом с исходным backup и включён в снимок для обратного восстановления; тестовая привязка временно восстановлена из её Desktop-ярлыка. После этого update прошёл; cleanup вернул актуальный пользовательский ярлык. Аудит `shortcut-refresh.json`, исходные snapshot/байты сохранены в тестовом каталоге. Сам guard/production-код не менялся, пользовательский Nightly не завершался.
+
+Подготовлены Setup, `SHA256SUMS.txt`, `release-info.json`, `README.txt` и `RELEASE_NOTES.md` в `artifacts/github-release`; публикация следует отдельным шагом этого же поручения.
+
+## Единые описания функций — 2026-09-21
+
+По следующему запросу пользователя добавлены [оформленные подсказки](UI_FIXES.md#единые-подсказки-функций--2026-09-21) для всех 99 прежних HTML title в исходниках. Nightly `379a3a5286b60157245b6511da2ca24bddc01f2e27cb47f1f20cf36d82134281` версии `0.3.0` собрана 12:08:28 UTC и поставлена в штатную очередь. Прежний ожидающий кандидат `c424aa7cbd5c` заменён через штатный discard после проверки и остановки только его Node-helper; установленное пользовательское приложение не закрывалось. Новая сборка включает вопросы, версию и передачу задач из прежнего кандидата. Release не менялся.
+
+Проверки: TypeScript/Vite; Node — 495 passed, 2 skipped; `ui-tooltips`, `ui-build-channel`, `ui-tabs-browser`, `ui-composer-files`, `ui-continue`, `ui-agent-questions`. Отдельно воспроизведено и исправлено позиционирование при сдвиге сфокусированной кнопки: target и bubble вместе смещаются на 100px. Статический AST-аудит: 99 data-tooltip, 0 нативных HTML title, props title React-компонентов сохранены. Manifest и checksum готового кандидата проверены. Готовый exe прошёл Electron/preload/IPC `ui-app-updates-host` (`artifacts/app-updates-host-UbMl0a`); model/network/browser calls — 0. Скриншоты `artifacts/tooltips-toolbar.png`, `tooltips-compact.png`, `tooltips-disabled-send.png`, `tooltips-multiline-edge.png`. Применение — по «Закрыть» в чате или ручному выходу.
+
+
+## Передача задач Codex ↔ Claude Code — 2026-09-21
+
+[Передача с контекстом](AGENT_HANDOFF.md) проверена и входит в общую Nightly **0.3.0**, build ID `c424aa7cbd5cc9a38ec36c7f7cdd4305aee011a723faf24f35dffa1b301eed65`. Независимый `npm.cmd run package` этой сессии завершил TypeScript/Vite, затем штатно отказал из-за уже созданной параллельной очереди. Кандидат не заменялся: manifest 72 файлов проверен, все 46 файлов host/preload/dist побайтно совпали с текущими исходниками и production build.
+
+Итоговый `npm.cmd run check`: TypeScript, **495 passed / 2 skipped** (497 тестов), Vite. После последних guards прошли `test:agent-handoff`, `test:providers`, `test:workspace-tools`; дополнительно совместимость общей сборки — `ui-agent-questions` и `test:build-channel`. Передача проверена в обе стороны: вся paginated/legacy история, ошибки/retry, повтор курсора, ручные правки, сохранение исходника/defaults, restart целевого черновика, закрытие устаревшего preview при новом ходе и узкое окно 650×700. Отправка — один явный fixture turn, реальных запросов модели 0. Снимки: `artifacts/agent-handoff-dialog.png`, `artifacts/agent-handoff-dialog-compact.png`, `artifacts/agent-handoff-drafts.png`.
+
+Готовый кандидат прошёл `test:providers-host` с настоящими Electron/preload/IPC и установленными Codex `0.154.0` / Claude CLI в изолированном профиле `artifacts/providers-host-wP9J9i`: bootstrap, раздельные настройки, public auth/usage и восстановление обеих вкладок/черновиков. Подтверждены прежние модели/effort; modelCalls=0. Это проверка транспорта, не успешный ответ модели на переданную задачу.
+
+Nightly ожидает «Закрыть» в чате или ручного выхода пользователя. Приложение не закрывалось этой сессией; Release сохраняет SHA-256 app.asar `b65e8a7459618945e95ce62b73df0e0f48b750fcf086597fa27ba8b1861ee5e2`. Продвижение в Release и публикация не выполнялись.
+
+## Вопросы агента и плашка версии — 2026-09-21
+
+Nightly `c424aa7cbd5cc9a38ec36c7f7cdd4305aee011a723faf24f35dffa1b301eed65`, версия `0.3.0`, собрана `npm.cmd run package` и помещена в штатную очередь 11:56:36 UTC. Включены [выбор ответа на структурированные вопросы](CHAT_SEARCH.md#выбор-ответа-на-вопрос-агента--2026-09-21) и [компактная подсказка версии](UPDATES.md#компактная-плашка-версии--2026-09-21). Рабочая копия также содержала параллельную реализацию [передачи задачи между агентами](AGENT_HANDOFF.md); она вошла в общую сборку. Пользовательский Nightly не закрывался; применение по «Закрыть» в чате или ручному выходу. Release не продвигался.
+
+Проверки: TypeScript/Vite; `npm.cmd test` — 494 passed, 2 skipped; renderer fixtures `ui-agent-questions`, `ui-build-channel`, `ui-chat-search`, `ui-message-queue`. Manifest и контрольные суммы кандидата проверены. Готовый exe прошёл настоящий Electron/preload/IPC `ui-app-updates-host` в изолированном профиле `artifacts/app-updates-host-At0T55`: metadata, настройки, границы IPC и restart; 0 запросов модели, сети и браузера. Новые вопросы проверены подставными App Server событиями, без реального model turn. Скриншоты `artifacts/agent-questions-selected.png`, `artifacts/agent-questions-narrow.png`, `artifacts/channel-nightly-tooltip.png`.
+
 ## Публичный Release 0.2.0 — 2026-09-21
 
 По поручению пользователя «Давай всё в релиз и заливай» применённая Nightly `63ab264a1592a5867a29209fc5500d00b2e527f2655f0e854c4599444e8b51aa` перенесена в `release/stable` без перекомпиляции; прежний Release `32370f9d4980eaf15521f73c062653dd651a0f1d293850508538020a9136c0cd` сохранён в `release/stable-previous`. Nightly была штатно применена: `published` 09:53:31 UTC, `complete` 09:53:31 UTC. При переносе пользовательские окна не закрывались.

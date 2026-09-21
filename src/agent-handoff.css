@@ -1,0 +1,50 @@
+.handoff-backdrop { position: fixed; inset: 0; z-index: 175; display: grid; place-items: center; padding: 22px; background: #0009; backdrop-filter: blur(4px); }
+.handoff-dialog { display: flex; flex-direction: column; width: min(850px, 100%); max-height: min(920px, 94vh); overflow: hidden; border: 1px solid var(--line, #343638); border-radius: 13px; background: var(--panel, #202422); color: var(--text); box-shadow: 0 20px 80px #0008; }
+.handoff-header, .handoff-header h2 { display: flex; align-items: center; gap: 9px; }
+.handoff-header { flex: 0 0 auto; justify-content: space-between; padding: 18px 20px 12px; }
+.handoff-header h2 { margin: 0; font-size: 17px; line-height: 1.4; }
+.handoff-header svg { flex-shrink: 0; }
+.handoff-dialog button { color: var(--text); background: transparent; border: 1px solid var(--line, #343638); border-radius: 6px; padding: 7px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.handoff-dialog button:disabled { cursor: default; opacity: .45; }
+.handoff-dialog button:focus-visible, .handoff-dialog textarea:focus-visible, .handoff-dialog input:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.handoff-header button { padding: 4px; border: 0; display: grid; place-items: center; flex-shrink: 0; }
+.handoff-body { min-height: 0; padding: 0 20px 8px; overflow-y: auto; scrollbar-gutter: stable; }
+.handoff-route { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin: 5px 0 8px; font-size: 14px; }
+.handoff-route strong { color: var(--accent); }
+.handoff-hint { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 8px 0 12px; }
+.handoff-details { display: grid; gap: 6px; margin: 14px 0 18px; font-size: 12px; }
+.handoff-details > div { display: grid; grid-template-columns: 60px minmax(0, 1fr); gap: 10px; }
+.handoff-details dt { color: var(--muted); }
+.handoff-details dd { margin: 0; overflow-wrap: anywhere; }
+.handoff-field { display: block; font-size: 13px; font-weight: 500; margin: 0 0 7px; }
+.handoff-dialog textarea { display: block; box-sizing: border-box; width: 100%; border: 1px solid var(--line, #343638); border-radius: 7px; color: var(--text); background: var(--bg, #171b19); padding: 10px 12px; font: inherit; font-size: 13px; line-height: 1.55; resize: vertical; }
+.handoff-dialog textarea:disabled { opacity: .65; }
+.handoff-task { min-height: 70px; max-height: 240px; }
+.handoff-scope { display: flex; flex-wrap: wrap; gap: 12px 22px; margin: 14px 0 0; padding: 10px 12px 12px; border: 1px solid var(--line, #343638); border-radius: 8px; font-size: 12px; }
+.handoff-scope legend { padding: 0 4px; font-size: 13px; }
+.handoff-scope label { display: flex; align-items: center; gap: 7px; }
+.handoff-scope input { accent-color: var(--accent); margin: 0; }
+.handoff-preview-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px 12px; margin-top: 15px; }
+.handoff-edited { font-size: 11px; color: var(--muted); }
+.handoff-refresh { display: flex; align-items: center; gap: 14px; margin-bottom: 9px; }
+.handoff-refresh .handoff-hint { margin: 0; }
+.handoff-refresh button { flex-shrink: 0; }
+.handoff-dialog .handoff-preview { min-height: 180px; max-height: 65vh; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; overflow-wrap: anywhere; }
+.handoff-count { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 7px 0 0; }
+.handoff-error, .handoff-warning { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.handoff-error { color: var(--danger, #edaaa0); }
+.handoff-warning { border: 1px solid var(--line, #343638); border-radius: 7px; padding: 9px 11px; }
+.handoff-load-error { margin: 10px 0; }
+.handoff-footer { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 8px; padding: 14px 20px 18px; border-top: 1px solid var(--line, #343638); }
+.handoff-dialog .handoff-create { border-color: var(--accent); color: var(--accent); }
+.handoff-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 560px) {
+  .handoff-backdrop { padding: 8px; }
+  .handoff-dialog { max-height: calc(100dvh - 16px); }
+  .handoff-header { padding: 13px 12px 10px; }
+  .handoff-header h2 { font-size: 15px; }
+  .handoff-body { padding: 0 12px 8px; }
+  .handoff-refresh { align-items: flex-start; flex-direction: column; gap: 7px; }
+  .handoff-footer { padding: 12px; flex-wrap: wrap; }
+  .handoff-footer .handoff-create { flex: 1; }
+}

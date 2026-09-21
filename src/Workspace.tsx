@@ -433,7 +433,7 @@ function TabbedWorkspace() {
     else if (jump) setTabs(previous => previous.map(tab => tab.id === id ? { ...tab, jump } : tab));
     activate(id);
   };
-  const open = async (cwd?: string, initialThread?: Thread, requestedProvider?: AgentProvider, jump?: Tab['jump'], options?: { fork?: Tab['fork']; restore?: UpdateTabSnapshot }): Promise<boolean> => {
+  const open = async (cwd?: string, initialThread?: Thread, requestedProvider?: AgentProvider, jump?: Tab['jump'], options?: { fork?: Tab['fork']; restore?: UpdateTabSnapshot; draft?: string }): Promise<boolean> => {
     if (pendingOpen.current || actionPending.current || closingTab.current || workspaceClosing.current || updateRequest.current) return false;
     if (cwd && initialThread && !options?.fork) {
       const existing = tabsRef.current.find(tab => {
@@ -465,7 +465,7 @@ function TabbedWorkspace() {
         if (existing) { await window.codex.closeSession(created.id); created = null; setExpanded(previous => ({ ...previous, [projectKey(existing.cwd)]: true })); activate(existing.id); return true; }
       }
       const restored = options?.restore;
-      const tab: Tab = { ...created, initialThread, bridge: window.codex.forSession(created.id), jump, ...(options?.fork ? { fork: options.fork } : {}),
+      const tab: Tab = { ...created, initialThread, bridge: window.codex.forSession(created.id), jump, ...(options?.draft !== undefined ? { draft: options.draft } : {}), ...(options?.fork ? { fork: options.fork } : {}),
         ...(restored ? { draft: restored.draft, attachments: restored.attachments, preservedDraft: restored.preservedDraft, restoreSettings: restored.settings,
           pendingMessage: restored.pendingMessage, queue: restored.queue ? { ...restored.queue, paused: true } : undefined, scrollTop: restored.scrollTop, scrollAnchor: restored.scrollAnchor } : {}) };
       setTabs(previous => restored?.pinned ? setTabPinned([...previous, tab], tab.id, true) : [...previous, tab]); activate(tab.id);
@@ -689,6 +689,7 @@ function TabbedWorkspace() {
     toggleProject: cwd => setExpanded(previous => ({ ...previous, [projectKey(cwd)]: !previous[projectKey(cwd)] })),
     refreshProject: (cwd, cursor) => void loadProjectHistory(cwd, cursor),
     newChat: (cwd: string, provider?: AgentProvider) => void open(cwd, undefined, provider), openThread: (cwd, thread) => void open(cwd, thread), report, registerUpdateCapture, onSessionStateChange, flushSessionState, onSessionAttention,
+    handoff: (cwd, provider, text) => open(cwd, undefined, provider, undefined, { draft: text }),
     forkThread, openPalette: () => setShowPalette(true),
   };
   const attentionTabs = tabs.filter(tab => !tab.archivedThread && (summaries[tab.id]?.pending || attention[tab.id]));
@@ -748,7 +749,7 @@ function TabbedWorkspace() {
             onDrop={event => { event.preventDefault(); const from = dragTabId || event.dataTransfer.getData('text/plain'); if (from) { const box = event.currentTarget.getBoundingClientRect(); setTabs(previous => reorderTabs(previous, from, tab.id, event.clientX > box.left + box.width / 2)); } setDragTabId(null); setDropTarget(null); }}
             onDragEnd={() => { setDragTabId(null); setDropTarget(null); }}
             onContextMenu={event => { event.preventDefault(); setShowAttention(false); setTabMenu({ id: tab.id, x: event.clientX, y: event.clientY }); }}>
-            <button id={`tab-${tab.id}`} role="tab" aria-selected={activeId === tab.id} aria-controls={`view-${tab.id}`} title={`${tab.cwd}\n${title} · ${status}${tab.pinned ? ' · Закреплена' : ''}`} onClick={() => activate(tab.id)} onKeyDown={event => {
+            <button id={`tab-${tab.id}`} role="tab" aria-selected={activeId === tab.id} aria-controls={`view-${tab.id}`} data-tooltip={`${tab.cwd}\n${title} · ${status}${tab.pinned ? ' · Закреплена' : ''}`} onClick={() => activate(tab.id)} onKeyDown={event => {
               const index = tabs.findIndex(value => value.id === tab.id);
               const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : -1;
               if (next >= 0) { event.preventDefault(); activate(tabs[next].id); document.getElementById(`tab-${tabs[next].id}`)?.focus(); }
@@ -758,18 +759,18 @@ function TabbedWorkspace() {
               <span className="session-tab-label"><strong>{folderName(tab.cwd)}</strong><span>{title}</span></span>
               {tab.pinned && <Pin size={11} className="session-tab-pin" aria-label="Закреплена" />}
               <span className={`tab-state ${state?.pending ? 'waiting' : state?.busy ? 'running' : state?.connection === 'error' ? 'error' : ''}`} aria-label={status} />
-              {attention[tab.id] && <span className="tab-unread" aria-label={attention[tab.id].kind === 'completed' ? 'Непрочитанный результат' : 'Непрочитанное событие'} title={attention[tab.id].kind === 'completed' ? 'Новый результат' : 'Требует внимания'} />}
+              {attention[tab.id] && <span className="tab-unread" aria-label={attention[tab.id].kind === 'completed' ? 'Непрочитанный результат' : 'Непрочитанное событие'} data-tooltip={attention[tab.id].kind === 'completed' ? 'Новый результат' : 'Требует внимания'} />}
             </button>
-            {!tab.pinned && <button className="session-tab-close" aria-label={`Закрыть вкладку ${folderName(tab.cwd)}: ${title}`} title={state?.terminalOpen ? 'Сначала закройте терминал этого диалога' : 'Закрыть вкладку'} disabled={closing || actionBusy || state?.terminalOpen} onClick={() => requestClose(tab.id)}><X size={13} /></button>}
+            {!tab.pinned && <button className="session-tab-close" aria-label={`Закрыть вкладку ${folderName(tab.cwd)}: ${title}`} data-tooltip={state?.terminalOpen ? 'Сначала закройте терминал этого диалога' : 'Закрыть вкладку'} disabled={closing || actionBusy || state?.terminalOpen} onClick={() => requestClose(tab.id)}><X size={13} /></button>}
           </div>;
         })}
       </div>
-      <button className="icon-button tab-add" title="Новый диалог в текущей папке" aria-label="Открыть новый диалог" disabled={opening || starting} onClick={() => void open(tabs.find(tab => tab.id === activeId)?.cwd || projects[0])}><Plus size={17} /></button>
+      <button className="icon-button tab-add" data-tooltip="Новый диалог в текущей папке" aria-label="Открыть новый диалог" disabled={opening || starting} onClick={() => void open(tabs.find(tab => tab.id === activeId)?.cwd || projects[0])}><Plus size={17} /></button>
       <div className="workspace-alert-tools">
-        <button type="button" className={`icon-button small app-update-trigger ${appUpdates.bannerVisible ? 'has-update' : ''}`} aria-label="Обновления приложения" title="Обновления приложения" onClick={() => { setTabMenu(null); setShowAttention(false); setShowAppUpdates(true); }}><RefreshCw size={14} /></button>
-        <button type="button" className="icon-button small" aria-label="Палитра команд" title="Палитра команд (Ctrl+K)" onClick={() => { setTabMenu(null); setShowPalette(true); }}><Command size={15} /></button>
+        <button type="button" className={`icon-button small app-update-trigger ${appUpdates.bannerVisible ? 'has-update' : ''}`} aria-label="Обновления приложения" data-tooltip="Обновления приложения" onClick={() => { setTabMenu(null); setShowAttention(false); setShowAppUpdates(true); }}><RefreshCw size={14} /></button>
+        <button type="button" className="icon-button small" aria-label="Палитра команд" data-tooltip="Палитра команд (Ctrl+K)" onClick={() => { setTabMenu(null); setShowPalette(true); }}><Command size={15} /></button>
         <div className="workspace-attention">
-          <button ref={attentionButton} type="button" className={`attention-toggle ${attentionTabs.length ? 'has-attention' : ''}`} aria-label="Требуют внимания" title="Требуют внимания" aria-expanded={showAttention} aria-controls="attention-dialogues" onClick={() => setShowAttention(value => !value)}><Bell size={15} /><span className="attention-count">{attentionTabs.length}</span></button>
+          <button ref={attentionButton} type="button" className={`attention-toggle ${attentionTabs.length ? 'has-attention' : ''}`} aria-label="Требуют внимания" data-tooltip="Требуют внимания" aria-expanded={showAttention} aria-controls="attention-dialogues" onClick={() => setShowAttention(value => !value)}><Bell size={15} /><span className="attention-count">{attentionTabs.length}</span></button>
           {showAttention && <div ref={attentionMenu} id="attention-dialogues" className="attention-menu" role="region" aria-label="Диалоги, требующие внимания">
             <div className="attention-menu-heading">Требуют внимания</div>
             {!attentionTabs.length && <p className="attention-empty">Все результаты просмотрены. Ожидающих вопросов нет.</p>}
@@ -781,7 +782,7 @@ function TabbedWorkspace() {
             })}
           </div>}
         </div>
-        <button type="button" className="icon-button small" aria-label="Настройки уведомлений" title="Настройки уведомлений" onClick={() => { setShowAttention(false); setShowNotificationSettings(true); }}><Bell size={14} /><span aria-hidden="true">⋮</span></button>
+        <button type="button" className="icon-button small" aria-label="Настройки уведомлений" data-tooltip="Настройки уведомлений" onClick={() => { setShowAttention(false); setShowNotificationSettings(true); }}><Bell size={14} /><span aria-hidden="true">⋮</span></button>
       </div>
     </div>
     {(error || saveError) && <div className="workspace-notices">
@@ -797,7 +798,7 @@ function TabbedWorkspace() {
         <main className="main-column"><div className="workspace-empty">
         {starting ? <><LoaderCircle className="spin" size={24} /><p>Открываем рабочие папки…</p></> : <>
           <MessageSquare size={32} /><h2>Откройте диалог</h2><p>Выберите рабочую папку или добавьте ещё одну.</p>
-          <div className="empty-projects">{projects.map(project => <button className="secondary-button" title={project} key={project} disabled={opening} onClick={() => void open(project)}>{folderName(project)}</button>)}</div>
+          <div className="empty-projects">{projects.map(project => <button className="secondary-button" data-tooltip={project} key={project} disabled={opening} onClick={() => void open(project)}>{folderName(project)}</button>)}</div>
           <button className="primary-button" aria-label="Выбрать папку проекта" disabled={opening} onClick={() => void open()}><FolderPlus size={16} />Выбрать папку проекта</button>
           {window.codex.setup && <button className="text-button" onClick={() => window.dispatchEvent(new Event('codex-desk:open-setup'))}>Настроить агентов</button>}
         </>}
@@ -817,7 +818,7 @@ function TabbedWorkspace() {
       }}>
         <button type="button" role="menuitem" onClick={() => { togglePin(tab.id); setTabMenu(null); }}>{tab.pinned ? <PinOff size={14} /> : <Pin size={14} />}{tab.pinned ? 'Открепить вкладку' : 'Закрепить вкладку'}</button>
         <button type="button" role="menuitem" disabled={closing || actionBusy || Boolean(state?.terminalOpen)} onClick={() => { setTabMenu(null); requestClose(tab.id); }}><X size={14} />Закрыть вкладку</button>
-        <button type="button" role="menuitem" disabled={closing || actionBusy || tabs.filter(other => other.id !== tab.id && !other.pinned).some(other => summaries[other.id]?.terminalOpen || summaries[other.id]?.busy || summaries[other.id]?.pending || summaries[other.id]?.loading) || tabs.every(other => other.id === tab.id || other.pinned)} title="Закрываются только простаивающие незакреплённые вкладки" onClick={async () => { setTabMenu(null); for (const other of tabsRef.current.filter(other => other.id !== tab.id && !other.pinned)) { const state = summariesRef.current[other.id]; if (!state?.busy && !state?.pending && !state?.loading && !state?.terminalOpen) await close(other.id); } }}><X size={14} />Закрыть остальные</button>
+        <button type="button" role="menuitem" disabled={closing || actionBusy || tabs.filter(other => other.id !== tab.id && !other.pinned).some(other => summaries[other.id]?.terminalOpen || summaries[other.id]?.busy || summaries[other.id]?.pending || summaries[other.id]?.loading) || tabs.every(other => other.id === tab.id || other.pinned)} data-tooltip="Закрываются только простаивающие незакреплённые вкладки" onClick={async () => { setTabMenu(null); for (const other of tabsRef.current.filter(other => other.id !== tab.id && !other.pinned)) { const state = summariesRef.current[other.id]; if (!state?.busy && !state?.pending && !state?.loading && !state?.terminalOpen) await close(other.id); } }}><X size={14} />Закрыть остальные</button>
         <hr />
         <button type="button" role="menuitem" disabled={!closedTabs.length || opening} onClick={() => { setTabMenu(null); restoreClosed(); }}><RotateCcw size={14} />Вернуть закрытую вкладку<kbd>Ctrl+Shift+T</kbd></button>
       </div>;
@@ -853,7 +854,7 @@ function TabbedWorkspace() {
       onOpen={folder => { setTasksPanel(null); void open(folder); }}
       onNewTask={() => { const cwd = tasksPanel.cwd; setTasksPanel(null); setError(''); setWorktreeName(''); setWorktreeDialog({ cwd }); }}
       onCloseTabs={async folder => { for (const tab of tabsRef.current.filter(tab => !tab.archivedThread && sameFolder(tab.cwd, folder))) await close(tab.id); }} />}
-    {worktreeNotice && <div className="alert notice-alert workspace-notice" role="status"><span>{worktreeNotice}</span><button className="icon-button small" aria-label="Скрыть уведомление" title="Скрыть" onClick={() => setWorktreeNotice('')}><X size={14} /></button></div>}
+    {worktreeNotice && <div className="alert notice-alert workspace-notice" role="status"><span>{worktreeNotice}</span><button className="icon-button small" aria-label="Скрыть уведомление" data-tooltip="Скрыть" onClick={() => setWorktreeNotice('')}><X size={14} /></button></div>}
     {preparingUpdate && <div className="nightly-update-overlay" role="dialog" aria-modal="true" aria-labelledby="nightly-update-title" tabIndex={-1}><section><LoaderCircle size={24} className="spin" /><h2 id="nightly-update-title">Nightly обновляется…</h2><p>Сохраняем вкладки и перезапускаем приложение.</p></section></div>}
     {showAppUpdates && <AppUpdateDialog control={appUpdates} onClose={() => setShowAppUpdates(false)} />}
     {showNotificationSettings && <NotificationSettings onClose={() => setShowNotificationSettings(false)} />}

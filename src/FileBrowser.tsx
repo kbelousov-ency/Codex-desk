@@ -113,7 +113,7 @@ export default function FileBrowser({ cwd, active = true, refreshKey, onAskCodex
         const Icon = isDirectory ? (opened ? FolderOpen : Folder) : entry.type === 'link' ? Link : File;
         return <li key={entry.path}>
           <button className={`tree-file-row ${isDirectory ? 'tree-file-directory' : ''}`} data-path={entry.path}
-            style={{ '--tree-depth': depth } as CSSProperties} title={entry.type === 'link' ? `${entry.path} — ссылка` : entry.path}
+            style={{ '--tree-depth': depth } as CSSProperties} data-tooltip={entry.type === 'link' ? `${entry.path} — ссылка` : entry.path}
             aria-label={isDirectory ? `Раскрыть папку ${entry.name}` : `Открыть файл ${entry.name}`} aria-expanded={isDirectory ? opened : undefined}
             onClick={() => isDirectory ? toggle(entry.path) : void fileAction(entry.path)}
             onContextMenu={event => { event.preventDefault(); void fileAction(entry.path, true); }}
@@ -125,7 +125,7 @@ export default function FileBrowser({ cwd, active = true, refreshKey, onAskCodex
             {isDirectory ? <ChevronRight size={12} className={`tree-file-chevron ${opened ? 'expanded' : ''}`} /> : <span className="tree-file-chevron-space" />}
             <Icon size={15} /><span className="tree-file-name">{entry.name}</span>{entry.type === 'link' && <span className="tree-file-kind">ссылка</span>}
           </button>
-          {!isDirectory && entry.type !== 'link' && onPreview && <button type="button" className="tree-file-preview" aria-label={`Просмотреть файл ${entry.name}`} title="Просмотреть в приложении" onClick={() => onPreview(entry.path)}><Eye size={12} /></button>}
+          {!isDirectory && entry.type !== 'link' && onPreview && <button type="button" className="tree-file-preview" aria-label={`Просмотреть файл ${entry.name}`} data-tooltip="Просмотреть в приложении" onClick={() => onPreview(entry.path)}><Eye size={12} /></button>}
           {isDirectory && opened && renderDirectory(entry.path, depth + 1)}
         </li>;
       })}
@@ -138,7 +138,7 @@ export default function FileBrowser({ cwd, active = true, refreshKey, onAskCodex
 
   return <section className="file-browser" aria-label="Файлы рабочей папки">
     {onPreview && <button type="button" className="library-sidebar-button" aria-label="Найти файл (Ctrl+P)" onClick={() => onPreview()}><Search size={13} />Найти файл <kbd>Ctrl+P</kbd></button>}
-    <header className="file-browser-header"><FolderOpen size={15} /><div title={cwd}><strong>{folderName(cwd) || 'Рабочая папка'}</strong><span>{cwd || 'Папка не выбрана'}</span></div><button className="icon-button small" aria-label="Обновить дерево файлов" title="Обновить дерево файлов" disabled={!cwd || directories['']?.loading} onClick={refresh}><RefreshCw size={14} className={directories['']?.loading ? 'spin' : ''} /></button></header>
+    <header className="file-browser-header"><FolderOpen size={15} /><div data-tooltip={cwd}><strong>{folderName(cwd) || 'Рабочая папка'}</strong><span>{cwd || 'Папка не выбрана'}</span></div><button className="icon-button small" aria-label="Обновить дерево файлов" data-tooltip="Обновить дерево файлов" disabled={!cwd || directories['']?.loading} onClick={refresh}><RefreshCw size={14} className={directories['']?.loading ? 'spin' : ''} /></button></header>
     {actionError && <div className="tree-file-feedback tree-file-error" role="alert">{actionError}</div>}
     {cwd ? renderDirectory('', 0) : <p className="tree-file-feedback">Выберите рабочую папку, чтобы увидеть её файлы.</p>}
   </section>;

@@ -64,17 +64,17 @@ function DialogSearch({ controls, archived, active, query, onQuery }: {
   const clear = () => { onQuery(''); input.current?.focus(); };
   return <>
     <div className="dialog-search-control">
-      <div className="dialog-search-input"><Search size={13} /><input ref={input} type="text" autoComplete="off" maxLength={500} aria-label={archived ? 'Поиск в архиве' : 'Поиск диалогов'} placeholder="Найти диалог…" value={query} onChange={event => onQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); clear(); } }} />{query && <button type="button" className="icon-button small" aria-label="Очистить поиск диалогов" title="Очистить поиск" onClick={clear}><X size={12} /></button>}</div>
+      <div className="dialog-search-input"><Search size={13} /><input ref={input} type="text" autoComplete="off" maxLength={500} aria-label={archived ? 'Поиск в архиве' : 'Поиск диалогов'} placeholder="Найти диалог…" value={query} onChange={event => onQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); clear(); } }} />{query && <button type="button" className="icon-button small" aria-label="Очистить поиск диалогов" data-tooltip="Очистить поиск" onClick={clear}><X size={12} /></button>}</div>
       {searching && <span className="dialog-search-hint">По названию диалога Codex</span>}
     </div>
     {searching && <nav className="dialog-search-results" aria-label="Результаты поиска диалогов" aria-busy={loading}>
       {groups.map(([key, group]) => <section className="folder-tree-entry dialog-search-folder" data-cwd={group.cwd} key={key}>
-        <div className="dialog-search-folder-heading" title={group.cwd}><span>{group.cwd ? folderName(group.cwd) : 'Без рабочей папки'}</span><span className="archive-folder-count">{group.threads.length}</span></div>
+        <div className="dialog-search-folder-heading" data-tooltip={group.cwd}><span>{group.cwd ? folderName(group.cwd) : 'Без рабочей папки'}</span><span className="archive-folder-count">{group.threads.length}</span></div>
         <div className="folder-threads">{group.threads.map(thread => {
           const title = thread.name || thread.preview || 'Новый диалог';
           const selected = (archived ? controls.archiveThreadId : controls.activeThreadId) === thread.id;
           return <div key={thread.id} className={`folder-thread-row ${selected ? 'active' : ''}`}>
-            <button className={`folder-thread ${archived ? 'archived-thread archive-thread' : ''} ${selected ? 'active' : ''}`} data-thread-id={thread.id} title={title} aria-current={selected ? 'page' : undefined} disabled={controls.opening} onClick={() => archived ? controls.openArchivedThread?.(thread) : controls.openThread(group.cwd, thread)}><MessageSquare size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
+            <button className={`folder-thread ${archived ? 'archived-thread archive-thread' : ''} ${selected ? 'active' : ''}`} data-thread-id={thread.id} data-tooltip={title} aria-current={selected ? 'page' : undefined} disabled={controls.opening} onClick={() => archived ? controls.openArchivedThread?.(thread) : controls.openThread(group.cwd, thread)}><MessageSquare size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
             {controls.threadAction && <ThreadMenu title={title} threadId={thread.id} archived={archived} active={active} disabled={controls.opening || controls.actionBusy || controls.threadLocked?.(thread.id)} onAction={action => controls.threadAction?.(action, group.cwd, thread)} />}
           </div>;
         })}</div>
@@ -95,16 +95,16 @@ export default function ProjectSidebar({ controls, active = true }: { controls: 
   return <div className="project-sidebar">
     <div className="project-sidebar-content">
       <div className="project-sidebar-main" hidden={archiveOpen}>
-        <button className="new-project" aria-label="Новый проект" title="Выбрать новую рабочую папку" disabled={controls.opening} onClick={controls.addProject}><Plus size={15} /><span>Новый проект</span></button>
+        <button className="new-project" aria-label="Новый проект" data-tooltip="Выбрать новую рабочую папку" disabled={controls.opening} onClick={controls.addProject}><Plus size={15} /><span>Новый проект</span></button>
         <DialogSearch controls={controls} query={query} onQuery={setQuery} archived={false} active={active && !archiveOpen} />
         {controls.openLibrary && <button className="library-sidebar-button" type="button" onClick={controls.openLibrary}><Bookmark size={13} />История и закладки</button>}
         {!query.trim() && <ProjectTree controls={controls} active={active && !archiveOpen} />}
       </div>
       {archiveOpen && <section className="archive-panel" role="region" aria-label="Архив диалогов">
         <div className="archive-heading">
-          <button className="icon-button small" aria-label="К проектам" title="К проектам" onClick={controls.toggleArchive}><ArrowLeft size={15} /></button>
+          <button className="icon-button small" aria-label="К проектам" data-tooltip="К проектам" onClick={controls.toggleArchive}><ArrowLeft size={15} /></button>
           <strong>Архив</strong>
-          <button className="icon-button small archive-refresh" aria-label="Обновить архив" title="Обновить архив" disabled={controls.archiveLoading || controls.actionBusy} onClick={() => controls.refreshArchive?.()}><RefreshCw size={12} className={controls.archiveLoading ? 'spin' : ''} /></button>
+          <button className="icon-button small archive-refresh" aria-label="Обновить архив" data-tooltip="Обновить архив" disabled={controls.archiveLoading || controls.actionBusy} onClick={() => controls.refreshArchive?.()}><RefreshCw size={12} className={controls.archiveLoading ? 'spin' : ''} /></button>
         </div>
         <DialogSearch controls={controls} query={archiveQuery} onQuery={setArchiveQuery} archived active={active} />
         {!archiveQuery.trim() && <nav className="archive-tree" aria-label="Архив по папкам">
@@ -112,12 +112,12 @@ export default function ProjectSidebar({ controls, active = true }: { controls: 
             const name = group.cwd ? folderName(group.cwd) : 'Без рабочей папки';
             const expanded = !collapsed[key];
             return <section key={key} className="folder-tree-entry archive-folder" data-cwd={group.cwd}>
-              <div className="folder-tree-row"><button className="folder-toggle" aria-label={`Архив папки ${name}`} aria-expanded={expanded} title={group.cwd || name} onClick={() => setCollapsed(previous => ({ ...previous, [key]: !previous[key] }))}><span>{name}</span><ChevronRight size={12} className={expanded ? 'folder-chevron expanded' : 'folder-chevron'} /></button><span className="archive-folder-count">{group.threads.length}</span></div>
+              <div className="folder-tree-row"><button className="folder-toggle" aria-label={`Архив папки ${name}`} aria-expanded={expanded} data-tooltip={group.cwd || name} onClick={() => setCollapsed(previous => ({ ...previous, [key]: !previous[key] }))}><span>{name}</span><ChevronRight size={12} className={expanded ? 'folder-chevron expanded' : 'folder-chevron'} /></button><span className="archive-folder-count">{group.threads.length}</span></div>
               {expanded && <div className="folder-threads" aria-label={`Архив ${name}`}>{group.threads.map(thread => {
                 const title = thread.name || thread.preview || 'Новый диалог';
                 const selected = controls.archiveThreadId === thread.id;
                 return <div key={thread.id} className={`folder-thread-row ${selected ? 'active' : ''}`}>
-                  <button className={`folder-thread archived-thread archive-thread ${selected ? 'active' : ''}`} data-thread-id={thread.id} title={title} aria-current={selected ? 'page' : undefined} disabled={controls.opening} onClick={() => controls.openArchivedThread?.(thread)}><MessageSquare size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
+                  <button className={`folder-thread archived-thread archive-thread ${selected ? 'active' : ''}`} data-thread-id={thread.id} data-tooltip={title} aria-current={selected ? 'page' : undefined} disabled={controls.opening} onClick={() => controls.openArchivedThread?.(thread)}><MessageSquare size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
                   {controls.threadAction && <ThreadMenu title={title} threadId={thread.id} archived active={active} disabled={controls.opening || controls.actionBusy || controls.threadLocked?.(thread.id)} onAction={action => controls.threadAction?.(action, group.cwd, thread)} />}
                 </div>;
               })}</div>}

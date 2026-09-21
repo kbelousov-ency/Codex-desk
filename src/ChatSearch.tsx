@@ -16,6 +16,8 @@ type Props = {
   onEditMessage?(item: Item): void;
   editDisabled?: boolean;
   onBookmark?(item: Item): Promise<void>;
+  onAnswerQuestion?(item: Item, answer: string): Promise<boolean>;
+  questionDisabled?: boolean;
 };
 
 type Match = { range: Range; key: string };
@@ -31,7 +33,7 @@ function findMatches(root: HTMLElement, query: string): Match[] {
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         const parent = node.parentElement;
-        if (!node.textContent || !parent || parent.closest('script, style, summary, .link-error, .inline-error [role="alert"], button:not(.work-file-link), [aria-hidden="true"]')) return NodeFilter.FILTER_REJECT;
+        if (!node.textContent || !parent || parent.closest('script, style, summary, .link-error, .inline-error [role="alert"], button:not(.work-file-link):not(.agent-question-option), [aria-hidden="true"]')) return NodeFilter.FILTER_REJECT;
         return NodeFilter.FILTER_ACCEPT;
       },
     });
@@ -39,7 +41,7 @@ function findMatches(root: HTMLElement, query: string): Match[] {
     let lastBlock: Element | null = null;
     let node: Node | null;
     while ((node = walker.nextNode())) {
-      const block = node.parentElement?.closest('p, pre, li, h1, h2, h3, h4, h5, h6, td, th, .work-meta, .work-file-link, .diff-code > span') || container;
+      const block = node.parentElement?.closest('p, pre, li, h1, h2, h3, h4, h5, h6, td, th, .work-meta, .work-file-link, .diff-code > span, .agent-question-option') || container;
       if (!groups.length || block !== lastBlock) groups.push({ text: '', nodes: [] });
       lastBlock = block;
       const group = groups[groups.length - 1];
@@ -67,7 +69,7 @@ function findMatches(root: HTMLElement, query: string): Match[] {
   return matches;
 }
 
-export default function ChatSearch({ items, turnWork, open, active, onClose, hasEarlier, loading, onLoadEarlier, onEditMessage, editDisabled, onBookmark }: Props) {
+export default function ChatSearch({ items, turnWork, open, active, onClose, hasEarlier, loading, onLoadEarlier, onEditMessage, editDisabled, onBookmark, onAnswerQuestion, questionDisabled }: Props) {
   const [query, setQuery] = useState('');
   const [matches, setMatches] = useState<Match[]>([]);
   const [current, setCurrent] = useState(0);
@@ -196,12 +198,12 @@ export default function ChatSearch({ items, turnWork, open, active, onClose, has
       <div className="chat-search-row"><Search size={14} /><input ref={inputRef} type="text" aria-label="Найти в чате" placeholder="Найти в чате" value={query} onChange={event => setQuery(event.target.value)} autoComplete="off" spellCheck={false} />
         {query && <button className="icon-button small" type="button" aria-label="Очистить поиск по чату" onClick={() => { setQuery(''); inputRef.current?.focus(); }}><X size={12} /></button>}
         <span className="chat-search-count" role="status" aria-live="polite">{!query ? 'Введите текст' : matches.length ? `${current + 1} из ${matches.length}` : 'Нет совпадений'}</span>
-        <button className="icon-button small" type="button" aria-label="Предыдущее совпадение" title="Предыдущее совпадение (Shift+Enter)" disabled={!matches.length} onClick={() => move(-1)}><ArrowUp size={14} /></button>
-        <button className="icon-button small" type="button" aria-label="Следующее совпадение" title="Следующее совпадение (Enter)" disabled={!matches.length} onClick={() => move(1)}><ArrowDown size={14} /></button>
-        <button className="icon-button small" type="button" aria-label="Закрыть поиск по чату" title="Закрыть поиск (Esc)" onClick={onClose}><X size={14} /></button>
+        <button className="icon-button small" type="button" aria-label="Предыдущее совпадение" data-tooltip="Предыдущее совпадение (Shift+Enter)" disabled={!matches.length} onClick={() => move(-1)}><ArrowUp size={14} /></button>
+        <button className="icon-button small" type="button" aria-label="Следующее совпадение" data-tooltip="Следующее совпадение (Enter)" disabled={!matches.length} onClick={() => move(1)}><ArrowDown size={14} /></button>
+        <button className="icon-button small" type="button" aria-label="Закрыть поиск по чату" data-tooltip="Закрыть поиск (Esc)" onClick={onClose}><X size={14} /></button>
       </div>
       {hasEarlier && <div className="chat-search-history"><span>Поиск по загруженной части чата.</span>{onLoadEarlier && <button type="button" disabled={loading} onClick={onLoadEarlier}>{loading ? 'Загружаем…' : 'Искать в более ранних сообщениях'}</button>}</div>}
     </div>}
-    <div className="chat-search-content" ref={rootRef}><Conversation items={items} turnWork={turnWork} searchable={searching} onEditMessage={onEditMessage} editDisabled={editDisabled} onBookmark={onBookmark} /></div>
+    <div className="chat-search-content" ref={rootRef}><Conversation items={items} turnWork={turnWork} searchable={searching} onEditMessage={onEditMessage} editDisabled={editDisabled} onBookmark={onBookmark} onAnswerQuestion={onAnswerQuestion} questionDisabled={questionDisabled} /></div>
   </>;
 }

@@ -90,7 +90,7 @@ export function NotificationSettings({ onClose }: { onClose(): void }) {
     <section className="settings-modal notification-settings" role="dialog" aria-modal="true" aria-labelledby="notification-settings-title" ref={dialog}>
       <div className="modal-header">
         <div><div className="eyebrow"><Bell size={12} aria-hidden="true" /> УВЕДОМЛЕНИЯ</div><h2 id="notification-settings-title">Быть в курсе задач</h2></div>
-        <button className="icon-button" aria-label="Закрыть настройки уведомлений" title="Закрыть" ref={closeButton} onClick={onClose}><X size={18} /></button>
+        <button className="icon-button" aria-label="Закрыть настройки уведомлений" data-tooltip="Закрыть" ref={closeButton} onClick={onClose}><X size={18} /></button>
       </div>
       <div className="settings-content">
         {!settings && pending && <p className="notification-settings-status" role="status"><LoaderCircle size={15} className="spin" /> Загружаем настройки…</p>}

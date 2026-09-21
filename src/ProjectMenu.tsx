@@ -54,7 +54,7 @@ export default function ProjectMenu({ name, active, disabled, onClose, onWorktre
     if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); show(); }
   }}>
     {children}
-    <button ref={trigger} type="button" className={`icon-button small project-menu-trigger ${visible ? 'open' : ''}`} aria-label={`Действия проекта ${name}`} title="Действия проекта" aria-haspopup="menu" aria-expanded={visible} aria-controls={visible ? id : undefined} disabled={disabled} onClick={() => visible ? close(true) : show()} onKeyDown={event => {
+    <button ref={trigger} type="button" className={`icon-button small project-menu-trigger ${visible ? 'open' : ''}`} aria-label={`Действия проекта ${name}`} data-tooltip="Действия проекта" aria-haspopup="menu" aria-expanded={visible} aria-controls={visible ? id : undefined} disabled={disabled} onClick={() => visible ? close(true) : show()} onKeyDown={event => {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(); }
     }}><EllipsisVertical size={14} /></button>
     {visible && createPortal(<div ref={menu} id={id} className="thread-action-menu project-action-menu" role="menu" aria-label={`Действия проекта ${name}`} style={position} onBlur={event => {

@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+﻿import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdir, readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
@@ -46,6 +46,7 @@ try {
     return result;
   };
   const badge = () => page.locator('.build-badge:visible');
+  const tooltip = () => page.locator('.build-tooltip[role="tooltip"]');
   const diagnostics = () => page.getByRole('dialog', { name: 'Диагностика', exact: true });
   const openDiagnostics = async () => { await page.locator('button[aria-label="Диагностика"]:visible').click(); await diagnostics().waitFor(); };
   const checkBadgeFits = async () => {
@@ -60,7 +61,26 @@ try {
   page = await createPage('empty');
   await badge().getByText('RELEASE', { exact: true }).waitFor();
   assert.equal(await page.locator('.session-tab').count(), 0);
-  assert.match(await badge().getAttribute('title'), /RELEASE\nВерсия 0\.1\.0\nСборка 123456789abc\n18\.09\.2026, 10:20/);
+  assert.match(await badge().getAttribute('aria-label'), /RELEASE\nВерсия 0\.1\.0\nСборка 123456789abc\n18\.09\.2026, 10:20/);
+  assert.equal(await badge().getAttribute('title'), null, 'Only the styled tooltip appears');
+  await badge().hover();
+  await tooltip().waitFor();
+  assert.match(await tooltip().innerText(), /Codex Desk[\s\S]*RELEASE[\s\S]*Версия\s*0\.1\.0[\s\S]*Сборка\s*123456789abc[\s\S]*18\.09\.2026, 10:20/);
+  assert.equal(await badge().getAttribute('aria-describedby'), await tooltip().getAttribute('id'));
+  await tooltip().hover();
+  assert.equal(await tooltip().isVisible(), true, 'Pointer can enter the tooltip to read or select metadata');
+  await page.keyboard.press('Escape');
+  await tooltip().waitFor({ state: 'hidden' });
+  await badge().focus();
+  await tooltip().waitFor();
+  await page.keyboard.press('Escape');
+  await tooltip().waitFor({ state: 'hidden' });
+  await badge().press('Enter');
+  const updates = page.getByRole('dialog', { name: 'Обновления приложения', exact: true });
+  await updates.waitFor();
+  assert.equal(await tooltip().count(), 0, 'Opening updates dismisses the tooltip');
+  await page.keyboard.press('Escape');
+  await updates.waitFor({ state: 'hidden' });
   await checkBadgeFits();
   await openDiagnostics();
   await diagnostics().getByText('RELEASE', { exact: true }).waitFor();
@@ -87,6 +107,13 @@ try {
   await badge().getByText('NIGHTLY', { exact: true }).waitFor();
   await page.setViewportSize({ width: 1000, height: 800 });
   await checkBadgeFits();
+  await badge().hover();
+  await tooltip().waitFor();
+  assert.equal(await tooltip().evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight;
+  }), true, 'Compact tooltip stays in the viewport without sidebar clipping');
+  await page.screenshot({ path: 'artifacts/channel-nightly-tooltip.png' });
   await openDiagnostics();
   await diagnostics().getByText('NIGHTLY', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.__build.calls), 1, 'Independent disconnected tabs do not repeat metadata IPC');
@@ -109,11 +136,14 @@ try {
 
   page = await createPage('invalid-date', 'development');
   await badge().getByText('DEV', { exact: true }).waitFor();
-  assert.doesNotMatch(await badge().getAttribute('title'), /Invalid|not a date/);
+  assert.doesNotMatch(await badge().getAttribute('aria-label'), /Invalid|not a date/);
+  await badge().hover();
+  await tooltip().waitFor();
+  assert.equal(await tooltip().locator('time').count(), 0);
   await openDiagnostics();
   assert.equal(await diagnostics().locator('time').count(), 0, 'Bad dates cannot crash diagnostics or mislead the user');
   assert.deepEqual(errors, []);
-  console.log('PASS: release/nightly/dev identity in empty, independent offline and archive views; compact badge; one shared IPC; version/hash/date in diagnostics; missing/failing bridge and invalid date fallback. Fake host only.');
+  console.log('PASS: release/nightly/dev identity in empty, independent offline and archive views; compact badge; styled hover/focus/Escape tooltip and update action; one shared IPC; version/hash/date in diagnostics; missing/failing bridge and invalid date fallback. Fake host only.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/channel-failure.png' }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '(page unavailable)')); }
   throw error;

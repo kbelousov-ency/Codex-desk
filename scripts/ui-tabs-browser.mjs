@@ -105,7 +105,7 @@ try {
   await countTabs(2); await ready();
   const idB = await activeId();
   assert.notEqual(idA, idB);
-  assert.deepEqual(await view().locator('.folder-toggle').evaluateAll(nodes => nodes.map(node => node.title)), ['C:/Fixtures/PROJECT_A', 'C:/Fixtures/PROJECT_B']);
+  assert.deepEqual(await view().locator('.folder-toggle').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-tooltip'))), ['C:/Fixtures/PROJECT_A', 'C:/Fixtures/PROJECT_B']);
   assert.equal(await input().inputValue(), '');
   assert.equal(await view().locator('.folder-tree-entry[data-cwd="C:/Fixtures/PROJECT_B"]').getByRole('button', { name: 'История PROJECT_A', exact: true }).count(), 0);
   await selectValue('Модель', 'fixture-beta'); await selectValue('Глубина размышлений', 'medium'); await select('Режим доступа').click(); await view().getByRole('option', { name: /^Одобрять за меня/ }).click();
@@ -157,7 +157,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 900 }); await page.screenshot({ path: 'artifacts/tabs-browser.png' });
   await stop().click(); await stop().waitFor({ state: 'hidden' });
   await page.reload(); await ready();
-  assert.deepEqual(await view().locator('.folder-toggle').evaluateAll(nodes => nodes.map(node => node.title)), ['C:/Fixtures/PROJECT_A', 'C:/Fixtures/PROJECT_B']);
+  assert.deepEqual(await view().locator('.folder-toggle').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-tooltip'))), ['C:/Fixtures/PROJECT_A', 'C:/Fixtures/PROJECT_B']);
   assert.deepEqual(errors, []);
   console.log('PASS: browser tabs, folders/history, concurrent scoped fixture events and approvals, drafts/settings, background scroll, busy new chat, history dedupe, isolated stop/confirmed close, retained folders, reload, 1440/940px layout. Fake bridge only; no Electron IPC or model requests.');
 } catch (error) {

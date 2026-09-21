@@ -31,7 +31,7 @@ export default function Markdown({ children }: { children: string }) {
     a: ({ href, children: label }) => {
       const kind = href ? linkKind(href) : null;
       if (!href || !kind) return <span>{label}</span>;
-      return <a className="markdown-link" href={href} title={href} onClick={event => {
+      return <a className="markdown-link" href={href} data-tooltip={href} onClick={event => {
         event.preventDefault(); void open(href);
       }} onContextMenu={event => {
         event.preventDefault(); void open(href, true);

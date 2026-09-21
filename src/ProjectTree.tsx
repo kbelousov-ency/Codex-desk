@@ -48,16 +48,16 @@ export default function ProjectTree({ controls, active = true }: { controls: Pro
       const activeFolder = projectKey(controls.activeCwd) === key;
       return <section className={`folder-tree-entry ${activeFolder ? 'active-folder' : ''}`} data-cwd={cwd} key={key}>
         <ProjectMenu name={name} active={active} disabled={controls.opening || Boolean(controls.actionBusy) || !controls.closeProject} onClose={() => controls.closeProject?.(cwd)} onWorktree={controls.newWorktree ? () => controls.newWorktree?.(cwd) : undefined} onTasks={controls.showTasks ? () => controls.showTasks?.(cwd) : undefined}>
-          <button className="folder-toggle" aria-label={`Диалоги папки ${name}`} aria-expanded={expanded} title={cwd} onClick={() => controls.toggleProject(cwd)}><span>{name}</span><ChevronRight size={12} className={expanded ? 'folder-chevron expanded' : 'folder-chevron'} /></button>
-          {expanded && <button className="icon-button small folder-refresh" aria-label={`Обновить диалоги ${name}`} title="Обновить диалоги" disabled={history?.loading} onClick={() => controls.refreshProject(cwd)}><RefreshCw size={12} className={history?.loading ? 'spin' : ''} /></button>}
-          <button className="icon-button small folder-add" aria-label={`Новый диалог в папке ${name}`} title={`Новый диалог в папке ${name}`} disabled={controls.opening} onClick={() => controls.newChat(cwd)}><Plus size={15} /></button>
+          <button className="folder-toggle" aria-label={`Диалоги папки ${name}`} aria-expanded={expanded} data-tooltip={cwd} onClick={() => controls.toggleProject(cwd)}><span>{name}</span><ChevronRight size={12} className={expanded ? 'folder-chevron expanded' : 'folder-chevron'} /></button>
+          {expanded && <button className="icon-button small folder-refresh" aria-label={`Обновить диалоги ${name}`} data-tooltip="Обновить диалоги" disabled={history?.loading} onClick={() => controls.refreshProject(cwd)}><RefreshCw size={12} className={history?.loading ? 'spin' : ''} /></button>}
+          <button className="icon-button small folder-add" aria-label={`Новый диалог в папке ${name}`} data-tooltip={`Новый диалог в папке ${name}`} disabled={controls.opening} onClick={() => controls.newChat(cwd)}><Plus size={15} /></button>
         </ProjectMenu>
         {expanded && <div className="folder-threads" aria-label={`Диалоги ${name}`}>
           {history?.threads.map(thread => {
             const title = thread.name || thread.preview || 'Новый диалог';
             const selected = activeFolder && controls.activeThreadId === thread.id;
             return <div className={`folder-thread-row ${selected ? 'active' : ''}`} key={thread.id}>
-              <button className={`folder-thread ${selected ? 'active' : ''}`} data-thread-id={thread.id} aria-current={selected ? 'page' : undefined} title={title} disabled={controls.opening} onClick={() => controls.openThread(cwd, thread)}><AgentLogo provider={thread.id.startsWith('claude:') ? 'claude' : 'codex'} size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
+              <button className={`folder-thread ${selected ? 'active' : ''}`} data-thread-id={thread.id} aria-current={selected ? 'page' : undefined} data-tooltip={title} disabled={controls.opening} onClick={() => controls.openThread(cwd, thread)}><AgentLogo provider={thread.id.startsWith('claude:') ? 'claude' : 'codex'} size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
               {controls.threadAction && <ThreadMenu title={title} threadId={thread.id} archivable={!thread.id.startsWith('claude:')} active={active} disabled={controls.opening || controls.actionBusy || controls.threadLocked?.(thread.id)} onAction={action => controls.threadAction?.(action, cwd, thread)} />}
             </div>;
           })}

@@ -831,6 +831,48 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     finally { updateLoading(false); }
   };
 
+  /** Read a separate, complete snapshot without moving the source tab's history or scroll. */
+  const readFullHistory = async (): Promise<Item[]> => {
+    const selected = threadRef.current;
+    const lifecycle = lifecycleRef.current;
+    const assertCurrent = () => {
+      if (!selected || threadRef.current?.id !== selected.id || lifecycleRef.current !== lifecycle ||
+        resumedThreadRef.current !== selected.id || activeRef.current || loadingRef.current || terminalRef.current ||
+        authRef.current || pendingMessageRef.current || pendingRequestIdsRef.current.size || connectionRef.current !== 'ready') {
+        throw new Error('Состояние исходного диалога изменилось. Дождитесь завершения работы и повторите передачу.');
+      }
+    };
+    assertCurrent();
+    if (selected!.historyMode !== 'paginated') {
+      const result = await bridge.request('thread/read', { threadId: selected!.id, includeTurns: true });
+      assertCurrent();
+      if (result?.thread?.id !== selected!.id || !Array.isArray(result.thread.turns) || result.thread.turns.some((turn: any) => !Array.isArray(turn.items))) throw new Error('Агент не вернул полную историю диалога.');
+      if (result.thread.status?.type === 'active' || result.thread.turns.some((turn: any) => turn.status === 'inProgress')) throw new Error('Исходный агент ещё работает. Дождитесь завершения или остановите задачу.');
+      return result.thread.turns.flatMap((turn: any) => (turn.items || []).map((item: Item) => ({ ...item, turnId: turn.id, complete: true })));
+    }
+    const descending: Item[] = [];
+    const seen = new Set<string>();
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const page = await bridge.request('thread/items/list', { threadId: selected!.id, ...(cursor ? { cursor } : {}), limit: 100, sortDirection: 'desc' });
+      assertCurrent();
+      if (!Array.isArray(page?.data)) throw new Error('Не удалось прочитать полную историю диалога.');
+      const previousCount = descending.length;
+      for (const entry of page.data) {
+        if (!entry?.item?.id || !entry.item.type) throw new Error('Агент вернул неполную запись истории.');
+        const key = `${entry.turnId || ''}:${entry.item.id}`;
+        if (!seen.has(key)) { seen.add(key); descending.push({ ...entry.item, turnId: entry.turnId, complete: true }); }
+      }
+      cursor = page.nextCursor ?? undefined;
+      if (cursor) {
+        if (typeof cursor !== 'string' || cursors.has(cursor) || descending.length === previousCount) throw new Error('Агент повторил страницу истории. Повторите загрузку контекста.');
+        cursors.add(cursor);
+      }
+    } while (cursor);
+    return descending.reverse();
+  };
+
   const readMessageStatus = async (clientUserMessageId: string, threadId = threadRef.current?.id) => {
     if (!threadId) return { accepted: false, rejected: false };
     const known = threadId === threadRef.current?.id ? acceptedMessagesRef.current.get(clientUserMessageId) : undefined;
@@ -1123,6 +1165,6 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
     cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage, agentDetails, agentDetailsLoading, refreshAgentDetails,
     connect, reconnect, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
-    resume, loadEarlier, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice, pendingMessage, reconcileMessage, reconcileQueuedMessage,
+    resume, loadEarlier, readFullHistory, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice, pendingMessage, reconcileMessage, reconcileQueuedMessage,
   };
 }

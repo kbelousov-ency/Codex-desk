@@ -115,7 +115,7 @@ try {
   assert.equal(await count('turn/interrupt'), 1);
   await finish('interrupted'); await action().waitFor();
   assert.equal(await action().isEnabled(), true);
-  assert.equal(await action().getAttribute('title'), 'Отправить «Продолжай» в этот диалог');
+  assert.equal(await action().getAttribute('data-tooltip'), 'Отправить «Продолжай» в этот диалог');
   assert.ok(await view().locator('.user-avatar .pixel-avatar').count() > 0, 'User avatar is a pixel SVG');
   assert.equal((await view().locator('.user-avatar').first().innerText()).trim(), '', 'Old letter placeholder is gone');
   await model().click(); await page.getByRole('listbox', { name: 'Модель', exact: true }).getByRole('option', { name: 'fixture-beta', exact: true }).click();

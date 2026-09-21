@@ -46,7 +46,7 @@ const stopButton = () => view().getByRole('button', { name: 'Остановит�
 const composer = () => view().getByRole('textbox', { name: 'Сообщение Codex', exact: true });
 const addFolder = () => view().getByRole('button', { name: 'Новый проект', exact: true }).first();
 const newChat = () => page.getByRole('button', { name: 'Открыть новый диалог', exact: true });
-const projectCard = directory => view().locator('.project-tree').getByTitle(directory, { exact: true });
+const projectCard = directory => view().locator('.project-tree').locator(`[data-tooltip=${JSON.stringify(directory)}]`);
 const projectRow = directory => projectCard(directory).locator('xpath=../..');
 const tab = id => page.locator(`.session-tab[data-session-id="${id}"]`);
 const activeId = () => page.getByRole('tab', { selected: true }).evaluate(element => element.closest('[data-session-id]').dataset.sessionId);
@@ -73,7 +73,7 @@ async function installPage(nextPage) {
 
 async function ready(id, directory) {
   await waitUntil(async () => await activeId() === id && await modelSelect().isEnabled(), `ready tab ${id}`);
-  assert.equal(await projectCard(directory).getAttribute('title'), directory);
+  assert.equal(await projectCard(directory).getAttribute('data-tooltip'), directory);
   assert.ok((await projectRow(directory).getAttribute('class')).split(' ').includes('active-folder'));
   const bootstrap = await page.evaluate(async id => {
     window.__tabEvents ||= {};
@@ -107,7 +107,7 @@ async function send(id, text, marker) {
 async function assertSettings(id, expected) {
   const settings = await page.evaluate(id => window.codex.forSession(id).getSettings(), id);
   for (const [key, value] of Object.entries(expected)) assert.equal(settings[key], value, `Session ${id} setting ${key}`);
-  assert.equal(await projectCard(expected.cwd).getAttribute('title'), expected.cwd);
+  assert.equal(await projectCard(expected.cwd).getAttribute('data-tooltip'), expected.cwd);
   assert.equal(await modelSelect().getAttribute('data-value'), expected.model);
   assert.equal(await effortSelect().getAttribute('data-value'), expected.effort);
   assert.equal(await accessSelect().getAttribute('data-value'), expected.access);
@@ -178,7 +178,7 @@ try {
   assert.notEqual(pidA, pidB, 'Each dialogue owns a separate App Server process');
   assert.equal(app.windows().length, 1, 'Adding a folder does not create a window');
   assert.equal(await view().locator('.folder-toggle').count(), 2);
-  const cards = await view().locator('.folder-toggle').evaluateAll(elements => elements.map(element => element.title));
+  const cards = await view().locator('.folder-toggle').evaluateAll(elements => elements.map(element => element.getAttribute('data-tooltip')));
   assert.deepEqual(cards, [projectA, projectB], 'The second folder appears below the first');
   const dialogs = await app.evaluate(() => globalThis.__tabDialogs);
   assert.equal(dialogs[1].owner, dialogs[0].owner);
@@ -331,7 +331,7 @@ try {
   await page.reload();
   await page.getByRole('tablist', { name: 'Открытые диалоги', exact: true }).waitFor();
   await waitUntil(async () => await view().count() === 1 && await modelSelect().isEnabled(), 'renderer reload ready');
-  assert.deepEqual(await view().locator('.folder-toggle').evaluateAll(elements => elements.map(element => element.title)), [projectA, projectB]);
+  assert.deepEqual(await view().locator('.folder-toggle').evaluateAll(elements => elements.map(element => element.getAttribute('data-tooltip'))), [projectA, projectB]);
   await app.close();
   app = undefined;
   await waitUntil(() => [...fixturePids].every(pid => !isAlive(pid)), 'first host fixture cleanup');
@@ -339,7 +339,7 @@ try {
   await installPage(await app.firstWindow());
   const restarted = await workspace();
   assert.deepEqual(restarted.projects, [projectA, projectB]);
-  assert.deepEqual(await view().locator('.folder-toggle').evaluateAll(elements => elements.map(element => element.title)), [projectA, projectB]);
+  assert.deepEqual(await view().locator('.folder-toggle').evaluateAll(elements => elements.map(element => element.getAttribute('data-tooltip'))), [projectA, projectB]);
   const restartId = await activeId();
   const restartCwd = restarted.sessions.find(session => session.id === restartId).cwd;
   await ready(restartId, restartCwd);

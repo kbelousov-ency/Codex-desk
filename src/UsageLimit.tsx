@@ -35,7 +35,7 @@ export default function UsageLimit({ usage, loading, active = true, disabled = f
   }, [open, active]);
   if (!available) {
     const reason = usage && !usage.available ? (usage.message || 'Лимиты плана недоступны для этого способа входа. Команда /usage покажет данные Claude CLI.') : 'Лимиты ещё не получены. Команда /usage покажет данные Claude CLI.';
-    return <button type="button" className="usage-limit usage-limit-plain" title={reason} aria-label="Лимит: показать использование командой /usage" disabled={disabled} onClick={() => onCommand('/usage')}><Gauge size={13} /><span>Лимит</span></button>;
+    return <button type="button" className="usage-limit usage-limit-plain" data-tooltip={reason} aria-label="Лимит: показать использование командой /usage" disabled={disabled} onClick={() => onCommand('/usage')}><Gauge size={13} /><span>Лимит</span></button>;
   }
   const summary = fiveHour ? `5 ч: ${percent(fiveHour.utilization)}` : `${usage!.windows[0].label}: ${percent(usage!.windows[0].utilization)}`;
   const title = fiveHour ? `Лимит 5-часовой сессии: использовано ${percent(fiveHour.utilization)}${fiveHour.resetsAt ? `, ${resetText(fiveHour.resetsAt)}` : ''}. Нажмите, чтобы увидеть все лимиты.` : 'Нажмите, чтобы увидеть все лимиты.';
@@ -45,9 +45,9 @@ export default function UsageLimit({ usage, loading, active = true, disabled = f
     {window.resetsAt && <small>{resetText(window.resetsAt)}</small>}
   </li>;
   return <div ref={root} className="usage-limit">
-    <button type="button" className={`usage-limit-trigger ${open ? 'open' : ''}`} title={title} aria-label={`Лимит ${summary}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}><Gauge size={13} /><span className="usage-summary">Лимит {summary}</span></button>
+    <button type="button" className={`usage-limit-trigger ${open ? 'open' : ''}`} data-tooltip={title} aria-label={`Лимит ${summary}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(value => !value)}><Gauge size={13} /><span className="usage-summary">Лимит {summary}</span></button>
     {open && <section id={id} className="usage-popover" role="dialog" aria-label="Лимиты плана Claude">
-      <header><strong>Лимиты плана{usage!.subscription ? ` · ${usage!.subscription}` : ''}</strong><button type="button" className="icon-button small" aria-label="Обновить лимиты" title="Обновить" disabled={loading} onClick={onRefresh}><RefreshCw size={13} className={loading ? 'spin' : ''} /></button></header>
+      <header><strong>Лимиты плана{usage!.subscription ? ` · ${usage!.subscription}` : ''}</strong><button type="button" className="icon-button small" aria-label="Обновить лимиты" data-tooltip="Обновить" disabled={loading} onClick={onRefresh}><RefreshCw size={13} className={loading ? 'spin' : ''} /></button></header>
       <ul>{usage!.windows.map(row)}</ul>
       <footer><small>Данные claude.ai через установленный Claude CLI{usage!.updatedAt ? `, ${new Date(usage!.updatedAt).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}` : ''}.</small><button type="button" className="text-button" onClick={() => { setOpen(false); onCommand('/usage'); }}>Команда /usage</button></footer>
     </section>}

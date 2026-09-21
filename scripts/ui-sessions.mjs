@@ -57,9 +57,9 @@ async function ready(page, directory) {
   page.setDefaultTimeout(15_000);
   await page.waitForFunction(directory => {
     const model = document.querySelector('select[aria-label="Модель"]');
-    return Boolean(window.codex && model && !model.disabled && document.querySelector('.project-card')?.title === directory);
+    return Boolean(window.codex && model && !model.disabled && document.querySelector('.project-card')?.getAttribute('data-tooltip') === directory);
   }, directory);
-  assert.equal(await page.locator('.project-card').getAttribute('title'), directory);
+  assert.equal(await page.locator('.project-card').getAttribute('data-tooltip'), directory);
   const bootstrap = await page.evaluate(async () => {
     window.__sessionEvents = [];
     window.codex.onEvent(event => window.__sessionEvents.push(event));
@@ -82,7 +82,7 @@ async function send(page, text, marker) {
 async function assertSettings(page, expected) {
   const settings = await page.evaluate(() => window.codex.getSettings());
   for (const [key, value] of Object.entries(expected)) assert.equal(settings[key], value, `Window setting ${key}`);
-  assert.equal(await page.locator('.project-card').getAttribute('title'), expected.cwd);
+  assert.equal(await page.locator('.project-card').getAttribute('data-tooltip'), expected.cwd);
   assert.equal(await modelSelect(page).inputValue(), expected.model);
   assert.equal(await effortSelect(page).inputValue(), expected.effort);
   assert.equal(await accessSelect(page).inputValue(), expected.access);

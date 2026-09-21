@@ -86,7 +86,7 @@ function ToolRow({ item, allowRunning, searchable }: { item: Item; allowRunning:
   const Icon = item.type === 'commandExecution' ? Terminal : item.type === 'fileChange' ? FileCode2 : item.type === 'webSearch' ? Globe : item.type.includes('Agent') ? GitBranch : ['imageView', 'imageGeneration'].includes(item.type) ? Image : item.type === 'sleep' ? Timer : Layers;
   const label = itemLabel(item);
   return <details className={`work-log-row work-tool ${failed ? 'failed' : ''}`} data-item-id={item.id} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary><Icon size={14} /><span className="work-tool-label" title={label}>{label}</span>{running ? <LoaderCircle size={12} className="spin" /> : failed && <span className="work-tool-status">Ошибка</span>}<ChevronRight size={12} className="disclosure-arrow" /></summary>
+    <summary><Icon size={14} /><span className="work-tool-label" data-tooltip={label}>{label}</span>{running ? <LoaderCircle size={12} className="spin" /> : failed && <span className="work-tool-status">Ошибка</span>}<ChevronRight size={12} className="disclosure-arrow" /></summary>
     {(open || searchable) && <div className="work-tool-body">
       {item.command && <pre className="work-output work-command" tabIndex={0}>{item.command}</pre>}
       {item.cwd && <div className="work-meta">Папка: {item.cwd}</div>}
@@ -123,5 +123,5 @@ function WorkFile({ path }: { path: string }) {
     try { if (menu) await bridge.showPathMenu(path); else await bridge.openPath(path); }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   };
-  return <><button className="work-file-link" title={path} onClick={() => void open()} onContextMenu={event => { event.preventDefault(); void open(true); }}>{path}</button>{error && <div className="inline-error" role="alert">{error}</div>}</>;
+  return <><button className="work-file-link" data-tooltip={path} onClick={() => void open()} onContextMenu={event => { event.preventDefault(); void open(true); }}>{path}</button>{error && <div className="inline-error" role="alert">{error}</div>}</>;
 }
