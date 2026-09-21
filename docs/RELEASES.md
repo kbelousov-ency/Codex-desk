@@ -1,9 +1,15 @@
 # Release и Nightly
-## Подготовка публичного Release 0.2.0 — 2026-09-21
+## Публичный Release 0.2.0 — 2026-09-21
 
 По поручению пользователя «Давай всё в релиз и заливай» применённая Nightly `63ab264a1592a5867a29209fc5500d00b2e527f2655f0e854c4599444e8b51aa` перенесена в `release/stable` без перекомпиляции; прежний Release `32370f9d4980eaf15521f73c062653dd651a0f1d293850508538020a9136c0cd` сохранён в `release/stable-previous`. Nightly была штатно применена: `published` 09:53:31 UTC, `complete` 09:53:31 UTC. При переносе пользовательские окна не закрывались.
 
-Включены [проверка обновлений](UPDATES.md), [версионирование](VERSIONING.md), копирование адресов [ссылок](FILE_LINKS.md) и устойчивый значок Windows. Полный `npm.cmd run check` прошёл: TypeScript, 486 passed / 2 skipped, production Vite. Manifest Nightly/Release и совпадение 46 host/preload/dist файлов с исходниками проверены. Готовый Release прошёл настоящий Electron/preload/IPC: обновления (`artifacts/app-updates-host-bGhv15`), ссылки/clipboard (`artifacts/links host-pAI6aN`), icon/identity (`artifacts/app-identity-cBzq1g`). Использованы изолированные профили и fixture CLI, production ярлыки сохранены, model turns 0. Подготовка установщика и публикационные результаты записываются ниже после фактического завершения; исторические записи ожидания прежних кандидатов сохранены.
+Включены [проверка обновлений](UPDATES.md), [версионирование](VERSIONING.md), копирование адресов [ссылок](FILE_LINKS.md) и устойчивый значок Windows. Полный `npm.cmd run check` прошёл: TypeScript, 486 passed / 2 skipped, production Vite. Manifest Nightly/Release и совпадение 46 host/preload/dist файлов с исходниками проверены. Готовый Release прошёл настоящий Electron/preload/IPC: обновления (`artifacts/app-updates-host-bGhv15`), ссылки/clipboard (`artifacts/links host-pAI6aN`), icon/identity (`artifacts/app-identity-cBzq1g`). Использованы изолированные профили и fixture CLI, production ярлыки сохранены, model turns 0. Исторические записи ожидания прежних кандидатов сохранены.
+
+Установщик `release/installer/Codex-Desk-Setup-0.2.0.exe`, 100 921 770 байт, SHA-256 `4bd41f7131356f8b2f7c8fa780b9c3d17df2f23323ae517d949ce458168ed0ed` прошёл настоящую silent установку и обновление без `/D` в `artifacts/installer-test-81a7cf8d1c094afab6b39c828d11b9dc`: exit 0, все 72 файла совпали. Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-tKtZ4t`); после штатного uninstall `cleanup-result.json` — `cleaned`, восстановлены 3 внешних snapshot, тестовая установка/реестр удалены. Пользовательский Nightly продолжал работать. Модельных запросов 0.
+
+Исходники отправлены в `origin/main` коммитом `5e9d1177239a64d782636c623fcf94e554039528`; тег `v0.2.0` указывает на него. [GitHub Release v0.2.0](https://github.com/kbelousov-ency/Codex-desk/releases/tag/v0.2.0) опубликован 10:06:29 UTC как обычный Latest, не draft/prerelease. Прикреплены Setup, README.txt, SHA256SUMS.txt и release-info.json. SHA-256 и размеры всех четырёх assets сверены с серверными digest до публикации. Публичный API latest без авторизации возвращает `v0.2.0`, production `releaseUpdate` принимает правильную ссылку Setup (`artifacts/github-release/published-verification.json`).
+Release и Nightly имеют одинаковый SHA-256 app.asar: `b65e8a7459618945e95ce62b73df0e0f48b750fcf086597fa27ba8b1861ee5e2`.
+
 
 ## Онлайн-обновления и версии — 2026-09-21
 
