@@ -10,6 +10,8 @@
 
 Этот stable Setup прошёл настоящие silent установку и обновление без `/D`: `artifacts/installer-test-81083ec119cf47ae8c2261d968133e03`, exit 0, все 72 файла совпали в обоих случаях. Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-vTvVnf`). После штатного удаления `cleanup-result.json` — `cleaned`, восстановлены все три внешних snapshot состояния, тестовая установка и записи HKCU/HKLM 32/64 отсутствуют. Пользовательский Nightly PID 42740 продолжал работать. Поставка предназначена для GitHub Release `v0.1.0`: Setup, SHA256SUMS.txt, release-info.json, README.txt; исходники отправляются в `main`.
 
+Исходники отправлены в `origin/main` коммитом `2177270`; опубликован [GitHub Release v0.1.0](https://github.com/kbelousov-ency/Codex-desk/releases/tag/v0.1.0), обычный выпуск, не prerelease. GitHub заменил пробелы в имени asset точками: `Codex.Desk.Setup.0.1.0.exe`. Серверный digest совпал с локальным SHA-256 `99a5d320…ced73`, размер 100 918 751 байт. Публикационные README/SHA256SUMS/release-info подготовлены в `artifacts/github-release` с этим точным именем и загружены рядом с exe; локальный `release/installer` сохраняет исходное имя с пробелами. Тег выпуска указывает на коммит реализации `2177270`.
+
 ## Установщик и мастер настройки — 2026-09-21
 
 Nightly `32370f9d4980eaf15521f73c062653dd651a0f1d293850508538020a9136c0cd`: [мастер настройки](SETUP.md), обнаружение/установка Codex и Claude, необязательный Git, импорт полного config.toml с backup, вход CLI, повторное открытие из настроек. NSIS assisted оформлен в палитре продукта. Кандидат в `artifacts/nightly-update/app`, `host_awaiting` с 07:36:33 UTC; пользовательский Nightly не закрывался.
