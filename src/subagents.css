@@ -1,0 +1,9 @@
+.subagent-card { border: 1px solid var(--line); border-radius: 9px; padding: 12px; margin-bottom: 10px; min-width: 0; overflow-wrap: anywhere; }
+.subagent-card.failed { border-color: #9d505066; }
+.subagent-heading { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; margin-bottom: 8px; font-size: 12px; }
+.subagent-heading strong { min-width: 0; }
+.subagent-state { color: var(--muted); display: inline-flex; gap: 5px; align-items: center; font-size: 11px; }
+.subagent-prompt, .subagent-result { margin: 10px 0; font-size: 12px; }
+.subagent-prompt > summary, .subagent-result > summary { cursor: pointer; color: var(--muted); }
+.subagent-card .markdown { max-height: 240px; overflow: auto; }
+.details-panel .panel-tabs { flex-wrap: wrap; }

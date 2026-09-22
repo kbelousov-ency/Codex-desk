@@ -1,0 +1,13 @@
+.chat-search-toolbar{position:sticky;top:0;z-index:4;background:#202923;border:1px solid #42594a;border-radius:8px;padding:5px 7px;margin:0 0 15px;box-shadow:0 4px 12px #0003;color:#a8bdb0}
+.chat-search-row{display:flex;align-items:center;gap:5px;min-width:0}
+.chat-search-row>input{flex:1;min-width:45px;width:100%;background:transparent;border:0;color:#e0e9e2;font-size:12px;padding:5px 2px;line-height:18px}
+.chat-search-row>input::placeholder{color:#819889}
+.chat-search-row>input:focus-visible{outline:none}
+.chat-search-count{font-size:10px;color:#a1b7a8;white-space:nowrap;margin:0 3px}
+.chat-search-history{display:flex;flex-wrap:wrap;gap:3px 8px;border-top:1px solid #374a3d;margin-top:4px;padding:5px 1px 1px;font-size:10px;color:#83988a;line-height:1.4}
+.chat-search-history button{padding:0;text-decoration:underline;text-underline-offset:3px;color:#b6d4c0;font-size:10px;text-align:left}
+.chat-search-content{min-width:0}
+::highlight(chat-search-results){background-color:#6b5928;color:#fff3c4}
+::highlight(chat-search-current){background-color:#e4c477;color:#1f241b}
+.chat-search-content [data-chat-search-current="true"]>.message-content{border-color:#728965}
+@media(max-width:700px){.chat-search-toolbar{padding:4px}.chat-search-row{gap:3px}.chat-search-count{font-size:9px;margin:0}}

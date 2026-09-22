@@ -1,0 +1,30 @@
+.workspace-window{height:100vh;height:100dvh;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.workspace-window>.workspace-shell{height:auto;flex:1;min-height:0}
+.app-update-banner{flex-shrink:0;display:flex;align-items:center;gap:12px;padding:10px 17px;background:#24362d;border-bottom:1px solid #48604f;color:#cce1d3}
+.app-update-banner-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1;font-size:11px;line-height:1.5}
+.app-update-banner-copy strong{font-weight:600}
+.app-update-banner-copy span{font-size:10px;color:#a3bcac;overflow-wrap:anywhere}
+.app-update-banner-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.app-update-banner-actions .primary-button{font-size:10px;padding:7px 10px;white-space:nowrap}
+.app-update-banner-actions .text-button{font-size:10px;padding:3px 0}
+.app-update-trigger.has-update{color:#b6d8cc;background:#2b4136}
+.settings-modal.app-update-dialog{width:540px;max-width:calc(100vw - 24px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;overflow:hidden}.app-update-dialog .settings-content{min-height:0;overflow:auto}.app-update-dialog .modal-header,.app-update-dialog .modal-footer{flex-shrink:0}
+.app-update-dialog .modal-header{padding:23px 25px 20px;align-items:flex-start}
+.app-update-dialog .modal-header h2{font-size:21px}
+.app-update-dialog .eyebrow{display:flex;align-items:center;gap:7px}
+.app-update-option{cursor:pointer}
+.app-update-option input{width:15px;height:15px;accent-color:#b7d3b8;flex-shrink:0;cursor:pointer}
+.app-update-option input:disabled{cursor:default;opacity:.5}
+.app-update-last-check,.app-update-note{font-size:11px;color:#91a396;line-height:1.7;margin:16px 0}
+.app-update-last-check span{color:#bdcfc3}
+.app-update-status{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.8;color:#c5d8ca;margin:16px 0}
+.app-update-actions{display:flex;align-items:center;gap:15px;flex-wrap:wrap}
+.app-update-actions .primary-button{display:flex;align-items:center;gap:7px}
+.app-update-error{font-size:11px;color:#e3b8a9;line-height:1.7;background:#352823;border:1px solid #67483c;border-radius:7px;padding:11px;display:flex;flex-direction:column;align-items:flex-start;gap:9px;overflow-wrap:anywhere}
+.app-update-notes{border-top:1px solid #344034;padding-top:14px;margin-top:18px;font-size:12px;color:#c5d8ca}
+.app-update-notes summary{padding:3px 0;color:#b6d8cc}
+.app-update-notes summary::before{content:'▸';display:inline-block;margin-right:7px}
+.app-update-notes[open] summary::before{content:'▾'}
+.app-update-notes>div{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8;font-size:11px;max-height:220px;overflow:auto;margin-top:12px;color:#a7baad;user-select:text}
+@media(max-width:1050px){.app-update-banner{align-items:flex-start;flex-wrap:wrap;gap:7px 10px}.app-update-banner-copy{flex-basis:calc(100% - 30px)}.app-update-banner-actions{padding-left:27px;gap:7px 12px}}
+@media(max-width:600px){.app-update-banner{padding:9px 11px}.app-update-banner-actions{padding-left:0}.app-update-dialog .modal-header{padding:19px}.app-update-dialog .modal-header h2{font-size:19px}}

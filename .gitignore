@@ -1,0 +1,17 @@
+node_modules/
+dist/
+release/
+artifacts/
+.local/
+*.log
+*.lnk
+# Local environment and credentials are never source files.
+.env
+.env.*
+!.env.example
+/.codex/
+/.agents/
+/.claude/worktrees/
+/auth.json
+# Windows runtime caches accidentally created under temporary root folders.
+/*/Microsoft/

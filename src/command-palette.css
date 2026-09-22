@@ -1,0 +1,34 @@
+.command-palette-backdrop{align-items:flex-start;padding-top:9vh;z-index:60}
+.command-palette{width:min(640px,calc(100vw - 32px));max-height:min(560px,78vh);display:flex;flex-direction:column;background:#1a2220;border:1px solid #485f50;border-radius:12px;box-shadow:0 20px 56px #000a;overflow:hidden}
+.command-palette-search{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #2f4238;color:#8fa695}
+.command-palette-search input{flex:1;min-width:0;background:transparent;border:0;outline:0;color:#d7e7dc;font-size:14px;padding:4px 0}
+.command-palette-search input::placeholder{color:#6e8377}
+.command-palette kbd{font:10px Consolas,monospace;color:#9ab5a2;background:#243029;border:1px solid #3a4f42;border-radius:4px;padding:2px 6px;white-space:nowrap}
+.command-palette-list{overflow:auto;padding:6px;flex:1;min-height:80px}
+.command-palette-heading{font-size:10px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:#7f9688;padding:8px 9px 4px}
+.command-palette-option{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:7px 9px;border:1px solid transparent;border-radius:7px;color:#c9ddce}
+.command-palette-option.selected,.command-palette-option:hover{background:#2c4033;border-color:#496350}
+.command-palette-option.disabled{opacity:.5}
+.command-palette-option>svg{flex-shrink:0;color:#9ab5a2}
+.command-palette-option>span{flex:1;min-width:0}
+.command-palette-option strong{display:block;font-size:12px;font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.command-palette-option small{display:block;color:#8ba493;font-size:10px;line-height:1.5;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.command-palette-empty{padding:18px 12px;color:#8ba493;font-size:12px;text-align:center}
+.command-palette-footer{display:flex;justify-content:space-between;gap:12px;padding:8px 12px;border-top:1px solid #2f4238;color:#7f9688;font-size:10px;flex-wrap:wrap}
+
+/* Tabs: pinning, drag order and the context menu. */
+.session-tab.pinned{min-width:0;max-width:150px}
+.session-tab.pinned .session-tab-label>span{display:none}
+.session-tab.pinned>[role=tab]{padding-right:9px}
+.session-tab-pin{color:#9ab5a2;flex-shrink:0}
+.session-tab.dragging{opacity:.45}
+.session-tab.drop-before{box-shadow:inset 3px 0 #afd1bd}
+.session-tab.drop-after{box-shadow:inset -3px 0 #afd1bd}
+.session-tab.active.drop-before{box-shadow:inset 3px 0 #afd1bd,inset 0 2px #afd1bd}
+.session-tab.active.drop-after{box-shadow:inset -3px 0 #afd1bd,inset 0 2px #afd1bd}
+.tab-context-menu{position:fixed;z-index:70;min-width:230px;background:#1d261f;border:1px solid #465a49;border-radius:9px;padding:5px;box-shadow:0 16px 42px #0008}
+.tab-context-menu button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:7px 10px;border-radius:6px;font-size:12px;color:#c9ddce}
+.tab-context-menu button:hover,.tab-context-menu button:focus-visible{background:#2c4033}
+.tab-context-menu button:disabled{opacity:.45}
+.tab-context-menu button kbd{margin-left:auto;font:10px Consolas,monospace;color:#8fa695}
+.tab-context-menu hr{border:0;border-top:1px solid #2f4238;margin:4px 6px}

@@ -1,0 +1,13 @@
+.access-picker{position:relative;min-width:0}
+.access-trigger{display:flex;align-items:center;gap:6px;min-height:27px;padding:4px 7px;border:1px solid transparent;border-radius:6px;color:inherit;font-size:10px;white-space:nowrap}
+.access-trigger:hover,.access-trigger[aria-expanded=true]{border-color:#43584a;background:#27352c;color:#c6dfce}
+.access-trigger>span{overflow:hidden;text-overflow:ellipsis;max-width:160px}.access-trigger>svg:last-child{transition:transform .15s}.access-chevron-open{transform:rotate(180deg)}
+.full-access .access-trigger{color:#d4bd53}.full-access .access-trigger:hover,.full-access .access-trigger[aria-expanded=true]{border-color:#655b32;background:#332f21}
+.access-menu{position:absolute;left:0;bottom:calc(100% + 8px);z-index:15;width:min(388px,calc(100vw - 40px));max-height:min(380px,65vh);overflow:auto;padding:7px;background:#1b211e;border:1px solid #3c4941;border-radius:12px;box-shadow:0 12px 38px #0009;color:#c2d5c8;text-align:left;white-space:normal}
+.access-menu-header{padding:5px 10px 8px;color:#8f9e95;font-size:11px;line-height:1.4}
+.access-current-note{margin:0 10px 7px;padding-bottom:8px;border-bottom:1px solid #354038;font-size:10px;line-height:1.45;color:#8f9e95}.access-current-note strong{display:block;font-weight:500;color:#bcc9c0}.access-current-note span{display:block;margin-top:2px}
+.access-option{display:flex;gap:10px;align-items:center;padding:8px 10px;border:1px solid transparent;border-radius:7px;cursor:pointer}
+.access-option-icon{flex-shrink:0;color:#9cafa1}.access-option-copy{flex:1;min-width:0}.access-option strong{display:block;font-size:12px;font-weight:500;line-height:1.4}.access-option small{display:block;color:#8f9e95;font-size:11px;line-height:1.4;margin-top:2px}
+.access-option-check{display:flex;align-items:center;justify-content:center;width:16px;flex-shrink:0;color:#b8d6be}
+.access-option[aria-selected=true]{color:#d2ead9}.access-option.highlighted{background:#29382e;border-color:#455c4c}
+.access-option.danger-option,.access-option.danger-option .access-option-icon,.access-option.danger-option .access-option-check{color:#d4bd53}.access-option.danger-option small{color:#b9a74c}.access-option.danger-option.highlighted{background:#35311f;border-color:#655b32}
