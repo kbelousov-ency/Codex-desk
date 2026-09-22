@@ -1,6 +1,6 @@
 # Release и Nightly
 
-## Подготовка Release 0.5.1 — 2026-09-22
+## Публичный Release 0.5.1 — 2026-09-22
 
 По поручению «переноси в релиз всё что сделали и заливай» обе правки — [прогресс после уточнений](WORK_LOG.md#прогресс-после-уточнений--2026-09-22) и [контраст пункта запуска Setup](SETUP.md) — объединены в patch **0.5.1**. Номер повышен штатным `npm version patch --no-git-tag-version --ignore-scripts`, поскольку публичный `0.5.0` нельзя переиспользовать. Nightly `bb958a576c1e2de15d0399a12b4f4f1eddc1569eefbf39bc4624e9eac6530d0c` собрана `2026-09-22T13:24:29.548Z` и применена пользователем до переноса; очереди уже не было. `release:promote` перенёс проверенные байты в stable без перекомпиляции; прежняя `0.5.0` (`555b67429eb279364035ba773a3a4d087bd7f144af3699bb5fd4b69e6268da78`) сохранена в stable-previous. Пользовательские процессы не закрывались агентом.
 
@@ -11,6 +11,10 @@
 Setup `Codex-Desk-Setup-0.5.1.exe`: **100 947 070 байт**, SHA-256 `66c246d0f69eb6ee098a185639f05dfcae13c6009a5e0ccbd7b02ed53719b5e8`. Проверена настоящая silent установка `0.5.0` и обновление новым Setup без `/D` в `artifacts/installer-test-3a300f9e506f4de4bfae16a58d2fa302`: оба exit 0, все 72 файла совпали. После перезапуска Nightly изменились байты Start Menu shortcut с прежними TargetPath/Arguments/IconLocation/Description/WorkingDirectory; guard теста остановил первый update. Прежний snapshot сохранён, свежий Nightly-ярлык принят как точная копия для восстановления после теста (`shortcut-refresh.json`, `before-1-original.bin`, `snapshot-before-shortcut-refresh.json`); временный тестовый ярлык восстановлен из проверенного Desktop shortcut, повтор update прошёл.
 
 Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-cETaVD`): настоящий Electron/preload/IPC и изолированные fixture CLI, мастер настройки и правила памяти обоих агентов, без запросов модели. Штатный uninstall завершён: `cleanup-result.json` — `cleaned`, восстановлены три внешних файла, тестовая установка/реестр удалены. `release:prepare` подготовил Setup, README, SHA256SUMS, release-info и RELEASE_NOTES в `artifacts/github-release`.
+
+[v0.5.1](https://github.com/kbelousov-ency/Codex-desk/releases/tag/v0.5.1) опубликован как **Latest** `2026-09-22T14:02:46Z`, release ID `393792405`. Размеры и серверные SHA-256 digest всех четырёх assets совпали до и после публикации; анонимный latest API возвращает `v0.5.1`. Штатный `releaseUpdate` предлагает новый Setup для `0.5.0` и не предлагает обновление для `0.5.1` (`artifacts/github-release/published-verification.json`). Draft проверялся по release ID: endpoint `/releases/tags/v0.5.1` до публикации возвращал 404, хотя список releases содержал правильный draft/tag; повторного выпуска не создавали.
+
+Исходники и annotated tag `v0.5.1` отправлены в GitHub `main` (`253163b2f9494bd58e13a6372d515a3995c2567a`) и Gerrit `master` (`b0db4e4159ce26fc177353e6fe7ba555362caacb`). Дерево release commits одинаково: `356df70fcbbbc2c869de96f58a823a8c1311d6b8`; разные истории сохранены. GitHub получил ветку/тег atomic push, Gerrit — последовательно ветку и тег. Оба refs и peeled commit тегов проверены через `ls-remote`; поставка остаётся на GitHub Releases.
 
 ## Контраст пункта запуска в Setup — 2026-09-22
 
