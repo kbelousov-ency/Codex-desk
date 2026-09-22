@@ -542,7 +542,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
           const answerStartedAt = Date.now();
           setTurnWork(current => {
             const previous = current[p.turnId];
-            return { ...current, [p.turnId]: { ...(previous || { id: p.turnId, status: 'inProgress' }), answerStartedAt: previous?.answerStartedAt ?? answerStartedAt } };
+            return { ...current, [p.turnId]: { ...(previous || { id: p.turnId, status: 'inProgress' }), answerItemId: item.id,
+              answerStartedAt: previous?.answerItemId === item.id ? previous.answerStartedAt ?? answerStartedAt : answerStartedAt } };
           });
         }
         if (method === 'item/completed' && ['agentMessage', 'reasoning', 'plan'].includes(item.type)) observeModelResponse(p.turnId);
@@ -553,11 +554,13 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
             const contentKey = (content: any[]) => JSON.stringify(content.map(part => part.type === 'text' ? ['text', part.text] : [part.type, part.path || part.url]));
             const optimistic = previous.find(i => i.optimistic && (clientId ? i.clientId === clientId : (!i.turnId || i.turnId === p.turnId) && contentKey(i.content || []) === contentKey(item.content || [])));
             const existing = previous.find(i => i.id === item.id);
-            const next = { ...existing, ...item, previews: existing?.previews || optimistic?.previews, optimistic: false, turnId: p.turnId, complete: method === 'item/completed' };
-            const remaining = previous.filter(i => i.id !== optimistic?.id);
-            const index = remaining.findIndex(i => i.id === item.id);
-            if (index < 0) return [...remaining, next];
-            return remaining.map((value, i) => i === index ? next : value);
+            // Keep a local display identity even when an older server omits
+            // clientId. It is not a receipt or proof of message delivery.
+            const next = { ...existing, ...item, localMessageId: existing?.localMessageId || optimistic?.clientId, previews: existing?.previews || optimistic?.previews, optimistic: false, turnId: p.turnId, complete: method === 'item/completed' };
+            const anchor = optimistic || existing;
+            if (!anchor) return [...previous, next];
+            // Keep the user's boundary before items already received while the echo was pending.
+            return previous.flatMap(value => value === anchor ? [next] : value.id === item.id || value.id === optimistic?.id ? [] : [value]);
           });
           restorePreviews([item], p.threadId);
         } else upsert(item.id, { ...item, turnId: p.turnId, complete: method === 'item/completed' });

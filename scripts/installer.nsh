@@ -56,7 +56,17 @@
   !define MUI_FINISHPAGE_RUN
   !define MUI_FINISHPAGE_RUN_TEXT "Открыть ${PRODUCT_NAME}"
   !define MUI_FINISHPAGE_RUN_FUNCTION "DeskStartApp"
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW "DeskFinishPageShow"
   !insertmacro MUI_PAGE_FINISH
+
+  Function DeskFinishPageShow
+    ${IfNot} ${RebootFlag}
+      ; Windows visual styles ignore SetCtlColors for checkbox text (MUI bug #443).
+      ; Disable them only for this control so the dark page keeps a readable label.
+      System::Call 'UXTHEME::SetWindowTheme(p$mui.FinishPage.Run, w" ", w" ")'
+      SetCtlColors $mui.FinishPage.Run "${MUI_TEXTCOLOR}" "${MUI_BGCOLOR}"
+    ${EndIf}
+  FunctionEnd
 !macroend
 
 ; The upstream NSIS template can fall back to taskkill by executable name.

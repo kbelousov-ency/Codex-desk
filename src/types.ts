@@ -26,7 +26,7 @@ export type NotificationSettingsInfo = { settings: NotificationPreferences; supp
 export type SessionAttentionEvent = { kind: NotificationKind; eventId: string };
 export type Item = { id: string; type: string; turnId?: string; complete?: boolean; [key: string]: any };
 // Internal timestamps are milliseconds; App Server turn timestamps are seconds.
-export type TurnWork = { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; answerStartedAt?: number };
+export type TurnWork = { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; answerStartedAt?: number; answerItemId?: string };
 export type Thread = { id: string; name?: string; preview?: string; cwd?: string; updatedAt?: number; turns?: any[]; provider?: AgentProvider; [key: string]: any };
 export type ThreadAction = 'rename' | 'archive' | 'delete' | 'restore' | 'fork';
 export type ArchivedThreadPage = { thread: Thread; items: Item[]; turns: any[]; nextCursor: string | null };

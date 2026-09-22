@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rename, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rename, symlink, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import asar from '@electron/asar';
 import { checkedPath, fileChecksums, inside, promoteRelease, publishNightly, recoverRelease, removeChecked, rollbackRelease, verifyRelease, withReleaseLock } from '../scripts/release-utils.mjs';
+import { queueNightlyUpdate } from '../scripts/nightly-update.mjs';
 
 const guard = async () => {};
 async function fixture(t) {
@@ -33,6 +34,16 @@ async function build(root, tag) {
   return verifyRelease(root, path.join(root, 'release', 'nightly'), 'nightly');
 }
 
+async function queueBuild(root, tag) {
+  const installed = await verifyRelease(root, path.join(root, 'release', 'nightly'), 'nightly');
+  await queueNightlyUpdate(root, await binary(root, tag), {
+    version: 1, updateProtocol: 2, pid: 987654321,
+    pipe: `\\\\.\\pipe\\codex-desk-nightly-987654321-${'a'.repeat(32)}`, token: 'b'.repeat(64), buildId: installed.buildId,
+    executable: path.join(root, 'release', 'nightly', 'Codex Desk.exe'), userData: path.join(root, 'profile'), cwd: root,
+  });
+  return path.join(root, 'artifacts', 'nightly-update');
+}
+
 test('Nightly updates one fixed directory; promotion preserves every application byte and one previous stable', async t => {
   const root = await fixture(t);
   const first = await build(root, 'a');
@@ -48,6 +59,46 @@ test('Nightly updates one fixed directory; promotion preserves every application
   await promoteRelease(root, { guard });
   assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable-previous'))).buildId, second.buildId);
   assert.deepEqual((await readdir(path.join(root, 'release'))).sort(), ['nightly', 'stable', 'stable-previous']);
+});
+
+test('promotion uses the verified queued candidate while leaving the running Nightly and update queue intact', async t => {
+  const root = await fixture(t);
+  await build(root, 'a');
+  await promoteRelease(root, { guard });
+  const queue = await queueBuild(root, 'b');
+  const beforeQueue = await fileChecksums(root, queue, new Set());
+  const nightly = path.join(root, 'release', 'nightly');
+  const beforeNightly = await fileChecksums(root, nightly, new Set());
+  const rejectNightly = async directory => { if (directory === nightly) throw new Error('running nightly'); };
+  const promoted = await withReleaseLock(root, () => promoteRelease(root, { guard: rejectNightly }), { guard });
+  assert.equal(promoted.buildId, 'b'.repeat(64));
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable'), 'stable')).buildId, promoted.buildId);
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable-previous'), 'stable')).buildId, 'a'.repeat(64));
+  assert.deepEqual(await fileChecksums(root, queue, new Set()), beforeQueue);
+  assert.deepEqual(await fileChecksums(root, nightly, new Set()), beforeNightly);
+});
+
+test('invalid queued updates block promotion without falling back to old Nightly or modifying stable and queue', async t => {
+  for (const scenario of ['json', 'null', 'version', 'size', 'buildId', 'payload', 'missingState']) {
+    const root = await fixture(t);
+    await build(root, 'a');
+    await promoteRelease(root, { guard });
+    const queue = await queueBuild(root, 'b');
+    const stateFile = path.join(queue, 'state.json');
+    const state = JSON.parse(await readFile(stateFile, 'utf8'));
+    if (scenario === 'json') await writeFile(stateFile, '{');
+    if (scenario === 'null') await writeFile(stateFile, 'null');
+    if (scenario === 'version') await writeFile(stateFile, JSON.stringify({ ...state, version: 2 }));
+    if (scenario === 'size') await writeFile(stateFile, ' '.repeat(16385));
+    if (scenario === 'buildId') await writeFile(stateFile, JSON.stringify({ ...state, buildId: 'c'.repeat(64) }));
+    if (scenario === 'payload') await writeFile(path.join(queue, 'app', 'resources', 'dependency.bin'), 'tampered');
+    if (scenario === 'missingState') await unlink(stateFile);
+    const beforeQueue = await fileChecksums(root, queue, new Set());
+    const beforeRelease = await fileChecksums(root, path.join(root, 'release'), new Set());
+    await assert.rejects(withReleaseLock(root, () => promoteRelease(root, { guard }), { guard }), undefined, scenario);
+    assert.deepEqual(await fileChecksums(root, queue, new Set()), beforeQueue, scenario);
+    assert.deepEqual(await fileChecksums(root, path.join(root, 'release'), new Set()), beforeRelease, scenario);
+  }
 });
 
 test('rollback swaps stable and its backup, leaving Nightly unchanged', async t => {
