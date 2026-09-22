@@ -14,7 +14,32 @@ const server = await createServer({
       } catch (error) { response.writeHead(500); response.end(String(error)); }
     });
   }, resolveId(id) { return id === 'virtual:memory-rules-fixture' ? id : null; }, load(id) {
-    if (id === 'virtual:memory-rules-fixture') return 'import React from "react"; import { createRoot } from "react-dom/client"; import MemoryRulesSettings from "/src/MemoryRulesSettings.tsx"; import "/src/styles.css"; createRoot(document.getElementById("root")).render(React.createElement("div", { style: { maxWidth: 540, padding: 20 } }, React.createElement(MemoryRulesSettings, { onBusyChange: busy => window.__memory.busy.push(busy) })));';
+    if (id === 'virtual:memory-rules-fixture') return `
+      import React from "react";
+      import { createRoot } from "react-dom/client";
+      import MemoryRulesSettings from "/src/MemoryRulesSettings.tsx";
+      import SettingsDialog from "/src/SettingsDialog.tsx";
+      import "/src/styles.css";
+      function DialogFixture() {
+        const [open, setOpen] = React.useState(false);
+        const [busy, setBusy] = React.useState(false);
+        const onBusyChange = value => { window.__memory.busy.push(value); setBusy(value); };
+        return React.createElement(React.Fragment, null,
+          React.createElement("button", { onClick: () => setOpen(true) }, "Открыть настройки"),
+          open && React.createElement(SettingsDialog, { active: true, busy,
+            onClose: () => { window.__memory.closeCalls++; setOpen(false); },
+            tabs: [
+              { id: "agent", label: "Агент", icon: null, content: React.createElement("p", null, "Настройки проверочного агента") },
+              { id: "memory", label: "Память", icon: null, content: React.createElement(MemoryRulesSettings, { onBusyChange }) },
+            ],
+          }),
+        );
+      }
+      const element = new URLSearchParams(location.search).get('scenario') === 'dialog'
+        ? React.createElement(DialogFixture)
+        : React.createElement("div", { style: { maxWidth: 540, padding: 20 } }, React.createElement(MemoryRulesSettings, { onBusyChange: busy => window.__memory.busy.push(busy) }));
+      createRoot(document.getElementById("root")).render(element);
+    `;
   } }],
 });
 await server.listen();
@@ -29,7 +54,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
     const scenario = new URLSearchParams(location.search).get('scenario');
-    const fixture = window.__memory = { calls: [], busy: [], failRead: scenario === 'read-error', failWrite: false, hold: false, release: null, states: {} };
+    const fixture = window.__memory = { calls: [], busy: [], closeCalls: 0, failRead: scenario === 'read-error', failWrite: false, hold: false, release: null, states: {} };
     for (const provider of ['codex', 'claude']) fixture.states[provider] = {
       provider, enabled: provider === 'claude', revision: `revision-${provider}-0`,
       conflict: scenario === 'conflict' && provider === 'codex' ? 'Раздел Codex Desk изменён вручную. Проверьте файл.' : null,
@@ -104,8 +129,47 @@ try {
   await page.goto(`${url}?scenario=unavailable`);
   await page.getByText('Настройка правил доступна в установленном приложении Codex Desk.', { exact: true }).waitFor();
   assert.equal(await page.locator('[data-memory-provider]').count(), 0);
+  // The same production dialog must keep a memory write alive and block dismissal.
+  await page.setViewportSize({ width: 940, height: 700 });
+  await page.goto(url + '?scenario=dialog');
+  await page.getByRole('button', { name: 'Открыть настройки', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Ваше рабочее пространство', exact: true });
+  const tab = name => dialog.getByRole('tab', { name, exact: true });
+  await tab('Память').click();
+  await claude.getByRole('button', { name: 'Отключить для Claude', exact: true }).waitFor();
+  await page.evaluate(() => { window.__memory.hold = true; });
+  await claude.getByRole('button', { name: 'Отключить для Claude', exact: true }).click();
+  await page.waitForFunction(() => window.__memory.release);
+  await page.keyboard.press('Tab');
+  assert.equal(await dialog.evaluate(element => element.contains(document.activeElement)), true, 'Tab from the now-disabled last-provider save button stays inside settings');
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await dialog.evaluate(element => element.contains(document.activeElement)), true, 'Reverse tabbing during a write cannot reach the background');
+  await claude.locator('summary').last().focus();
+  await page.keyboard.press('Tab');
+  assert.equal(await dialog.getByRole('tabpanel').evaluate(element => element === document.activeElement), true, 'The last available control wraps to the active settings panel while actions are disabled');
+  for (const name of ['Агент', 'Память']) assert.equal(await tab(name).isDisabled(), true, 'Topics cannot be left while memory instructions are being written');
+  for (const name of ['Закрыть настройки', 'Готово']) assert.equal(await dialog.getByRole('button', { name, exact: true }).isDisabled(), true);
+  await dialog.getByText('Сохраняем правила памяти…', { exact: true }).waitFor();
+  await dialog.getByRole('tabpanel').press('Escape');
+  await page.locator('.modal-backdrop').click({ position: { x: 2, y: 2 } });
+  assert.equal(await dialog.isVisible(), true, 'Escape and clicking outside cannot discard an in-flight memory write');
+  assert.equal(await page.evaluate(() => window.__memory.closeCalls), 0);
+  await page.screenshot({ animations: 'disabled', path: 'artifacts/settings-tabs-memory-busy.png' });
+  await page.evaluate(() => { window.__memory.hold = false; window.__memory.release(); });
+  await claude.getByText('Правила для Claude отключены', { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__memory.busy), [true, false]);
+  const previewReads = await page.evaluate(() => window.__memory.calls.filter(call => call.method === 'preview').length);
+  await tab('Агент').click();
+  await tab('Память').click();
+  await claude.getByText('Правила для Claude отключены', { exact: true }).waitFor();
+  await claude.getByText('C:\\Fixture\\.claude\\CLAUDE.md.backup-fixture', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.__memory.calls.filter(call => call.method === 'preview').length), previewReads, 'Changing topics preserves the write result and backup path without remounting memory rules');
+  await dialog.getByRole('tabpanel').press('Escape');
+  assert.equal(await dialog.count(), 0, 'Escape closes settings again once the write is complete');
+  assert.equal(await page.evaluate(() => window.__memory.closeCalls), 1);
+  assert.equal(await page.getByRole('button', { name: 'Открыть настройки', exact: true }).evaluate(element => element === document.activeElement), true, 'Closing settings restores focus to its launcher');
   assert.deepEqual(errors, []);
-  console.log('Memory rules UI passed: exact previews, independent provider state, explicit enable/disable, revision/backups, write lock, stale/read failures, conflicts, retry, small viewport and absent bridge. No real file, CLI or model calls.');
+  console.log('Memory rules UI passed: exact previews, independent provider state, explicit enable/disable, revision/backups, write lock, dialog navigation/Escape/backdrop/close guards, retained result and restored focus, stale/read failures, conflicts, retry, small viewport and absent bridge. No real file, CLI or model calls.');
 } finally {
   await browser?.close();
   await server.close();

@@ -105,6 +105,7 @@ try {
   await waitFor(() => view().getByRole('combobox', { name: 'Модель', exact: true }).isEnabled(), 'task complete');
   await input().fill('Черновик текущего диалога');
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await settings().getByRole('tab', { name: 'MCP', exact: true }).click();
   await settings().getByText('existing', { exact: true }).waitFor();
   assert.match(await settings().innerText(), new RegExp(configPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   await noSecret();
@@ -171,6 +172,7 @@ try {
   await view().getByRole('button', { name: 'Остановить выполнение', exact: true }).waitFor();
   const reloadsBeforeBusy = await count('config/mcpServer/reload');
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await settings().getByRole('tab', { name: 'MCP', exact: true }).click();
   await button('Применить в этой сессии').click();
   await settings().getByText(/Дождитесь завершения задачи и закройте терминал/).waitFor();
   assert.equal(await count('config/mcpServer/reload'), reloadsBeforeBusy, 'Busy task cannot be reconfigured');

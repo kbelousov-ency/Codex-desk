@@ -117,6 +117,7 @@ try {
     return model && !model.disabled;
   });
   const showChanges = async () => {
+    if (await view().locator('.app-shell').evaluate(node => node.classList.contains('panel-hidden'))) await view().getByRole('button', { name: 'Переключить панель действий', exact: true }).click();
     await view().locator('.panel-tabs button').filter({ hasText: 'Изменения' }).click();
     await filter().waitFor();
   };
@@ -260,6 +261,57 @@ try {
     { sessionId: 'a', path: 'C:/Fixtures/REVIEW_A/src/alpha.ts' },
   ]);
   await closeReview();
+
+  // Pin an immutable comparison beside the live conversation and quote its source rows.
+  await openReview('src/alpha.ts');
+  await modal().getByRole('button', { name: 'Закрепить сравнение рядом с чатом', exact: true }).click();
+  const dock = () => view().getByRole('region', { name: 'Просмотр изменений', exact: true });
+  await dock().waitFor();
+  assert.equal(await modal().count(), 0);
+  assert.equal(await dock().getAttribute('aria-modal'), null);
+  await composer.fill('Обсуждение сравнения');
+  await composer.press('Tab');
+  assert.equal(await dock().evaluate(node => node.contains(document.activeElement)), false, 'Pinned comparison does not trap composer focus');
+  await composer.focus(); await composer.press('Escape');
+  assert.equal(await dock().isVisible(), true, 'Escape in the composer leaves the pinned comparison open');
+  await dock().getByRole('button', { name: 'Единый diff', exact: true }).click();
+  await dock().locator('.review-code-text').filter({ hasText: /^second version$/ }).evaluate(code => {
+    const range = document.createRange(); range.selectNodeContents(code);
+    const selected = window.getSelection(); selected.removeAllRanges(); selected.addRange(range);
+    code.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+  await dock().getByRole('button', { name: 'Спросить о выделении', exact: true }).click();
+  assert.equal(await dock().isVisible(), true, 'Quoting leaves a pinned comparison open');
+  assert.match(await composer.inputValue(), /^Обсуждение сравнения/);
+  assert.match(await composer.inputValue(), /Сравнение: C:\/Fixtures\/REVIEW_A\/src\/alpha.ts/);
+  assert.match(await composer.inputValue(), /```diff\n\+second version\n```/, 'Quote contains source text and diff sign without presentation line numbers');
+  await page.evaluate(() => window.__diffReview.sessions.a.emit('item/completed', { turnId: 'turn-one', item: {
+    id: 'first-alpha', type: 'fileChange', status: 'completed', changes: [{ path: 'C:/Fixtures/REVIEW_A/src/alpha.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-old stream\n+new stream update' }],
+  } }));
+  await settle();
+  assert.match(await dock().innerText(), /first version/);
+  assert.doesNotMatch(await dock().innerText(), /new stream update/, 'Pinned comparison remains a snapshot while new file events arrive');
+  await page.evaluate(() => {
+    const state = window.__diffReview.sessions.a;
+    const original = state.thread.turns.find(turn => turn.id === 'turn-one').items.find(item => item.id === 'first-alpha');
+    state.emit('item/completed', { turnId: 'turn-one', item: structuredClone(original) });
+  });
+  for (const width of [1440, 940]) {
+    await page.setViewportSize({ width, height: width === 1440 ? 900 : 640 });
+    const overlap = await view().evaluate(node => {
+      const comparison = node.querySelector('.result-dock').getBoundingClientRect();
+      const input = node.querySelector('.composer textarea').getBoundingClientRect();
+      return Math.min(comparison.right, input.right) - Math.max(comparison.x, input.x) > 1 && Math.min(comparison.bottom, input.bottom) - Math.max(comparison.y, input.y) > 1;
+    });
+    assert.equal(overlap, false, `Pinned comparison leaves the composer unobscured at ${width}px`);
+    await page.screenshot({ path: `artifacts/diff-review-docked-${width}.png` });
+  }
+  await dock().getByRole('button', { name: 'Развернуть просмотр изменений', exact: true }).click();
+  await modal().waitFor();
+  assert.equal(await modal().getByRole('button', { name: 'Единый diff', exact: true }).getAttribute('aria-pressed'), 'true');
+  await closeReview();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  if (await view().locator('.app-shell').evaluate(node => node.classList.contains('panel-hidden'))) await view().getByRole('button', { name: 'Переключить панель действий', exact: true }).click();
 
   // Unknown ranges remain raw: the UI must never pretend they have line 1.
   for (const path of ['src/raw.txt', 'assets/logo.png']) {

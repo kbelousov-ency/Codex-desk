@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { AlertTriangle, FileCode2, GitBranch, LoaderCircle, RefreshCw, RotateCcw, Search } from 'lucide-react';
 import { useBridge } from './BridgeContext';
-import { DiffReview } from './DiffReview';
+import { DiffReview, snapshotReviewSelection } from './DiffReview';
 import type { ReviewSelection } from './DiffReview';
 import { GitRollback } from './GitRollback';
 import type { RollbackTarget } from './GitRollback';
@@ -16,7 +16,7 @@ const sections: { label: string; area: GitArea; accepts(entry: GitEntry): boolea
   { label: 'Новые файлы', area: 'untracked', accepts: entry => entry.untracked },
 ];
 
-export default function GitPanel({ cwd, active, refreshKey, onReviewChange, mutationsAllowed = true }: { cwd: string; active: boolean; refreshKey?: unknown; onReviewChange?(open: boolean): void; mutationsAllowed?: boolean }) {
+export default function GitPanel({ cwd, active, refreshKey, onReviewChange, onPinReview, onQuote, mutationsAllowed = true }: { cwd: string; active: boolean; refreshKey?: unknown; onReviewChange?(open: boolean): void; onPinReview?(selection: ReviewSelection): void; onQuote?(text: string): void; mutationsAllowed?: boolean }) {
   const bridge = useBridge();
   const [status, setStatus] = useState<GitStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -126,7 +126,7 @@ export default function GitPanel({ cwd, active, refreshKey, onReviewChange, muta
         {rollbacks.map(record => <div key={record.undoId} className="git-rollback-record"><div><strong>{record.path}</strong><small>{new Date(record.createdAt).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></div><button type="button" aria-label={`Отменить откат ${record.path}`} data-tooltip="Вернуть изменения из резервной копии — сначала предпросмотр" disabled={!mutationsAllowed || loading || historyLoading || stale || Boolean(historyError) || Boolean(opening)} onClick={() => startRollback({ path: record.path, undoId: record.undoId })}><RotateCcw size={12} />Отменить</button></div>)}
       </section>}
     </>}
-    {review && active && <DiffReview selection={review} onClose={() => setReview(null)} onOpen={path => bridge.openPath(path)} />}
+    {review && active && <DiffReview selection={review} onClose={() => setReview(null)} onOpen={path => bridge.openPath(path)} onQuote={onQuote} onToggleDock={onPinReview ? () => { onPinReview(snapshotReviewSelection(review)); setReview(null); } : undefined} />}
     {rollbackVisible && rollback && <GitRollback target={rollback} mutationsAllowed={mutationsAllowed} onClose={() => setRollback(null)} onComplete={message => { setRollback(null); setSuccess(message); void load(); }} />}
   </div>;
 }

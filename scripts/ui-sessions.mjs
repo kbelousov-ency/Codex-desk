@@ -179,6 +179,7 @@ try {
   assert.equal(await stopButton(pageB).isVisible(), true);
   const beforeReconnect = await streamCount(pageB);
   await pageA.getByRole('button', { name: 'Настройки', exact: true }).click();
+  await pageA.getByRole('tab', { name: 'Подключение', exact: true }).click();
   await pageA.getByRole('button', { name: 'Переподключить', exact: true }).click();
   await pageA.waitForFunction(() => !document.querySelector('select[aria-label="Модель"]').disabled);
   await pageA.getByRole('button', { name: 'Готово', exact: false }).click();

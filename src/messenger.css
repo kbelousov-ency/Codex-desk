@@ -12,6 +12,11 @@
 .conversation .user-avatar>.pixel-avatar{flex-shrink:0;color:#c6e2ce}
 .notice-alert>.continue-button{display:inline-flex;align-items:center;gap:5px;flex-shrink:0;padding:5px 8px;border:1px solid #52654a;border-radius:5px;background:#35432f;color:#d1e5c5;font-size:11px;white-space:nowrap}
 .notice-alert>.continue-button:hover:not(:disabled){background:#46573e;color:#e8f2e2}
+.reconnect-alert{background:#302b20;border-color:#66573a;color:#ddcba6}
+.reconnect-alert>svg{flex-shrink:0}
+.reconnect-alert strong,.reconnect-alert small{display:block}
+.reconnect-alert strong{font-size:11px;font-weight:600}
+.reconnect-alert small{font-size:10px;color:#bbae92;margin-top:2px}
 .conversation .user-message .message-content{padding:10px 13px;border-color:#405749;background:#2b3c32;border-radius:13px 3px 13px 13px}
 .conversation .user-message .user-text{color:#e0e9e1}
 .edit-message-button{display:inline-flex;align-items:center;gap:4px;border:0;border-radius:4px;padding:3px 5px;background:transparent;color:#a7b8ad;font-size:10px;cursor:pointer}

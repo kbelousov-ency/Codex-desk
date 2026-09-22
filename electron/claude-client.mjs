@@ -13,8 +13,9 @@ const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'bypassPermi
 // steer: a user frame written mid-turn is folded into the running turn between tool
 // rounds; the result lists every consumed uuid. compact: the documented `/compact`
 // slash command runs as its own turn and emits a compact_boundary system frame.
-// archive: native Claude history has no archive; rename/delete are handled by ClaudeThreadManagement.
-export const CLAUDE_CAPABILITIES = Object.freeze({ steer: true, compact: true, terminal: true, mcp: false, archive: false, usage: true });
+// archive: native Claude history has no archived state of its own, but the shell keeps its
+// own list of archived sessions; rename/archive/delete are handled by ClaudeThreadManagement.
+export const CLAUDE_CAPABILITIES = Object.freeze({ steer: true, compact: true, terminal: true, mcp: false, archive: true, usage: true });
 const USAGE_LABELS = { five_hour: 'Сессия 5 часов', seven_day: 'Неделя, все модели', seven_day_oauth_apps: 'Неделя, интеграции', seven_day_opus: 'Неделя, Opus', seven_day_sonnet: 'Неделя, Sonnet' };
 const usageWindow = (key, label, value) => {
   if (!value || typeof value !== 'object') return null;

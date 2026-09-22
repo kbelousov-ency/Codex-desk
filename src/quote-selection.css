@@ -1,0 +1,5 @@
+.quote-selection-root{min-width:0}
+.quote-selection-toolbar{position:fixed;z-index:180;max-width:calc(100vw - 16px);border:1px solid #61745d;border-radius:7px;background:#354832;box-shadow:0 4px 18px #0007}
+.quote-selection-toolbar button{display:flex;align-items:center;gap:7px;max-width:100%;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:#e6efdf;font-size:11px;cursor:pointer}
+.quote-selection-toolbar button:hover{background:#435b3e}
+.quote-selection-toolbar button:focus-visible{outline:2px solid #c4d6aa;outline-offset:2px}

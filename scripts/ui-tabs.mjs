@@ -286,6 +286,7 @@ try {
   await stopButton().waitFor({ state: 'hidden' });
   const beforeReconnect = await streamCount(idB);
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await view().getByRole('tab', { name: 'Подключение', exact: true }).click();
   await view().getByRole('button', { name: 'Переподключить', exact: true }).click();
   await waitUntil(async () => await modelSelect().isEnabled(), 'A reconnect ready');
   await view().getByRole('button', { name: 'Готово', exact: false }).click();

@@ -1,5 +1,5 @@
 import { useAgentName } from './AgentContext';
-import { memo, useMemo, useState } from 'react';
+import { Fragment, memo, useMemo, useState } from 'react';
 import { Bookmark, Check, Copy, ImagePlus, Pencil, Terminal } from 'lucide-react';
 import type { Item, TurnWork } from './types';
 import Markdown from './Markdown';
@@ -9,14 +9,20 @@ import WorkLog from './WorkLog';
 import PixelAvatar from './PixelAvatar';
 import AgentQuestions from './AgentQuestions';
 import { agentQuestions, canAnswerQuestion } from './agent-questions';
+import QuoteSelection from './QuoteSelection';
+import TaskResult, { type ResultActions } from './TaskResult';
+import { taskResults } from './task-result';
 import './work-log.css';
 import './messenger.css';
 
-function Conversation({ items, turnWork, searchable = false, onEditMessage, editDisabled = false, onBookmark, onAnswerQuestion, questionDisabled }: { items: Item[]; turnWork: Record<string, TurnWork>; searchable?: boolean; onEditMessage?(item: Item): void; editDisabled?: boolean; onBookmark?(item: Item): Promise<void>; onAnswerQuestion?(item: Item, answer: string): Promise<boolean>; questionDisabled?: boolean }) {
+type Props = ResultActions & { items: Item[]; turnWork: Record<string, TurnWork>; searchable?: boolean; onEditMessage?(item: Item): void; editDisabled?: boolean; onBookmark?(item: Item): Promise<void>; onAnswerQuestion?(item: Item, answer: string): Promise<boolean>; questionDisabled?: boolean; onQuote?(text: string): void; active?: boolean };
+
+function Conversation({ items, turnWork, searchable = false, onEditMessage, editDisabled = false, onBookmark, onAnswerQuestion, questionDisabled, onQuote, active, onOpenResultFile, onReviewResult, onJumpToItem }: Props) {
   const entries = useMemo(() => conversationEntries(items), [items]);
-  return <>{entries.map(entry => entry.type === 'message'
-    ? <Message key={entry.key} item={entry.item} onEdit={onEditMessage} editDisabled={editDisabled} onBookmark={onBookmark} onAnswerQuestion={canAnswerQuestion(items, entry.item) ? onAnswerQuestion : undefined} questionDisabled={questionDisabled} />
-    : <WorkLog key={entry.key} turnId={entry.turnId} items={entry.items} turn={turnWork[entry.turnId]} hasAnswer={entry.hasAnswer} searchable={searchable} />)}</>;
+  const results = useMemo(() => taskResults(items, turnWork), [items, turnWork]);
+  return <QuoteSelection onQuote={onQuote} active={active}>{entries.map(entry => entry.type === 'message'
+    ? <Fragment key={entry.key}><Message item={entry.item} onEdit={onEditMessage} editDisabled={editDisabled} onBookmark={onBookmark} onAnswerQuestion={canAnswerQuestion(items, entry.item) ? onAnswerQuestion : undefined} questionDisabled={questionDisabled} />{results.has(entry.item.id) && <TaskResult result={results.get(entry.item.id)!} onOpenResultFile={onOpenResultFile} onReviewResult={onReviewResult} onJumpToItem={onJumpToItem} />}</Fragment>
+    : <WorkLog key={entry.key} turnId={entry.turnId} items={entry.items} turn={turnWork[entry.turnId]} hasAnswer={entry.hasAnswer} searchable={searchable} />)}</QuoteSelection>;
 }
 
 export default memo(Conversation);

@@ -1,0 +1,24 @@
+.task-result{max-width:94%;min-width:0;margin:-8px 0 22px;border:1px solid #364139;border-radius:9px;background:#202722;color:#bdc9c0;font-size:11px}
+.task-result-heading{display:flex;align-items:center;gap:7px;padding:10px 12px;flex-wrap:wrap}
+.task-result-heading strong{font-size:11px;font-weight:550;color:#d1dbd3}
+.task-result-heading>span{font-size:10px;color:#8e9d92;margin-left:auto}
+.task-result-section{border-top:1px solid #303a33}
+.task-result-section>summary{display:flex;align-items:center;gap:7px;cursor:pointer;padding:8px 12px;list-style:none;color:#abbcaf}
+.task-result-section>summary::before{content:'›';font-size:15px;line-height:12px;transition:transform .12s}
+.task-result-section[open]>summary::before{transform:rotate(90deg)}
+.task-result-section>summary>span{margin-left:auto;color:#84968a;font-variant-numeric:tabular-nums}
+.task-result-section ul{padding:0 12px;margin:0 0 8px;list-style:none;max-height:220px;overflow:auto;scrollbar-width:thin}
+.task-result-section li{display:flex;align-items:center;gap:10px;min-width:0;padding:6px 0;border-bottom:1px solid #303a33}
+.task-result-section li:last-child{border-bottom:0}
+.task-result-file,.task-result-command{display:flex;min-width:0;flex:1;flex-direction:column;gap:3px}
+.task-result-status{font-size:10px;color:#91a296}
+.task-result-section .has-error .task-result-status{color:#e1ad92}
+.task-result-path{padding:0;border:0;background:none;text-align:left;color:#c3d7c9;overflow-wrap:anywhere;font-size:11px;line-height:1.5}
+button.task-result-path{cursor:pointer}
+button.task-result-path:hover{color:#e0efe4;text-decoration:underline}
+.task-result-command code{font-family:var(--font-mono,monospace);font-size:10px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-height:90px;overflow:auto;scrollbar-width:thin}
+.task-result-source,.task-result-review{border:1px solid #425448;border-radius:5px;background:#29372d;color:#bfd1c3;padding:4px 7px;font-size:10px;cursor:pointer}
+.task-result-source{flex-shrink:0}
+.task-result-source:hover,.task-result-review:hover{background:#35473b}
+.task-result-review{margin:0 12px 10px}
+@media(max-width:700px){.task-result{max-width:100%}.task-result-heading>span{width:100%;margin-left:21px}}

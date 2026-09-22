@@ -58,7 +58,7 @@ export default function ProjectTree({ controls, active = true }: { controls: Pro
             const selected = activeFolder && controls.activeThreadId === thread.id;
             return <div className={`folder-thread-row ${selected ? 'active' : ''}`} key={thread.id}>
               <button className={`folder-thread ${selected ? 'active' : ''}`} data-thread-id={thread.id} aria-current={selected ? 'page' : undefined} data-tooltip={title} disabled={controls.opening} onClick={() => controls.openThread(cwd, thread)}><AgentLogo provider={thread.id.startsWith('claude:') ? 'claude' : 'codex'} size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
-              {controls.threadAction && <ThreadMenu title={title} threadId={thread.id} archivable={!thread.id.startsWith('claude:')} active={active} disabled={controls.opening || controls.actionBusy || controls.threadLocked?.(thread.id)} onAction={action => controls.threadAction?.(action, cwd, thread)} />}
+              {controls.threadAction && <ThreadMenu title={title} threadId={thread.id} active={active} disabled={controls.opening || controls.actionBusy || controls.threadLocked?.(thread.id)} onAction={action => controls.threadAction?.(action, cwd, thread)} />}
             </div>;
           })}
           {history?.error ? <div className="folder-history-error" role="alert"><span>{history.error}</span><button className="text-button" onClick={() => controls.refreshProject(cwd)}>Повторить</button></div> : history?.loading ? <div className="folder-history-status"><LoaderCircle size={12} className="spin" /><span>Загружаем диалоги…</span></div> : history?.loaded && !history.threads.length ? <p className="folder-history-status">Пока нет диалогов</p> : null}

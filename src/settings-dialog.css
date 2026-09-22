@@ -1,0 +1,12 @@
+.settings-modal.settings-dialog{display:flex;flex-direction:column;width:680px;height:min(720px,90vh);overflow:hidden}
+.settings-dialog>.modal-header,.settings-dialog>.modal-footer{flex-shrink:0}
+.settings-tabs{display:flex;flex-shrink:0;gap:5px;padding:12px 20px;border-bottom:1px solid #343e34}
+.settings-tabs>[role="tab"]{display:flex;flex:1;align-items:center;justify-content:center;gap:7px;min-width:0;padding:10px 9px;border:1px solid transparent;border-radius:7px;color:#8fa696;font-size:12px;white-space:nowrap}
+.settings-tabs>[role="tab"]>svg{flex-shrink:0}
+.settings-tabs>[role="tab"]:hover{background:#28342b;color:#d1dfd3}
+.settings-tabs>[role="tab"][aria-selected="true"]{background:#304134;border-color:#506a55;color:#d2e4d4}
+.settings-tabs>[role="tab"]:focus-visible,.settings-tab-panel:focus-visible{outline:2px solid #a7c4ad;outline-offset:-3px}
+.settings-dialog>.settings-tab-panel{flex:1;min-height:0;padding:5px 26px 24px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:stable}
+.settings-tab-panel[hidden]{display:none}
+.settings-tab-panel>.muted{font-size:12px;line-height:1.8;margin-top:20px}
+@media(max-width:560px){.settings-tabs{padding:10px 12px;gap:3px}.settings-tabs>[role="tab"]{padding:10px 6px;font-size:11px;gap:5px}.settings-tabs>[role="tab"]>svg{display:none}.settings-dialog>.settings-tab-panel{padding:5px 18px 20px}.settings-dialog>.modal-header{padding:20px 18px 17px}.settings-dialog>.modal-footer{padding:14px 18px;gap:10px}.settings-dialog .settings-row{flex-wrap:wrap}.settings-dialog .settings-row>span{flex-basis:100%}}

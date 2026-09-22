@@ -90,6 +90,7 @@ try {
 
   // Reconnecting restores the saved access, model, and effort without starting a turn.
   await clickNamed(/^Настройки$/);
+  await page.getByRole('tab', { name: 'Подключение', exact: true }).click();
   await clickNamed(/^Переподключить$/);
   await waitState(() => window.__scenario.state.starts.length === 3 && window.__scenario.state.requests.filter(request => request.method === 'thread/list').length === 3);
   await clickNamed(/^Готово$/);

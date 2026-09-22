@@ -97,6 +97,23 @@ try {
   const settings = () => page.getByRole('dialog', { name: 'Ваше рабочее пространство', exact: true });
   const text = () => settings().getByRole('textbox', { name: 'Конфигурация MCP', exact: true });
   const button = name => settings().getByRole('button', { name, exact: true });
+  const tab = name => settings().getByRole('tab', { name, exact: true });
+  const selectedTab = async name => {
+    assert.equal(await tab(name).getAttribute('aria-selected'), 'true');
+    assert.equal(await settings().getByRole('tabpanel').count(), 1, 'Only the selected topic is exposed to assistive technology');
+  };
+  const checkLayout = async () => {
+    const geometry = await settings().evaluate(element => {
+      const bounds = node => { const box = node.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, left: box.left, right: box.right }; };
+      const footer = element.querySelector('.modal-footer');
+      const done = footer.querySelector('button');
+      const button = done.getBoundingClientRect();
+      return { modal: bounds(element), tabs: bounds(element.querySelector('[role="tablist"]')), footer: bounds(footer), width: innerWidth, height: innerHeight, doneReachable: done.contains(document.elementFromPoint(button.left + button.width / 2, button.top + button.height / 2)) };
+    });
+    for (const region of [geometry.modal, geometry.tabs, geometry.footer]) assert.ok(region.top >= 0 && region.left >= 0 && region.bottom <= geometry.height + 1 && region.right <= geometry.width + 1, 'Settings navigation and actions fit the viewport');
+    assert.equal(geometry.doneReachable, true, 'The Done button is visible and clickable without scrolling the whole window');
+    return geometry;
+  };
   const flush = () => page.waitForTimeout(100);
   const calls = () => page.evaluate(() => window.__mcp.calls);
   const count = async method => (await calls()).filter(call => call.method === method).length;
@@ -107,6 +124,23 @@ try {
   await view().getByRole('combobox', { name: 'Модель', exact: true }).waitFor();
   await input().fill('Черновик остаётся на месте');
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await selectedTab('Агент');
+  await tab('Агент').focus();
+  await tab('Агент').press('End');
+  await selectedTab('Память');
+  assert.equal(await tab('Память').evaluate(element => element === document.activeElement), true);
+  await tab('Память').press('Home');
+  await selectedTab('Агент');
+  await tab('Агент').press('ArrowRight');
+  await selectedTab('Подключение');
+  await tab('Подключение').press('ArrowLeft');
+  await selectedTab('Агент');
+  await tab('Агент').press('ArrowRight');
+  await tab('Подключение').press('ArrowRight');
+  await selectedTab('MCP');
+  assert.equal(await tab('MCP').evaluate(element => element === document.activeElement), true);
+  await tab('MCP').press('Tab');
+  assert.equal(await settings().getByRole('tabpanel').evaluate(element => element.contains(document.activeElement)), true, 'Tab moves from the selected topic into its contents');
   await settings().getByText('MCP-серверы', { exact: true }).waitFor();
   await settings().getByText('existing', { exact: true }).waitFor();
   assert.match(await settings().innerText(), /C:\/Fixtures\/CODEX_HOME\/config.toml/);
@@ -115,8 +149,21 @@ try {
   await settings().getByText(/Некорректный TOML/).waitFor();
   assert.equal(await count('saveMcpImport'), 0, 'Validation errors cannot write configuration');
   assert.equal(await text().inputValue(), '', 'Rejected input is cleared rather than retaining credentials');
-  await text().fill(toml); await button('Проверить текст').click();
+  await text().fill(toml);
+  const readsBeforeSwitch = await count('getMcpConfig');
+  await tab('Агент').click();
+  assert.equal(await text().count(), 0, 'A hidden MCP draft is not exposed as an active textbox');
+  await tab('MCP').click();
+  assert.equal(await text().inputValue(), toml, 'Changing topics preserves the unsaved MCP draft');
+  assert.equal(await count('getMcpConfig'), readsBeforeSwitch, 'Changing topics does not reload and clear the MCP editor');
+  await button('Проверить текст').click();
   await button('Сохранить MCP').waitFor(); await noSecret();
+  const previewsBeforeSwitch = await count('previewMcpImport');
+  await tab('Память').click();
+  await tab('MCP').click();
+  await button('Сохранить MCP').waitFor();
+  assert.equal(await count('previewMcpImport'), previewsBeforeSwitch, 'A prepared import remains available without repeating preview');
+  await noSecret();
   assert.equal(await count('turn/start'), 0, 'Pasted TOML is never forwarded as a model message');
   assert.equal(await count('saveMcpImport'), 0, 'Preview does not write the config');
   assert.match(await settings().innerText(), /Authorization/);
@@ -126,6 +173,21 @@ try {
   assert.deepEqual((await calls()).find(call => call.method === 'saveMcpImport').params, { previewId: 'preview-1', replaceExisting: false });
   assert.equal(await input().inputValue(), 'Черновик остаётся на месте');
   await page.screenshot({ path: 'artifacts/mcp-settings.png' });
+  await tab('Агент').click();
+  await selectedTab('Агент');
+  await checkLayout();
+  await page.screenshot({ animations: 'disabled', path: 'artifacts/settings-tabs-agent.png' });
+  for (const viewport of [{ width: 940, height: 620 }, { width: 560, height: 700 }]) {
+    await page.setViewportSize(viewport);
+    const before = await checkLayout();
+    await settings().getByRole('tabpanel').evaluate(element => { element.scrollTop = element.scrollHeight; });
+    const after = await checkLayout();
+    assert.equal(after.tabs.top, before.tabs.top, 'Topic navigation remains visible while reading long settings');
+    assert.equal(after.footer.bottom, before.footer.bottom, 'Done stays in place while scrolling a topic');
+    await page.screenshot({ animations: 'disabled', path: 'artifacts/settings-tabs-' + viewport.width + '.png' });
+  }
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await tab('MCP').click();
 
   // A duplicate server cannot be replaced by an unconfirmed save.
   await button('Добавить из текста').click();
@@ -148,16 +210,25 @@ try {
   await button('Закрыть настройки').click();
   assert.equal(await input().inputValue(), 'Черновик остаётся на месте');
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await tab('MCP').click();
   assert.equal(await text().count(), 0, 'Closing settings discards pasted text and preview');
   await button('Добавить из текста').click();
   await text().fill(toml); await button('Проверить текст').click(); await replace.waitFor();
   assert.equal(await replace.isChecked(), false, 'Replacement confirmation is not retained between imports');
   await replace.check();
+  await tab('Подключение').click();
+  await tab('MCP').click();
+  assert.equal(await replace.isChecked(), true, 'An explicit replacement decision survives changing topics');
   await page.evaluate(() => { window.__mcp.failSave = false; window.__mcp.holdSave = true; });
   await button('Сохранить MCP').click();
   const writesPending = await count('saveMcpImport');
   assert.equal(await button('Сохраняем…').isDisabled(), true, 'Save remains locked until the write completes');
+  await tab('Агент').click();
+  await tab('MCP').click();
+  assert.equal(await button('Сохраняем…').isDisabled(), true, 'Changing topics cannot start a second write');
+  await tab('Память').click();
   await page.evaluate(() => { window.__mcp.resolveSave(); window.__mcp.holdSave = false; });
+  await tab('MCP').click();
   await settings().getByText(/config.toml.backup-fixture/).waitFor();
   assert.equal(await count('saveMcpImport'), writesPending);
   await noSecret();
@@ -172,6 +243,7 @@ try {
   await button('Закрыть настройки').click();
   await input().fill('Задача для проверки отложенного применения'); await input().press('Enter'); await flush();
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await tab('MCP').click();
   await button('Применить в этой сессии').click();
   await settings().getByText('Применение отложено до завершения текущей задачи.', { exact: true }).waitFor();
   assert.equal(await count('turn/interrupt'), 0, 'Applying MCP never stops an active task');
@@ -181,7 +253,7 @@ try {
   assert.equal(await count('thread/start'), 1, 'MCP reload keeps the current conversation');
   assert.equal(await count('start'), 1, 'MCP reload keeps the existing server');
   assert.deepEqual(errors, []);
-  console.log('PASS: MCP settings, safe text preview, explicit save, backup path, duplicate confirmation, stale-preview error, write lock and preserved draft. All bridges are fixtures; no real config or model requests.');
+  console.log('PASS: thematic settings tabs with keyboard focus, compact viewport navigation/footer, MCP draft/preview/confirmation/pending-write preservation between topics, safe preview, explicit save, backup, stale-preview error and preserved chat draft. All bridges are fixtures; no real config or model requests.');
 } catch (error) {
   if (page && !page.isClosed()) await page.screenshot({ path: 'artifacts/mcp-settings-failure.png' }).catch(() => {});
   throw error;
