@@ -251,18 +251,35 @@ export async function publishNightly(root, source, options = {}) {
 
 export async function promoteRelease(root, options = {}) {
   const guard = options.guard ?? assertNotRunning;
-  const nightly = transactionPath(root, 'nightly');
   const stable = transactionPath(root, 'stable');
   const previous = transactionPath(root, 'stable-previous');
   const incoming = transactionPath(root, '.stable-incoming');
   await guard(stable);
   await guard(previous);
-  const manifest = await verifyRelease(root, nightly, 'nightly');
+  // The running Nightly may still use the preceding build. A pending update is
+  // immutable release input; promoting its bytes must not apply or cancel it.
+  let source = transactionPath(root, 'nightly');
+  let queuedBuildId;
+  const queueDirectory = path.join(root, 'artifacts', 'nightly-update');
+  const queueFile = path.join(queueDirectory, 'state.json');
+  await checkedPath(root, queueFile);
+  const queueStat = await statOrNull(queueFile);
+  if (queueStat) {
+    if (!queueStat.isFile() || queueStat.size > 16384) throw new Error('Неверный файл очереди Nightly.');
+    let queue;
+    try { queue = JSON.parse(await readFile(queueFile, 'utf8')); }
+    catch { throw new Error('Очередь Nightly повреждена.'); }
+    if (!queue || queue.version !== 1 || typeof queue.buildId !== 'string' || !/^[a-f0-9]{64}$/.test(queue.buildId)) throw new Error('Очередь Nightly повреждена.');
+    source = path.join(queueDirectory, 'app');
+    queuedBuildId = queue.buildId;
+  } else if (await statOrNull(queueDirectory)) throw new Error('Очередь Nightly повреждена: отсутствует state.json.');
+  const manifest = await verifyRelease(root, source, 'nightly');
+  if (queuedBuildId && manifest.buildId !== queuedBuildId) throw new Error('Кандидат Nightly не совпадает с очередью обновления.');
   await guard(incoming);
   await removeChecked(root, incoming);
   try {
-    await cp(nightly, incoming, { recursive: true });
-    await verifyRelease(root, incoming, 'nightly');
+    await cp(source, incoming, { recursive: true });
+    if ((await verifyRelease(root, incoming, 'nightly')).buildId !== manifest.buildId) throw new Error('Сборка Nightly изменилась во время переноса.');
     await writeChannel(incoming, 'stable');
   } catch (error) { await guard(incoming); await removeChecked(root, incoming); throw error; }
   const steps = [];

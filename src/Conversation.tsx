@@ -22,7 +22,7 @@ function Conversation({ items, turnWork, searchable = false, onEditMessage, edit
   const results = useMemo(() => taskResults(items, turnWork), [items, turnWork]);
   return <QuoteSelection onQuote={onQuote} active={active}>{entries.map(entry => entry.type === 'message'
     ? <Fragment key={entry.key}><Message item={entry.item} onEdit={onEditMessage} editDisabled={editDisabled} onBookmark={onBookmark} onAnswerQuestion={canAnswerQuestion(items, entry.item) ? onAnswerQuestion : undefined} questionDisabled={questionDisabled} />{results.has(entry.item.id) && <TaskResult result={results.get(entry.item.id)!} onOpenResultFile={onOpenResultFile} onReviewResult={onReviewResult} onJumpToItem={onJumpToItem} />}</Fragment>
-    : <WorkLog key={entry.key} turnId={entry.turnId} items={entry.items} turn={turnWork[entry.turnId]} hasAnswer={entry.hasAnswer} searchable={searchable} />)}</QuoteSelection>;
+    : <WorkLog key={entry.key} turnId={entry.turnId} items={entry.items} turn={turnWork[entry.turnId]} hasAnswer={entry.hasAnswer} continued={entry.continued} answerItemId={entry.answerItemId} searchable={searchable} />)}</QuoteSelection>;
 }
 
 export default memo(Conversation);

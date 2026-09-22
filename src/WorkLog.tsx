@@ -9,10 +9,11 @@ import { useAgentName } from './AgentContext';
 
 const terminalStatuses = new Set(['completed', 'failed', 'interrupted', 'cancelled', 'canceled', 'disconnected']);
 
-export default function WorkLog({ turnId, items, turn, hasAnswer, searchable = false }: { turnId: string; items: Item[]; turn?: TurnWork; hasAnswer: boolean; searchable?: boolean }) {
+export default function WorkLog({ turnId, items, turn, hasAnswer, continued, answerItemId, searchable = false }: { turnId: string; items: Item[]; turn?: TurnWork; hasAnswer: boolean; continued: boolean; answerItemId?: string; searchable?: boolean }) {
   const terminal = turn && turn.status !== 'unknown' ? terminalStatuses.has(turn.status) : items.every(item => item.complete);
-  const answering = hasAnswer || turn?.answerStartedAt != null;
-  const settled = terminal || answering;
+  // A previous async question may have final_answer in the same running turn.
+  // Only the answer belonging to this segment can settle its new activity.
+  const settled = terminal || hasAnswer || continued;
   const [open, setOpen] = useState(!settled);
   const [now, setNow] = useState(Date.now);
   const detailsRef = useRef<HTMLDetailsElement>(null);
@@ -39,8 +40,11 @@ export default function WorkLog({ turnId, items, turn, hasAnswer, searchable = f
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [settled, turn?.startedAt]);
-  const end = turn?.completedAt ?? turn?.answerStartedAt ?? (!settled ? now : undefined);
-  const duration = turn?.durationMs ?? (turn?.startedAt != null && end != null ? Math.max(0, end - turn.startedAt) : undefined);
+  const answerStartedAt = hasAnswer && (!turn?.answerItemId || turn.answerItemId === answerItemId) ? turn?.answerStartedAt : undefined;
+  const end = turn?.completedAt ?? answerStartedAt ?? (!settled ? now : undefined);
+  // Timing belongs to the whole server turn, not to individual clarifications.
+  // Show it once, on the last segment, without inventing per-segment durations.
+  const duration = continued ? undefined : turn?.durationMs ?? (turn?.startedAt != null && end != null ? Math.max(0, end - turn.startedAt) : undefined);
   const suffix = turn?.status === 'failed' ? 'Ошибка' : turn?.status === 'disconnected' ? 'Связь прервана' : ['interrupted', 'cancelled', 'canceled'].includes(turn?.status || '') ? 'Остановлено' : '';
   const label = duration != null ? `${settled ? 'Работал' : 'Работает'} ${workDuration(duration)}` : 'Ход работы';
   return <details ref={detailsRef} className={`work-log ${settled ? 'settled' : 'running'}`} data-turn-id={turnId} open={open} onToggle={event => setOpen(event.currentTarget.open)}>

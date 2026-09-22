@@ -1,8 +1,8 @@
 import type { Item } from './types';
-import { agentQuestions } from './agent-questions';
+import { agentQuestions } from './agent-questions.ts';
 
 export type ConversationEntry = { type: 'message'; key: string; item: Item } | {
-  type: 'work'; key: string; turnId: string; items: Item[]; hasAnswer: boolean;
+  type: 'work'; key: string; turnId: string; items: Item[]; hasAnswer: boolean; continued: boolean; answerItemId?: string;
 };
 
 export function availableReasoning(item: Item) {
@@ -20,28 +20,51 @@ function isWork(item: Item) {
 
 /** Keep user messages and every final/unphased answer visible, without guessing phases. */
 export function conversationEntries(items: Item[]): ConversationEntry[] {
-  const groups = new Map<string, { entry: Extract<ConversationEntry, { type: 'work' }>; index: number; answerIndex?: number }>();
+  type Group = { entry: Extract<ConversationEntry, { type: 'work' }>; index: number; answerIndex?: number };
+  const groups: Group[] = [];
+  const current = new Map<string, Group>();
+  const boundaries = new Map<string, string>();
+  const previous = new Map<string, Group>();
   let fallback = 'history';
   const assigned = items.map((item, index) => {
     if (item.type === 'userMessage') fallback = item.turnId || `message-${item.id}`;
     const turnId = item.turnId || fallback;
-    let group = groups.get(turnId);
+    // Steering keeps the server turn ID. Its user message starts a new visible
+    // work segment, rather than sending subsequent events above the answer.
+    if (item.type === 'userMessage') {
+      boundaries.set(turnId, `user-${item.clientId || item.clientUserMessageId || item.localMessageId || item.id}`);
+      current.delete(turnId);
+    }
+    let group = current.get(turnId);
     if (!group) {
-      group = { entry: { type: 'work', key: `work-${turnId}`, turnId, items: [], hasAnswer: false }, index: Infinity };
-      groups.set(turnId, group);
+      group = { entry: { type: 'work', key: `work-${turnId}-${boundaries.get(turnId) || 'start'}`, turnId, items: [], hasAnswer: false, continued: false }, index: Infinity };
+      groups.push(group);
+      current.set(turnId, group);
     }
     if (item.type === 'agentMessage' && (item.phase !== 'commentary' || agentQuestions(item).length)) {
       group.answerIndex ??= index;
-      if (item.phase === 'final_answer') group.entry.hasAnswer = true;
+      if (item.phase === 'final_answer') {
+        group.entry.hasAnswer = true;
+        group.entry.answerItemId = item.id;
+      }
     }
     if (isWork(item)) {
+      const earlier = previous.get(turnId);
+      if (earlier && earlier !== group) earlier.entry.continued = true;
+      previous.set(turnId, group);
       group.entry.items.push(item);
       group.index = Math.min(group.index, index);
+    }
+    // An asynchronous question can be followed by work even before its reply.
+    // Keep that continuation below the question as well.
+    if (item.type === 'agentMessage' && (agentQuestions(item).length || item.delivery === 'async')) {
+      boundaries.set(turnId, `question-${item.id}`);
+      current.delete(turnId);
     }
     return { item, index };
   });
   const logsAt = new Map<number, ConversationEntry[]>();
-  for (const group of groups.values()) {
+  for (const group of groups) {
     if (!group.entry.items.length) continue;
     const index = Math.min(group.index, group.answerIndex ?? Infinity);
     const entries = logsAt.get(index) || [];
