@@ -1,5 +1,47 @@
 # Release и Nightly
 
+## Две копии: GitHub и Gerrit — решение 2026-09-22
+
+По указанию пользователя команда **«Заливай»** означает отправку готовых изменений в **оба репозитория**: GitHub `https://github.com/kbelousov-ency/Codex-desk` (копия `E:\My projects\CodexDesk`, ветка `main`) и Gerrit `https://gerrit1.hq.encycam.com/a/CodexDesk` (копия `E:\CodexDesk`, ветка `master`). Сохранять обе истории и несвязанные рабочие изменения; перед отправкой согласовывать содержимое копий, не применять force-push для их выравнивания. При выпуске исходники и публикуемые теги дублируются в оба репозитория.
+
+Приложение пока продолжает проверять **GitHub Releases**; Setup и метаданные обновлений остаются там. Пользователь первоначально выбрал хранить установщики в том же Gerrit `CodexDesk`, затем отложил переход до решения о способе хранения. Перенастройка updater на Gerrit остановлена до изменения кода. Одна смена Git remote источник обновлений не меняет. Переход полностью на Gerrit выполняется по будущему указанию пользователя; сейчас поддерживаются две копии исходников. Правило явного подтверждения переноса Nightly в Release сохраняется; само определение команды не является поручением немедленно выполнить push или публикацию.
+
+## Перенос и вставка файлов — Nightly 0.5.0, 2026-09-22
+
+[Файлы в сообщении](COMPOSER_FILES.md): drop по всему окну и Ctrl+V файлов из Проводника добавляют изображения с превью, остальные файлы — путями в черновик. Nightly **0.5.0**, build ID `555b67429eb279364035ba773a3a4d087bd7f144af3699bb5fd4b69e6268da78`, собрана `2026-09-22T09:33:58.338Z` через `npm.cmd run package`. Кандидат `artifacts/nightly-update/app` ждёт «Закрыть» или ручного выхода. Промежуточный `7e9b21a2128b` снят штатным discard после остановки только созданного этой задачей Node-помощника; финальный исправляет блокировку вставки скрытым modal другой вкладки. Пользовательский Nightly не закрывался.
+
+TypeScript/Vite, 42 targeted backend/preload/diagnostics tests, `test:composer-files`, `test:edit-message`, `test:message-queue` прошли. Готовый exe прошёл настоящий Electron/preload/IPC `test:composer-files-host` (`artifacts/composer-files-host-KKcx43`), включая native File→webUtils, несколько файлов из clipboard fixture, stale/session guards и неизменность исходных файлов. Windows STA serializer проверен с подставной коллекцией; реальный буфер пользователя не читался/не менялся, натурное Explorer→Chromium paste не проверялось. Запросов модели — 0.
+
+Проверены manifest 72 файлов и точное совпадение 51 файла electron/dist с исходниками (`artifacts/file-transfer-package-verification.json`). SHA-256 кандидата app.asar `96bcaf75078a0b0de2fe5da0473388de51abee679def2fca0b396e47c5ad30f3`; Release `b959e16b0682f462c672955eb04e654e7821547a7cb952abe9412cef441e97a6` не продвигался. Снимок — `artifacts/composer-files-transfer.png`.
+
+## Статус автоматического реконекта — Nightly 0.5.0, 2026-09-22
+
+[Реконект ответа](THREAD_RECOVERY.md#автоматический-реконект-ответа--2026-09-22) показывает спиннер и номер попытки, автоматически скрывается при восстановлении model events и не стирает несвязанные ошибки. Nightly **0.5.0**, build ID `540d2838236acc26136129a6e1c5ca7ff1c5293a277405bb661f4f8fddef1177`, собрана `2026-09-22T08:25:44.862Z` через `npm.cmd run package`; кандидат `artifacts/nightly-update/app` ждёт «Закрыть» или ручного выхода. Пользовательский Nightly не закрывался, Release не продвигался.
+
+TypeScript/Vite, `test:resume`, `test:commands`, `test:notifications` прошли. Расширенный resume проверяет повторные попытки, thread/turn isolation, неподходящие события инструментов, восстановление по тексту/размышлениям/плану, completion, окончательные ошибки, отказ `turn/start`, независимую UI-ошибку и скрытие без RPC. Скриншоты `artifacts/resume-automatic-retry.png` и `artifacts/resume-automatic-retry-narrow.png` (560×900). Готовый exe прошёл `test:ui`: настоящий Electron/preload/IPC и Codex bootstrap, 6 моделей, Astra/Ultra сохранены. Реконект проверен подставными событиями; реальных model turns — 0.
+
+Манифест 72 файлов и точное совпадение всего dist проверены (`artifacts/reconnect-package-verification.json`). SHA-256 app.asar кандидата `67886cd8092818e12f7154780f2c4650f9cca3a2c6028169d70f646fcddcbe3f`; Release сохранил `b959e16b0682f462c672955eb04e654e7821547a7cb952abe9412cef441e97a6`. При сверке 48 файлов electron/dist совпали; `electron/main.mjs` и `electron/claude-archive.mjs` уже менялись параллельной задачей архива Claude после подготовки кандидата и не совпадали с ним. Эта поставка не утверждает включение или проверку дальнейших правок архива; чужие изменения не откатывались.
+
+## Вкладки настроек — Nightly 0.5.0, 2026-09-22
+
+[Настройки](SETTINGS.md) разделены на «Агент», «Подключение», «MCP», «Память». Nightly **0.5.0**, build ID `d210d81e20cf44d4ece46a4605e724da5e6364661d39a1f1df9778cb01ee1b69`, собрана `2026-09-22T05:44:19.736Z` штатным `npm.cmd run package`; кандидат `artifacts/nightly-update/app` ожидает «Закрыть» в чате или ручного выхода. Пользовательский Nightly не закрывался, Release не продвигался.
+
+Полный `npm.cmd run check` прошёл: TypeScript, **531 passed / 2 skipped**, Vite. Затем проверка памяти выявила переход фокуса на body при disabled кнопке и попадание disabled выбранной вкладки в selector `[tabindex="0"]`; исправлены перенос фокуса в панель и фильтр `:disabled`. Финальные `ui-memory-rules` и TypeScript/Vite/package прошли. Промежуточный кандидат `8a8f2f86981f` штатно снят через discard после остановки только его Node-помощника и заменён окончательным.
+
+Browser-сценарии `ui-mcp`, `ui-memory-rules`, `ui-providers`, `ui-scenarios` прошли: сохранение MCP текста/preview/replace/pending save, авторизация Claude при переключении, блокировка записи памяти, клавиатура и размеры 940×620/560×700. Готовый окончательный exe прошёл `ui-mcp-host` (`artifacts/mcp-host-jQlgfJ`): настоящий Electron/preload/IPC, отдельный fixture config, точный backup, ошибки/stale/reload/busy. Реальных запросов модели и записи пользовательских настроек — 0.
+
+Манифест 72 файлов проверен; все 49 файлов electron/dist в app.asar совпали с рабочими исходниками. Отчёт `artifacts/settings-tabs-package-verification.json`. SHA-256 app.asar кандидата `6f51191d437977e7b5489d9ef0d34cfefcb204737a89d71c46313af4bafb085d`; Release сохранил `b959e16b0682f462c672955eb04e654e7821547a7cb952abe9412cef441e97a6`. Снимки `artifacts/settings-tabs-agent.png`, `settings-tabs-940.png`, `settings-tabs-560.png`, `settings-tabs-memory-busy.png`.
+
+## Обсуждение и результат — Nightly 0.5.0, 2026-09-21
+
+По выбору пользователя реализованы пункты 1, 3, 5, 6 и 8 нового списка UX: [цитаты, оглавление, результат рядом, карточка итогов и пересечения вкладок](CONVERSATION_UX.md). `npm.cmd run package` собрал Nightly **0.5.0**, build ID `63c8ab790f757ff76ec0ab6fc1455f4f270028c10374e2eee46392bdb8464a1c`, время `2026-09-21T14:13:21.653Z`. Кандидат — `artifacts/nightly-update/app`, штатная очередь ждёт «Закрыть» в чате или ручного выхода. Пользовательский Nightly не закрывался; Release и публикация не выполнялись.
+
+Проверки: TypeScript/Vite и весь `npm.cmd test` — **531 passed / 2 skipped**, 533 теста. Production renderer: `test:quote-results`, `test:conversation-outline`, `test:parallel-activity`, расширенные `test:file-viewer`, `test:diff-review`, `test:git-panel`; регрессии `test:chat-search`, `test:work-collapse`, `test:message-queue`, `test:workspace-tools` прошли. Проверены изоляция вкладок, черновики/вложения, подписи после reload, доступность кнопок и фокус, неизменные снимки diff, размеры 1440/940/700. Отдельный воспроизводящий сценарий сначала подтвердил исчезновение dock при первом thread/start, затем прошёл после исправления; узкий режим после закрытия просмотра возвращает полный чат.
+
+Готовый кандидат прошёл `test:file-viewer-host` через настоящий Electron/preload/IPC в изолированном профиле `artifacts/file-viewer-host-2GozzZ`: чтение текста/Markdown/изображений, границы путей и сессий, неизменность fixture файлов. Все модельные события новых сценариев подставные, реальных запросов модели — 0; успешный живой model turn этим набором не заявляется.
+
+Проверены manifest из 72 файлов и побайтное совпадение 49 файлов electron/dist с рабочими исходниками. Отчёт `artifacts/conversation-ux-package-verification.json`. SHA-256 Nightly app.asar — `34bcca9a337277a20675025cedba980fbddaed2ccfe2c5a9594e4411761f449a`; Release сохранил `b959e16b0682f462c672955eb04e654e7821547a7cb952abe9412cef441e97a6`. Снимки `artifacts/conversation-outline.png`, `quote-results-1440.png`, `quote-results-940.png`, `parallel-activity.png`, `file-viewer-docked-1440.png`, `file-viewer-docked-940.png`, `file-viewer-docked-700.png`, `file-viewer-closed-700.png`, `diff-review-docked-1440.png`, `diff-review-docked-940.png`.
+
 ## Публичный Release 0.4.0 — 2026-09-21
 
 По поручению пользователя «в релиз и заливай» применённая Nightly `336f2badc12c2e8b998d4441d52dc74246e8f8c5dbd434cf756d0b94fc9de9a2` перенесена штатным `release:promote` в `release/stable` без перекомпиляции. Прежний Release `0.3.0`, build ID `379a3a5286b60157245b6511da2ca24bddc01f2e27cb47f1f20cf36d82134281`, сохранён в `release/stable-previous`. Пользовательские окна не закрывались.

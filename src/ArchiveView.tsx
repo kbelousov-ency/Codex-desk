@@ -30,6 +30,8 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
   const triedCursors = useRef(new Set<string>());
   const restoredScroll = useRef(false);
   const sessionId = `archive:${thread.id}`;
+  const provider = thread.provider === 'claude' || thread.id.startsWith('claude:') ? 'claude' : 'codex';
+  const agentName = provider === 'claude' ? 'Claude Code' : 'Codex';
   const searchButtonRef = useRef<HTMLButtonElement>(null);
   const requestRef = useRef(0);
   const load = async (next?: string) => {
@@ -82,7 +84,7 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
     <aside className="sidebar">
       <div className="brand"><div className="brand-mark"><Terminal size={19} strokeWidth={2.4} /></div><span>codex<span className="brand-light"> desk</span></span><BuildBadge /></div>
       <ProjectSidebar controls={workspace} active={active} />
-      <div className="sidebar-bottom"><div className="local-engine"><Archive size={12} /><span>Архив Codex</span></div></div>
+      <div className="sidebar-bottom"><div className="local-engine"><Archive size={12} /><span>Архив {agentName}</span></div></div>
     </aside>
     <main className="main-column">
       <header className="topbar"><Archive size={16} /><div className="breadcrumbs"><span>{folderName(thread.cwd || '') || 'Архив'}</span><strong>{thread.name || thread.preview || 'Диалог'}</strong></div><button ref={searchButtonRef} type="button" className="icon-button" aria-label="Поиск в чате" data-tooltip="Поиск в чате (Ctrl+F)" aria-expanded={showSearch} onClick={openSearch}><Search size={17} /></button><button type="button" className="icon-button" aria-label="Экспорт беседы" data-tooltip="Экспорт беседы" disabled={!items.length || loading} onClick={() => setShowExport(true)}><Download size={17} /></button><span className="archive-readonly-badge">Только чтение</span></header>
@@ -97,13 +99,13 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
         {error && <div className="alert error-alert" role="alert"><span>{error}</span><button className="text-button" onClick={() => void load()}><RefreshCw size={13} />Повторить</button></div>}
         <ChatSearch items={items} turnWork={turnWork} open={showSearch} active={active} onClose={() => { setShowSearch(false); searchButtonRef.current?.focus({ preventScroll: true }); }} hasEarlier={Boolean(cursor)} loading={loading} onLoadEarlier={() => { if (cursor) void load(cursor); }} onBookmark={async item => {
           const excerpt = item.type === 'userMessage' ? (item.content || []).filter((part: any) => part.type === 'text').map((part: any) => part.text).join('\n') : item.text || '';
-          await window.codex.saveBookmark({ provider: 'codex', cwd: thread.cwd || '', threadId: thread.id, itemId: item.id, turnId: item.turnId, threadName: (thread.name || 'Архивный диалог').replace(/\s+/g, ' ').slice(0, 500), excerpt: excerpt.slice(0, 4000), archived: true });
+          await window.codex.saveBookmark({ provider, cwd: thread.cwd || '', threadId: thread.id, itemId: item.id, turnId: item.turnId, threadName: (thread.name || 'Архивный диалог').replace(/\s+/g, ' ').slice(0, 500), excerpt: excerpt.slice(0, 4000), archived: true });
         }} />
         {!loading && !error && !items.length && <p className="muted">В этом диалоге нет сообщений.</p>}
       </div></div>
       <div className="composer-area"><UpdateNotice /></div>
       <div className="archive-readonly-footer"><Archive size={16} /><span>Диалог в архиве. Восстановите его, чтобы продолжить переписку.</span><button className="secondary-button" disabled={workspace.actionBusy} onClick={() => workspace.threadAction?.('restore', thread.cwd || '', thread)}><RotateCcw size={14} />Восстановить</button></div>
     </main>
-    {showExport && active && <ExportConversation key={thread.id} items={items} turnWork={turnWork} title={thread.name || thread.preview || "Диалог"} provider="Codex" cwd={thread.cwd || ""} hasEarlier={Boolean(cursor)} loading={loading} onLoadEarlier={async () => { if (cursor) await load(cursor); }} onClose={() => setShowExport(false)} onSave={file => window.codex.exportConversation(file)} />}
+    {showExport && active && <ExportConversation key={thread.id} items={items} turnWork={turnWork} title={thread.name || thread.preview || "Диалог"} provider={agentName} cwd={thread.cwd || ""} hasEarlier={Boolean(cursor)} loading={loading} onLoadEarlier={async () => { if (cursor) await load(cursor); }} onClose={() => setShowExport(false)} onSave={file => window.codex.exportConversation(file)} />}
   </div></BridgeContext.Provider>;
 }

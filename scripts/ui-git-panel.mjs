@@ -165,6 +165,25 @@ try {
     await closeReview();
   }
 
+  await row('src/shared.ts', 'Подготовлено к коммиту').click();
+  await modal().waitFor();
+  const readsBeforePin = await page.evaluate(() => window.__gitPanel.diffs.length);
+  await modal().getByRole('button', { name: 'Закрепить сравнение рядом с чатом', exact: true }).click();
+  const pinned = () => view().getByRole('region', { name: 'Просмотр изменений', exact: true });
+  await pinned().waitFor();
+  assert.deepEqual(await pinned().locator('.diff-column-headings span').allTextContents(), ['До · HEAD', 'После · индекс']);
+  assert.match(await pinned().locator('.diff-review-footer').innerText(), /Снимок Git/);
+  await view().locator('.composer textarea').fill('Проверяю подготовленные изменения');
+  await activate('b');
+  assert.equal(await pinned().count(), 0, 'Pinned Git comparison is isolated to its tab');
+  await activate('a');
+  await pinned().waitFor();
+  assert.match(await pinned().innerText(), /a staged after/);
+  assert.equal(await page.evaluate(() => window.__gitPanel.diffs.length), readsBeforePin, 'Returning preserves the Git snapshot without rereading a different diff');
+  await pinned().getByRole('button', { name: 'Закрыть просмотр изменений', exact: true }).click();
+  if (await view().locator('.app-shell').evaluate(node => node.classList.contains('panel-hidden'))) await view().getByRole('button', { name: 'Переключить панель действий', exact: true }).click();
+  await row('src/shared.ts', 'Подготовлено к коммиту').waitFor();
+
   await search().fill('SHARED');
   assert.equal(await panel().getByRole('button', { name: /^Сравнить / }).count(), 2, 'Case-insensitive search keeps both areas of the same file');
   await search().fill('старое имя');

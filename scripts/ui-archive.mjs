@@ -35,8 +35,9 @@ try {
       ['archived-c', 'История отдельной папки', orphan, true],
       ['archive-delete', 'Архив для удаления', orphan, true],
       ['archived-pages', 'Длинная история', orphan, true],
+      ['claude:11111111-2222-3333-4444-555555555555', 'Диалог Claude', projects[0], false],
     ]) {
-      threads[id] = { id, name, preview: name, cwd, archived, updatedAt: 1726500000, historyMode: 'legacy', turns: [{ id: `history-${id}`, status: 'completed', items: [
+      threads[id] = { id, name, preview: name, cwd, archived, updatedAt: 1726500000, historyMode: 'legacy', ...(id.startsWith('claude:') ? { provider: 'claude' } : {}), turns: [{ id: `history-${id}`, status: 'completed', items: [
         { id: `user-${id}`, type: 'userMessage', content: [{ type: 'text', text: `Вопрос ${name}` }] },
         { id: `answer-${id}`, type: 'agentMessage', phase: 'final_answer', text: `Ответ ${name}` },
       ] }] };
@@ -141,10 +142,13 @@ try {
   const managed = async action => (await calls()).filter(call => call.method === 'manageThread' && (!action || call.params.action === action));
   const writes = async () => (await calls()).filter(call => ['createSession', 'thread/resume', 'thread/start', 'turn/start', 'openTerminal', 'manageThread'].includes(call.method));
   const action = async (title, name) => {
-    await sidebar().getByRole('button', { name: `Действия диалога ${title}`, exact: true }).click();
+    // Opened from the keyboard: a tooltip bubble left over from the previous row
+    // sits above the trigger and would swallow a pointer click.
+    await sidebar().getByRole('button', { name: `Действия диалога ${title}`, exact: true }).press('ArrowDown');
     await page.getByRole('menuitem', { name, exact: true }).click(); await flush();
   };
   const ready = async () => { await view().getByRole('combobox', { name: 'Модель', exact: true }).waitFor(); await flush(); };
+  const claudeId = 'claude:11111111-2222-3333-4444-555555555555';
   const modal = () => page.getByRole('dialog', { name: 'Переименовать диалог', exact: true });
   const deletion = () => page.getByRole('alertdialog');
   const toggleArchive = async () => { await archive().click(); await flush(); };
@@ -296,9 +300,30 @@ try {
   await page.getByRole('alert').filter({ hasText: 'Fixture close failed' }).waitFor();
   assert.equal(await row('active-b').count(), 0, 'Confirmed archive cannot remain writable after close cleanup failure');
   await page.evaluate(() => { window.__archive.failClose = false; });
+  // Claude Code dialogs have no archived state of their own: the shell keeps its own
+  // list, so the same menu, archive panel and restore must work for them too.
+  const projectA = () => sidebar().getByRole('button', { name: 'Диалоги папки PROJECT_A', exact: true });
+  if (await projectA().getAttribute('aria-expanded') === 'false') { await projectA().click(); await flush(); }
+  await row(claudeId).waitFor();
+  await sidebar().getByRole('button', { name: 'Действия диалога Диалог Claude', exact: true }).press('ArrowDown');
+  assert.deepEqual(await page.getByRole('menuitem').allTextContents(), ['Переименовать', 'Ответвить', 'В архив', 'Удалить']);
+  await page.keyboard.press('Escape');
+  await action('Диалог Claude', 'В архив');
+  assert.deepEqual((await managed('archive')).at(-1).params, { action: 'archive', threadId: claudeId, cwd: 'C:/Fixtures/PROJECT_A' });
+  assert.equal(await row(claudeId).count(), 0, 'An archived Claude dialog leaves the project history');
+  await toggleArchive(); await archivedRow(claudeId).waitFor();
+  await archivedRow(claudeId).click(); await flush();
+  await page.getByText('Ответ Диалог Claude', { exact: true }).waitFor();
+  assert.match(await sidebar().innerText(), /Архив Claude Code/, 'The archive tab names the agent whose history it shows');
+  assert.equal(await page.getByRole('textbox', { name: 'Сообщение Claude', exact: true }).count(), 0, 'Archived Claude history stays read-only');
+  await action('Диалог Claude', 'Восстановить'); await flush();
+  assert.deepEqual((await managed('restore')).at(-1).params, { action: 'restore', threadId: claudeId, cwd: 'C:/Fixtures/PROJECT_A' });
+  assert.equal(await archivedRow(claudeId).count(), 0);
+  await toggleArchive(); await row(claudeId).waitFor();
+
   await toggleArchive(); await archivedRow('active-b').waitFor();
   assert.deepEqual(errors, []);
-  console.log('PASS: production renderer, scoped thread menus, rename validation/title/draft, archive failure/success and tab closure, bottom archive overlay and folder grouping, read-only history without writable resume, exact deletion cancel/confirm/error/pending lock, restore failure/recovery and original thread continuation, busy/terminal guards, archive read error/retry, access before terminal. No real Codex/provider/user history.');
+  console.log('PASS: production renderer, scoped thread menus, Claude archive/restore through the shell-owned list, rename validation/title/draft, archive failure/success and tab closure, bottom archive overlay and folder grouping, read-only history without writable resume, exact deletion cancel/confirm/error/pending lock, restore failure/recovery and original thread continuation, busy/terminal guards, archive read error/retry, access before terminal. No real Codex/provider/user history.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/archive-failure.png' }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '(page unavailable)')); }
   throw error;

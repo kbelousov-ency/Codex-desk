@@ -4,7 +4,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 
-// Production renderer, deterministic native-dialog bridge. No actual model calls.
+// Production renderer, deterministic native-dialog/clipboard bridge. No actual model calls.
 const root = resolve('dist');
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 const server = createServer(async (request, response) => {
@@ -25,12 +25,15 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
     const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+    const jpegCanvas = document.createElement('canvas');
+    jpegCanvas.width = jpegCanvas.height = 1;
+    const jpeg = jpegCanvas.toDataURL('image/jpeg');
     const projects = ['C:/Fixtures/FILES_A', 'C:/Fixtures/FILES_B'];
     const models = ['vision', 'text-only'].map(model => ({ id: model, model, displayName: model, inputModalities: model === 'vision' ? ['text', 'image'] : ['text'], supportedReasoningEfforts: [{ reasoningEffort: 'high' }], defaultReasoningEffort: 'high' }));
     const sessions = {}, calls = [];
-    const fixture = window.__files = { sessions, calls, image };
+    const fixture = window.__files = { sessions, calls, image, jpeg, filePaths: {} };
     for (const [index, id] of ['session-a', 'session-b'].entries()) {
-      const state = sessions[id] = { cwd: projects[index], model: index ? 'text-only' : 'vision', listeners: new Set(), selection: null, mode: 'result', finish: null };
+      const state = sessions[id] = { cwd: projects[index], model: index ? 'text-only' : 'vision', listeners: new Set(), selection: null, mode: 'result', finish: null, clipboard: null, clipboardMode: 'result', finishClipboard: null };
       const thread = number => ({ id: `${id}-thread-${number}`, name: `История ${number}`, cwd: state.cwd, historyMode: 'legacy', turns: [{ id: `old-${number}`, status: 'completed', items: [{ id: `answer-${number}`, type: 'agentMessage', text: `Ответ ${number}` }] }] });
       state.thread = thread(1);
       state.emit = (method, params) => { for (const listener of state.listeners) listener({ type: 'notification', data: { method, params } }); };
@@ -51,6 +54,13 @@ try {
           if (state.mode === 'error') throw new Error('Не удалось открыть выбранные файлы');
           if (state.mode === 'deferred') return await new Promise(resolve => { state.finish = result => { state.finish = null; resolve(result); }; });
           return structuredClone(state.selection);
+        },
+        getPathForFile(file) { return fixture.filePaths[file.name] || ''; },
+        async readClipboardFiles(options) {
+          calls.push({ id, method: 'readClipboardFiles', options: structuredClone(options) });
+          if (state.clipboardMode === 'error') throw new Error('Не удалось прочитать файлы из буфера обмена');
+          if (state.clipboardMode === 'deferred') return await new Promise(resolve => { state.finishClipboard = result => { state.finishClipboard = null; resolve(result); }; });
+          return structuredClone(state.clipboard);
         },
         async saveImages(images) { calls.push({ id, method: 'saveImages', images: structuredClone(images) }); return images.map((item, index) => ({ ...item, path: `${state.cwd}/saved-${index}.png` })); },
         async readAttachment() { return image; },
@@ -85,6 +95,24 @@ try {
   const png = await page.evaluate(() => window.__files.image);
   const image = name => ({ name, dataUrl: png });
   const picked = (paths, images = []) => ({ paths, images });
+  const transfer = (kind, files = [], { target = composer(), text } = {}) => target.evaluate((node, { kind, files, text }) => {
+    const data = new DataTransfer();
+    for (const { name, type, path, bytes, image } of files) {
+      if (path) window.__files.filePaths[name] = path;
+      const content = image
+        ? Uint8Array.from(atob((image === 'jpeg' ? window.__files.jpeg : window.__files.image).split(',')[1]), character => character.charCodeAt(0))
+        : new Uint8Array(bytes || 0);
+      data.items.add(new File([content], name, { type }));
+    }
+    if (text !== undefined) data.setData('text/plain', text);
+    const event = kind === 'paste'
+      ? new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true })
+      : new DragEvent(kind, { dataTransfer: data, bubbles: true, cancelable: true });
+    node.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, { kind, files, text });
+  const clipboard = (result, id = 'session-b', mode = 'result') => page.evaluate(({ result, id, mode }) => { const state = window.__files.sessions[id]; state.clipboard = result; state.clipboardMode = mode; }, { result, id, mode });
+  const clearAttachments = async () => { while (await view().locator('.attachments button').count()) await view().locator('.attachments button').first().click(); };
   await ready();
   await tab('session-a');
   await view().getByText('Ответ 1', { exact: true }).waitFor();
@@ -175,6 +203,140 @@ try {
   await value('Вставка из буфера');
   assert.equal((await calls('turn/start')).length, 1, 'Ctrl+V preserves text and adds an image without sending');
 
+  // Explorer can omit the MIME type or use the nonstandard image/jpg alias.
+  await clearAttachments();
+  await transfer('paste', [{ name: 'uppercase-no-mime.PNG', type: '', image: true }]);
+  await view().getByRole('button', { name: 'Удалить uppercase-no-mime.PNG', exact: true }).waitFor();
+  assert.match(await view().locator('.attachments img[alt="uppercase-no-mime.PNG"]').getAttribute('src'), /^data:image\/png;base64,/, 'A PNG with an empty File.type gets a supported image data URL');
+  await transfer('drop', [{ name: 'alias-mime.jpg', type: 'image/jpg', image: 'jpeg' }], { target: view().locator('.chat-scroll') });
+  await view().getByRole('button', { name: 'Удалить alias-mime.jpg', exact: true }).waitFor();
+  assert.match(await view().locator('.attachments img[alt="alias-mime.jpg"]').getAttribute('src'), /^data:image\/jpeg;base64,/, 'The image/jpg alias is normalized before attaching the image');
+  await value('Вставка из буфера');
+  assert.equal((await calls('turn/start')).length, 1);
+
+  // Drop works throughout the active chat, including the conversation outside the composer.
+  await clearAttachments(); await composer().fill('Перетащенные файлы');
+  const dropPaths = ['C:\\Материалы\\отчёт [2].pdf', 'C:\\Материалы\\исходник `$().ts', 'C:\\Материалы\\диаграмма.svg'];
+  const droppedFiles = [
+    { name: 'отчёт [2].pdf', type: 'application/pdf', path: dropPaths[0] },
+    { name: 'исходник `$().ts', type: 'text/plain', path: dropPaths[1] },
+    { name: 'диаграмма.svg', type: 'image/svg+xml', path: dropPaths[2] },
+    { name: 'dropped.png', type: 'image/png', image: true, path: 'C:\\Материалы\\dropped.png' },
+  ];
+  await page.evaluate(() => {
+    const container = document.createElement('div');
+    container.id = 'file-transfer-modal-fixture'; container.hidden = true;
+    const modal = document.createElement('div');
+    modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true'); modal.textContent = 'Fixture modal';
+    container.append(modal); document.body.append(container);
+  });
+  assert.equal(await transfer('dragover', droppedFiles, { target: view().locator('.chat-scroll') }), true, 'File dragover is accepted outside the composer');
+  assert.equal(await transfer('drop', droppedFiles, { target: view().locator('.chat-scroll') }), true, 'File drop prevents browser navigation');
+  let transferredDraft = `Перетащенные файлы\n${dropPaths.join('\n')}\n`;
+  await value(transferredDraft);
+  await view().getByRole('button', { name: 'Удалить dropped.png', exact: true }).waitFor();
+  assert.equal(await view().locator('.attachments img').count(), 1, 'Only supported images are attached; unsupported image formats become paths');
+  assert.equal(await composer().evaluate(node => node === document.activeElement), true, 'Dropping into the conversation focuses the editable draft');
+  await page.evaluate(() => { document.getElementById('file-transfer-modal-fixture').hidden = false; });
+  assert.equal(await transfer('drop', [{ name: 'blocked-by-modal.pdf', type: 'application/pdf', path: 'C:\\must-not-drop-through-modal.pdf' }], { target: view().locator('.chat-scroll') }), true, 'Visible modal still prevents browser file navigation');
+  await settle(); await value(transferredDraft);
+  assert.equal(await view().locator('.attachments img').count(), 1, 'Visible modal blocks composer changes; hidden modal did not block the preceding mixed drop');
+  await page.evaluate(() => document.getElementById('file-transfer-modal-fixture').remove());
+  const nativeCallsBefore = (await calls('readClipboardFiles')).length;
+
+  // Explorer-style FileList paste preserves multiple paths and existing image previews.
+  const pastedPaths = ['C:\\Материалы\\договор.docx', 'C:\\Материалы\\архив.zip'];
+  assert.equal(await transfer('paste', pastedPaths.map((path, index) => ({ name: `document-${index}`, type: 'application/octet-stream', path }))), true);
+  transferredDraft += `${pastedPaths.join('\n')}\n`;
+  await value(transferredDraft);
+  assert.equal(await view().locator('.attachments img').count(), 1);
+  const mixedPastePath = 'C:\\Материалы\\описание.md';
+  await transfer('paste', [
+    { name: 'описание.md', type: 'text/markdown', path: mixedPastePath },
+    { name: 'mixed-paste.png', type: 'image/png', image: true },
+  ]);
+  transferredDraft += `${mixedPastePath}\n`;
+  await value(transferredDraft);
+  await view().getByRole('button', { name: 'Удалить mixed-paste.png', exact: true }).waitFor();
+  assert.equal(await view().locator('.attachments img').count(), 2);
+  assert.equal((await calls('readClipboardFiles')).length, nativeCallsBefore, 'FileList paste needs no second native clipboard read');
+
+  // Ordinary text remains browser-owned even if native clipboard files are present.
+  await clipboard(picked(['C:\\should-not-paste.pdf']));
+  assert.equal(await transfer('paste', [], { text: 'Обычный текст' }), false, 'Text paste is not intercepted');
+  assert.equal(await transfer('drop', [], { text: 'Переносимый текст', target: view().locator('.chat-scroll') }), false, 'Text drop is not intercepted');
+  await settle(); await value(transferredDraft);
+  assert.equal((await calls('readClipboardFiles')).length, nativeCallsBefore, 'Text paste does not read native clipboard files');
+  assert.equal((await calls('turn/start')).length, 1, 'File drops and document/mixed pastes never send automatically');
+
+  // An empty renderer FileList can still represent Windows clipboard file paths.
+  await clipboard(null, 'session-b', 'deferred');
+  assert.equal(await transfer('paste'), true);
+  await page.waitForFunction(() => Boolean(window.__files.sessions['session-b'].finishClipboard));
+  assert.deepEqual((await calls('readClipboardFiles')).at(-1).options, { imageSlots: 8, imagesSupported: true });
+  await composer().fill('Набрано во время чтения буфера');
+  assert.equal(await send().isDisabled(), true, 'Native clipboard reading blocks sending the incomplete batch');
+  const nativePath = 'C:\\Материалы\\из буфера.xlsx';
+  await page.evaluate(result => window.__files.sessions['session-b'].finishClipboard(result), picked([nativePath], [image('native-clipboard.png')]));
+  transferredDraft = `Набрано во время чтения буфера\n${nativePath}\n`;
+  await value(transferredDraft);
+  await view().getByRole('button', { name: 'Удалить native-clipboard.png', exact: true }).waitFor();
+  assert.equal(await view().locator('.attachments img').count(), 3);
+  await clipboard(null);
+  await transfer('paste'); await settle(); await value(transferredDraft);
+  assert.equal(await send().isDisabled(), false, 'Empty native clipboard leaves the composer unlocked');
+
+  // Validation rejects the entire mixed batch, including otherwise valid path additions.
+  const rejectBatch = async files => {
+    const previousImages = await view().locator('.attachments img').count();
+    await transfer('paste', files);
+    await view().getByRole('alert').waitFor();
+    await value(transferredDraft);
+    assert.equal(await view().locator('.attachments img').count(), previousImages, 'Rejected batch preserves all existing image previews');
+    await view().getByRole('button', { name: 'Скрыть ошибку', exact: true }).click();
+  };
+  await rejectBatch(Array.from({ length: 21 }, (_, index) => ({ name: `too-many-${index}.txt`, type: 'text/plain', path: `C:\\Материалы\\too-many-${index}.txt` })));
+  await rejectBatch([
+    { name: 'partial-path.txt', type: 'text/plain', path: 'C:\\must-not-be-added.txt' },
+    { name: 'oversized.png', type: 'image/png', bytes: 20 * 1024 * 1024 + 1 },
+  ]);
+  await rejectBatch([
+    { name: 'valid-before-missing.pdf', type: 'application/pdf', path: 'C:\\must-not-be-partially-added.pdf' },
+    { name: 'image-before-missing.png', type: 'image/png', image: true },
+    { name: 'missing-native-path.bin', type: 'application/octet-stream' },
+  ]);
+  await selection(picked([], Array.from({ length: 7 }, (_, index) => image(`slot-${index}.png`))), 'session-b'); await picker().click();
+  await page.waitForFunction(() => document.querySelectorAll('.session-view:not([hidden]) .attachments img').length === 10);
+  await rejectBatch([
+    { name: 'partial-slot-path.txt', type: 'text/plain', path: 'C:\\must-not-be-added-either.txt' },
+    { name: 'eleventh.png', type: 'image/png', image: true },
+  ]);
+  await clearAttachments();
+
+  // A text-only model receives even a supported dropped image as a visible path.
+  await view().getByRole('combobox', { name: 'Модель', exact: true }).click();
+  await page.getByRole('listbox', { name: 'Модель', exact: true }).locator('[data-value="text-only"]').click();
+  await composer().fill('Картинка как путь');
+  const textOnlyDropPath = 'C:\\Материалы\\text-model.png';
+  await transfer('drop', [{ name: 'text-model.png', type: 'image/png', image: true, path: textOnlyDropPath }], { target: view().locator('.chat-scroll') });
+  await value(`Картинка как путь\n${textOnlyDropPath}\n`);
+  assert.equal(await view().locator('.attachments img').count(), 0);
+  const modelNotice = view().getByRole('button', { name: 'Скрыть ошибку', exact: true });
+  if (await modelNotice.count()) await modelNotice.click();
+
+  // A late native clipboard result belongs to neither the hidden tab nor the newly active one.
+  await composer().fill('Буфер остаётся в B');
+  await clipboard(null, 'session-b', 'deferred'); await transfer('paste');
+  await page.waitForFunction(() => Boolean(window.__files.sessions['session-b'].finishClipboard));
+  await tab('session-a'); await value('Оставить в A'); await composer().fill('Активный черновик A');
+  await page.evaluate(result => window.__files.sessions['session-b'].finishClipboard(result), picked(['C:\\wrong-clipboard-tab.pdf']));
+  await settle(); await value('Активный черновик A');
+  assert.equal(await composer().evaluate(node => node === document.activeElement), true, 'Stale clipboard delivery does not move focus');
+  await tab('session-b'); await value('Буфер остаётся в B');
+  assert.equal(await picker().isDisabled(), false, 'Stale clipboard delivery releases its pending operation');
+  assert.equal((await calls('turn/start')).length, 1);
+  await page.screenshot({ path: 'artifacts/composer-files-transfer.png' });
+
   // Single-session fixture can switch the thread/cwd while a native answer is pending.
   await page.goto(`${url}?single`);
   const singleComposer = () => page.getByRole('textbox', { name: 'Сообщение Codex', exact: true });
@@ -199,7 +361,7 @@ try {
   assert.equal(await singlePicker().isDisabled(), false);
   assert.equal((await calls('turn/start')).length, 0, 'Changing thread or cwd never sends or installs a late selection');
   assert.deepEqual(errors, []);
-  console.log('PASS: native file picker cancel/error/mixed files, literal visible PDF/ZIP/text paths, image previews, exact explicit send, current draft preserved across async selection, duplicate-dialog guard, busy queue, stale tab/thread/cwd isolation, no-image models, and Ctrl+V. Production renderer with fixture bridge only.');
+  console.log('PASS: native file picker cancel/error/mixed files, literal visible PDF/ZIP/text paths, image previews, exact explicit send, current draft preserved across async selection, duplicate-dialog guard, busy queue, stale tab/thread/cwd isolation, no-image models, whole-chat file drop, document/mixed/image paste, normalized image MIME, visible/hidden modal isolation, untouched text transfer, native clipboard fallback, atomic batch limits, and stale clipboard tab isolation. Production renderer with fixture bridge only.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/composer-files-failure.png' }); console.error(await page.locator('body').innerText()); }
   throw error;

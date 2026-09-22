@@ -20,6 +20,7 @@ import { NotificationSettings } from './NotificationSettings';
 import './notifications.css';
 import HistoryLibrary from './HistoryLibrary';
 import SetupGate from './SetupGate';
+import ParallelActivity from './ParallelActivity';
 
 type Tab = SessionInfo & { bridge?: CodexBridge; initialThread?: Thread; archivedThread?: Thread; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; restoreSettings?: Settings; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; jump?: { itemId: string; turnId?: string; key: number; excerpt?: string }; pinned?: boolean; pendingMessage?: PendingMessage; fork?: { lastTurnId?: string } };
 /** What a closed tab needs to come back: the folder, agent and (if any) the dialog it showed. Processes are not kept. */
@@ -693,6 +694,17 @@ function TabbedWorkspace() {
     forkThread, openPalette: () => setShowPalette(true),
   };
   const attentionTabs = tabs.filter(tab => !tab.archivedThread && (summaries[tab.id]?.pending || attention[tab.id]));
+  const parallelSessions = tabs.map(tab => {
+    const state = summaries[tab.id];
+    const threadId = state?.threadId || (!state?.initialized ? tab.initialThread?.id : undefined);
+    return {
+      id: tab.id, cwd: state?.cwd || tab.cwd, threadId,
+      provider: state?.settings.provider || tab.provider || 'codex',
+      title: threadNames[threadId || ''] || state?.title || tab.initialThread?.name || tab.initialThread?.preview || 'Новый диалог',
+      busy: state?.busy, loading: state?.loading, pending: state?.pending, terminalOpen: state?.terminalOpen,
+      archived: Boolean(tab.archivedThread), changedFiles: state?.changedFiles,
+    };
+  });
   /** Ctrl+K palette: switch/reopen dialogs and run workspace actions. Built on open so it reflects the current tabs. */
   const paletteCommands = (): PaletteCommand[] => {
     const active = tabs.find(tab => tab.id === activeId);
@@ -767,6 +779,7 @@ function TabbedWorkspace() {
       </div>
       <button className="icon-button tab-add" data-tooltip="Новый диалог в текущей папке" aria-label="Открыть новый диалог" disabled={opening || starting} onClick={() => void open(tabs.find(tab => tab.id === activeId)?.cwd || projects[0])}><Plus size={17} /></button>
       <div className="workspace-alert-tools">
+        <ParallelActivity sessions={parallelSessions} activeId={activeId} onActivate={activate} />
         <button type="button" className={`icon-button small app-update-trigger ${appUpdates.bannerVisible ? 'has-update' : ''}`} aria-label="Обновления приложения" data-tooltip="Обновления приложения" onClick={() => { setTabMenu(null); setShowAttention(false); setShowAppUpdates(true); }}><RefreshCw size={14} /></button>
         <button type="button" className="icon-button small" aria-label="Палитра команд" data-tooltip="Палитра команд (Ctrl+K)" onClick={() => { setTabMenu(null); setShowPalette(true); }}><Command size={15} /></button>
         <div className="workspace-attention">

@@ -133,7 +133,7 @@ try {
   await row(paginatedId).click(); await view().getByText('Сообщение страницы 4', { exact: true }).waitFor();
   await view().getByRole('button', { name: 'Загрузить предыдущие сообщения', exact: true }).click();
   await view().getByText('Сообщение страницы 1', { exact: true }).waitFor();
-  assert.deepEqual((await view().locator('.assistant-message').allTextContents()).map(text => text.replace(/^Codex/, '').trim()), [1, 2, 3, 4].map(number => `Сообщение страницы ${number}`), 'Paginated App Server history stays chronological through host and renderer');
+  assert.deepEqual((await view().locator('.assistant-message').allTextContents()).map(text => text.replace(/^Codex/, '').replace(/В закладки$/, '').trim()), [1, 2, 3, 4].map(number => `Сообщение страницы ${number}`), 'Paginated App Server history stays chronological through host and renderer');
   assert.deepEqual((await requests('thread/items/list')).map(entry => entry.params), [
     { threadId: paginatedId, limit: 100, sortDirection: 'desc' },
     { threadId: paginatedId, limit: 100, sortDirection: 'desc', cursor: 'older-page' },

@@ -32,7 +32,7 @@ const CHANNELS = new Set([
   'host:readArchivedThread', 'host:manageThread', 'host:openArchivedPath',
   'host:listProjectThreads', 'host:createSession', 'host:closeSession', 'host:closeProject',
   'host:chooseDirectory', 'host:chooseExecutable', 'host:saveImages',
-  'host:chooseComposerFiles',
+  'host:chooseComposerFiles', 'host:readClipboardFiles',
   'host:readAttachment', 'host:openPath', 'host:listFiles', 'host:showPathMenu',
   'host:getGitStatus', 'host:getGitDiff',
   'host:searchProjectFiles', 'host:readProjectFile', 'host:searchHistory', 'host:resolveHistoryTarget', 'host:listBookmarks', 'host:saveBookmark', 'host:removeBookmark',

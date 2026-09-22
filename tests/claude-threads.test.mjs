@@ -7,7 +7,18 @@ const id = 'claude:aaaaaaaa-1111-2222-3333-444444444444';
 const raw = id.slice(7);
 const cwd = process.platform === 'win32' ? 'C:\\Projects\\demo' : '/projects/demo';
 
-function fixture({ sessions = [], readError } = {}) {
+/** Stand-in for ClaudeArchiveStore; the durable file behaviour is covered by claude-archive.test.mjs. */
+function archiveStore(initial = []) {
+  const entries = new Map(initial.map(entry => [entry.id, entry]));
+  return { entries,
+    async list() { return [...entries.values()]; },
+    async has(threadId) { return entries.has(threadId); },
+    async find(threadId) { return entries.get(threadId) || null; },
+    async add(entry) { entries.set(entry.id, { ...entry, archivedAt: 100 }); return entries.get(entry.id); },
+    async remove(threadId) { return entries.delete(threadId); } };
+}
+
+function fixture({ sessions = [], readError, archive = archiveStore(), restored = [] } = {}) {
   const calls = [];
   const sdk = {
     async renameSession(sessionId, title, options) { calls.push(['rename', sessionId, title, options]); },
@@ -23,8 +34,8 @@ function fixture({ sessions = [], readError } = {}) {
     async sdk() { return sdk; },
   };
   const coordinator = new ThreadActionCoordinator();
-  const management = new ClaudeThreadManagement({ coordinator, history, getSessions: () => sessions });
-  return { calls, coordinator, management, sessions };
+  const management = new ClaudeThreadManagement({ coordinator, history, archive, getSessions: () => sessions, onRestore: async folder => { restored.push(folder); } });
+  return { calls, coordinator, management, sessions, archive, restored };
 }
 function session(overrides = {}) {
   const calls = [];
@@ -33,11 +44,10 @@ function session(overrides = {}) {
     client: { async request(method, params) { calls.push([method, params]); return { thread: { id: params.threadId, name: params.name } }; }, stop() { calls.push(['stop']); } }, ...overrides };
 }
 
-test('validation rejects archive, foreign ids, bad folders and names before touching history', async () => {
+test('validation rejects unknown actions, foreign ids, bad folders and names before touching history', async () => {
   const f = fixture();
-  await assert.rejects(f.management.manageThread({ action: 'archive', threadId: id, cwd }), /Архив недоступен/);
-  await assert.rejects(f.management.manageThread({ action: 'restore', threadId: id, cwd }), /Архив недоступен/);
   await assert.rejects(f.management.manageThread({ action: 'purge', threadId: id, cwd }), /Неизвестное действие/);
+  await assert.rejects(f.management.manageThread({ action: 'archive', threadId: raw, cwd }), /идентификатор/);
   await assert.rejects(f.management.manageThread({ action: 'delete', threadId: raw, cwd }), /идентификатор/);
   await assert.rejects(f.management.manageThread({ action: 'delete', threadId: id, cwd: 'relative' }), /папка/);
   await assert.rejects(f.management.manageThread({ action: 'rename', threadId: id, cwd, name: 'a\nb' }), /Название/);
@@ -100,4 +110,50 @@ test('concurrent operations on one session are serialized by the coordinator res
   await assert.rejects(f.management.manageThread({ action: 'delete', threadId: id, cwd }), /уже выполняется/);
   release();
   await first;
+});
+
+test('archive stops idle CLI holders, records the local entry and blocks later writers', async () => {
+  const open = session({ currentThreadId: id });
+  const f = fixture({ sessions: [open] });
+  const result = await f.management.manageThread({ action: 'archive', threadId: id, cwd });
+  assert.deepEqual(open.calls, [['stop']], 'the tab process is stopped, like on delete');
+  assert.deepEqual(f.calls, [['read', id, cwd]], 'the native transcript is only read, never rewritten');
+  assert.equal(result.thread.archived, true);
+  assert.deepEqual(result.affectedThreadIds, [id]);
+  assert.deepEqual(f.archive.entries.get(id), { id, cwd, name: '', preview: 'Первый вопрос', updatedAt: undefined, createdAt: undefined, archivedAt: 100 });
+  assert.throws(() => f.coordinator.assertAllowed(id), /архиве/);
+  await assert.rejects(f.management.manageThread({ action: 'archive', threadId: id, cwd }), /уже находится в архиве/);
+  assert.equal(f.coordinator.locks.size, 0, 'reservation released');
+});
+
+test('archive refuses busy tabs and is rejected outright without an archive store', async () => {
+  const busy = session({ currentThreadId: id, activeThreadTurns: new Map([[id, 'turn']]) });
+  let f = fixture({ sessions: [busy] });
+  await assert.rejects(f.management.manageThread({ action: 'archive', threadId: id, cwd }), /Дождитесь/);
+  assert.deepEqual(f.calls, []);
+  f = fixture({ archive: null });
+  await assert.rejects(f.management.manageThread({ action: 'archive', threadId: id, cwd }), /Архив диалогов Claude недоступен/);
+  await assert.rejects(f.management.manageThread({ action: 'restore', threadId: id, cwd }), /Архив диалогов Claude недоступен/);
+  assert.deepEqual(f.calls, []);
+});
+
+test('restore removes the local entry and re-registers the folder without reading the transcript', async () => {
+  const f = fixture({ archive: archiveStore([{ id, cwd, name: 'Старый диалог', archivedAt: 5 }]) });
+  f.coordinator.blocked.set(id, 'archive');
+  const result = await f.management.manageThread({ action: 'restore', threadId: id, cwd });
+  assert.deepEqual(f.calls, [], 'a restore must work even when the transcript is unreadable');
+  assert.equal(result.thread.name, 'Старый диалог');
+  assert.equal(result.thread.provider, 'claude');
+  assert.deepEqual(result.affectedThreadIds, [id]);
+  assert.deepEqual(f.restored, [cwd]);
+  assert.equal(f.archive.entries.size, 0);
+  f.coordinator.assertAllowed(id);
+  await assert.rejects(f.management.manageThread({ action: 'restore', threadId: id, cwd }), /уже не находится в архиве/);
+});
+
+test('deleting an archived dialog also drops its archive entry', async () => {
+  const f = fixture({ archive: archiveStore([{ id, cwd, name: '', archivedAt: 5 }]) });
+  await f.management.manageThread({ action: 'delete', threadId: id, cwd });
+  assert.equal(f.archive.entries.size, 0);
+  assert.throws(() => f.coordinator.assertAllowed(id), /удалён/);
 });

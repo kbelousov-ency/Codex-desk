@@ -60,7 +60,7 @@ test('Claude boot is shared, uses local streaming CLI, preserves native prompt/s
   const h = harness(); t.after(() => h.client.stop());
   const p = h.client.start(); assert.equal(h.client.start(), p);
   const boot = await p;
-  assert.equal(boot.provider, 'claude'); assert.equal(boot.capabilities.steer, true); assert.equal(boot.capabilities.compact, true); assert.equal(boot.capabilities.archive, false);
+  assert.equal(boot.provider, 'claude'); assert.equal(boot.capabilities.steer, true); assert.equal(boot.capabilities.compact, true); assert.equal(boot.capabilities.archive, true); assert.equal(boot.capabilities.mcp, false);
   assert.deepEqual(h.frames.map(f => f.request?.subtype), ['initialize', 'get_settings', 'get_binary_version']);
   assert.equal(boot.version, '2.1.278');
   assert.deepEqual(h.frames[0].request, { subtype: 'initialize' });

@@ -43,7 +43,7 @@ try {
       const emit = state.emit = (method, params) => { for (const listener of state.listeners) listener({ type: 'notification', data: { method, params } }); };
       state.complete = () => { const turnId = state.activeTurn; emit('item/completed', { threadId: thread().id, turnId, item: { id: `answer-${turnId}`, type: 'agentMessage', text: 'Ответ Claude' } }); emit('turn/completed', { threadId: thread().id, turn: { id: turnId, status: 'completed', items: [], error: null } }); state.activeTurn = null; };
       state.bridge = {
-        async start() { calls.push({ id, provider, method: 'start', authBusy: claude && fixture.auth.loginInProgress }); if (claude && fixture.auth.loginInProgress) { for (const listener of state.listeners) listener({ type: 'auth', data: { state: 'opened' } }); throw new Error('Дождитесь завершения входа в Claude'); } if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: true, steer: true, terminal: true, mcp: !claude, archive: !claude, usage: claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
+        async start() { calls.push({ id, provider, method: 'start', authBusy: claude && fixture.auth.loginInProgress }); if (claude && fixture.auth.loginInProgress) { for (const listener of state.listeners) listener({ type: 'auth', data: { state: 'opened' } }); throw new Error('Дождитесь завершения входа в Claude'); } if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: true, steer: true, terminal: true, mcp: !claude, archive: true, usage: claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
         async getSettings() { return { ...settings }; },
         async setSettings(patch) { calls.push({ id, method: 'setSettings', patch: { ...patch } }); Object.assign(settings, patch); },
         async getClaudeAuthStatus() {
@@ -163,14 +163,17 @@ try {
   await view().getByRole('button', { name: 'Отмена', exact: true }).click();
   assert.equal(await page.evaluate(() => window.__providers.sessions['session-1'].settings.access), 'auto', 'Declining full access preserves prior permissions');
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await view().getByRole('tab', { name: 'MCP', exact: true }).click();
   await view().getByRole('dialog').getByText(/Подключения Claude Code настраиваются/).waitFor();
+  await view().getByRole('tab', { name: 'Агент', exact: true }).click();
   const effective = view().getByRole('dialog').getByRole('region', { name: 'Действующие настройки', exact: true });
   const effectiveText = await effective.innerText();
   assert.match(effectiveText, /Claude Code/);
   assert.match(effectiveText, /fixture-sonnet\s*\n?\s*сохранённые настройки агента/, 'model and its source are listed');
   assert.match(effectiveText, /Разрешать правки\s*\n?\s*выбрано в этой вкладке/, 'access changed in this tab is attributed to the tab');
   assert.equal(await effective.locator('[data-capability="steer"]').getAttribute('data-available'), 'true');
-  assert.equal(await effective.locator('[data-capability="archive"]').getAttribute('data-available'), 'false');
+  assert.equal(await effective.locator('[data-capability="archive"]').getAttribute('data-available'), 'true', 'the shell-owned archive is available for Claude too');
+  assert.equal(await effective.locator('[data-capability="mcp"]').getAttribute('data-available'), 'false');
   await effective.locator('[data-effective="skills"] summary').waitFor();
   assert.match(await effective.locator('[data-effective="skills"]').innerText(), /1 пользовательских, 1 встроенных, субагентов: 1/);
   await effective.locator('[data-effective="skills"] summary').click();
@@ -199,6 +202,12 @@ try {
   await authPanel().getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
   assert.equal(await authLogin().isDisabled(), true, 'Authentication cannot be launched twice');
   assert.equal(await authCheck().isEnabled(), true, 'The native status remains available while the login window is open');
+  const authReadsBeforeSwitch = (await calls('getClaudeAuthStatus')).length;
+  await view().getByRole('tab', { name: 'Память', exact: true }).click();
+  await view().getByRole('tab', { name: 'Агент', exact: true }).click();
+  await authPanel().getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
+  assert.equal(await authLogin().isDisabled(), true, 'Changing settings topics preserves the running login guard');
+  assert.equal((await calls('getClaudeAuthStatus')).length, authReadsBeforeSwitch, 'Changing topics does not remount authentication or launch another status read');
   assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).isDisabled(), true, 'Login locks operations in the Claude tab');
   await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
@@ -296,7 +305,7 @@ try {
   // Opening a stored Claude dialog shows its token counters and the cache estimate from the last answer time.
   const turnsBeforeResume = (await calls('turn/start')).length;
   await page.getByRole('button', { name: 'История Claude', exact: true }).click();
-  await view().getByText('Сохранённый вопрос Claude', { exact: true }).waitFor();
+  await view().locator('.user-message').getByText('Сохранённый вопрос Claude', { exact: true }).waitFor();
   await ready();
   const resumed = await calls('thread/resume');
   assert.equal(resumed.length, 1); assert.equal(resumed[0].provider, 'claude'); assert.equal(resumed[0].params.threadId, 'claude:history-1');
@@ -319,7 +328,7 @@ try {
   assert.equal(await draft().inputValue(), 'Черновик до повторного входа');
   assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).getAttribute('data-value'), 'fixture-sonnet');
   assert.equal(await view().getByRole('combobox', { name: 'Глубина размышлений', exact: true }).getAttribute('data-value'), 'high');
-  await view().getByText('Сохранённый вопрос Claude', { exact: true }).waitFor();
+  await view().locator('.user-message').getByText('Сохранённый вопрос Claude', { exact: true }).waitFor();
   assert.equal((await calls('turn/start')).length, turnsBeforeResume);
   await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await activate('session-2');
@@ -332,7 +341,9 @@ try {
   await view().getByRole('alert').filter({ hasText: 'Claude CLI не найден' }).waitFor();
   assert.equal(await view().getByRole('combobox', { name: 'Агент', exact: true }).getAttribute('data-value'), 'claude', 'A missing Claude CLI never falls back to Codex');
   await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await view().getByRole('tab', { name: 'MCP', exact: true }).click();
   await view().getByRole('dialog').getByText(/Подключения Claude Code настраиваются/).waitFor();
+  await view().getByRole('tab', { name: 'Агент', exact: true }).click();
   assert.equal((await calls('getMcpConfig')).length, codexMcpReads, 'Failed Claude startup also cannot expose the Codex MCP editor');
   await authPanel().getByText('Вход выполнен', { exact: true }).waitFor();
   assert.equal(await authLogin().isEnabled(), true, 'Login can be launched after failed bootstrap, without a thread');

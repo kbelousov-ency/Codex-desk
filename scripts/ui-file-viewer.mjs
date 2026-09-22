@@ -59,6 +59,7 @@ try {
           if (path.endsWith('.png')) Object.assign(data, { kind: 'image', dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6CfkAAAAASUVORK5CYII=' });
           if (path.endsWith('.pdf')) Object.assign(data, { kind: 'unsupported', message: 'Предпросмотр двоичного файла недоступен.' });
           if (path === 'large.txt') Object.assign(data, { text: Array.from({ length: 800 }, (_, index) => `Строка ${index + 1}: ${'длинный текст '.repeat(30)}`).join('\r\n'), truncated: true, message: 'Показан первый 1 МБ файла.' });
+          if (state.nextText && path === 'src/app.ts') data.text = state.nextText;
           if (state.deferRead) { state.deferRead = false; return new Promise(resolve => state.pendingReads.push(() => resolve(data))); }
           return data;
         },
@@ -194,9 +195,107 @@ try {
   await modal().getByRole('button', { name: 'Добавить путь', exact: true }).click();
   assert.match(await composer().inputValue(), /FILES_B\/src\/app.ts/);
   assert.ok(!(await composer().inputValue()).includes('Существующий черновик'));
+  // A pinned result leaves the composer usable, and belongs to its own tab.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openViewer();
+  await result('src/app.ts').click();
+  await source().waitFor();
+  await modal().getByRole('button', { name: 'Закрепить файл рядом с чатом', exact: true }).click();
+  const dock = () => view().getByRole('region', { name: 'Файл рядом с чатом', exact: true });
+  const dockSource = () => dock().getByRole('textbox', { name: 'Содержимое файла', exact: true });
+  await dock().waitFor();
+  assert.equal(await modal().count(), 0, 'Pinning removes the file dialog and backdrop');
+  assert.equal(await dock().getAttribute('aria-modal'), null);
+  await composer().fill('Обсуждаю результат рядом');
+  await composer().press('Tab');
+  assert.equal(await dock().evaluate(node => node.contains(document.activeElement)), false, 'Pinned viewer does not trap composer tab navigation');
+  await composer().focus();
+  await composer().press('Escape');
+  assert.equal(await dock().isVisible(), true, 'Escape in the composer does not close the pinned file');
+  await dockSource().evaluate(element => {
+    element.focus(); element.setSelectionRange(element.value.indexOf('const greeting'), element.value.indexOf('console.log'));
+    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  });
+  await dock().getByRole('button', { name: 'Спросить о выделении', exact: true }).click();
+  assert.equal(await dock().isVisible(), true, 'Quoting a pinned file keeps it open beside the chat');
+  assert.match(await composer().inputValue(), /^Обсуждаю результат рядом/);
+  assert.match(await composer().inputValue(), /FILES_B\/src\/app.ts — строки 2/);
+  await page.evaluate(() => { window.__files.sessions.b.nextText = 'const refreshed = true;'; });
+  await dock().getByRole('button', { name: 'Обновить файл', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('.file-viewer-docked textarea[readonly]')?.value === 'const refreshed = true;');
+
+  const dockOpen = async path => {
+    await dock().getByRole('button', { name: 'Найти другой файл', exact: true }).click();
+    await dock().getByRole('option').filter({ has: page.locator('small', { hasText: path }) }).click();
+  };
+  await dockOpen('docs/readme.md');
+  await dock().getByRole('heading', { name: 'Документация', exact: true }).waitFor();
+  await dockOpen('assets/image.png');
+  await dock().getByRole('img', { name: 'assets/image.png', exact: true }).waitFor();
+  await dockOpen('large.txt');
+  await dockSource().waitFor();
+  await dock().getByRole('textbox', { name: 'Номер строки', exact: true }).fill('700');
+  await dock().getByRole('textbox', { name: 'Номер строки', exact: true }).press('Enter');
+  const scrollBeforeSwitch = await dockSource().evaluate(element => element.scrollTop);
+  await page.evaluate(() => { for (const listener of window.__files.activationListeners) listener({ sessionId: 'a' }); });
+  await page.locator('.session-view[data-session-id="a"]:visible').waitFor();
+  assert.equal(await dock().count(), 0, 'A pinned file is absent from a different tab');
+  await page.evaluate(() => { for (const listener of window.__files.activationListeners) listener({ sessionId: 'b' }); });
+  await page.locator('.session-view[data-session-id="b"]:visible').waitFor();
+  await dockSource().waitFor();
+  assert.ok(Math.abs(await dockSource().evaluate(element => element.scrollTop) - scrollBeforeSwitch) < 2, 'Returning to the tab restores the reading position');
+  for (const width of [1440, 940]) {
+    await page.setViewportSize({ width, height: width === 1440 ? 900 : 640 });
+    const bounds = await view().evaluate(node => {
+      const result = node.querySelector('.result-dock').getBoundingClientRect();
+      const input = node.querySelector('.composer textarea').getBoundingClientRect();
+      return { result: { x: result.x, y: result.y, right: result.right, bottom: result.bottom },
+        input: { x: input.x, y: input.y, right: input.right, bottom: input.bottom }, width: innerWidth, height: innerHeight };
+    });
+    const overlapX = Math.min(bounds.result.right, bounds.input.right) - Math.max(bounds.result.x, bounds.input.x);
+    const overlapY = Math.min(bounds.result.bottom, bounds.input.bottom) - Math.max(bounds.result.y, bounds.input.y);
+    assert.ok(overlapX <= 1 || overlapY <= 1, `Pinned file does not cover the composer at ${width}px`);
+    assert.ok(bounds.result.x >= 0 && bounds.result.y >= 0 && bounds.result.right <= bounds.width + 1 && bounds.result.bottom <= bounds.height + 1, 'Pinned file fits the window');
+    await page.screenshot({ path: `artifacts/file-viewer-docked-${width}.png` });
+  }
+  await dock().getByRole('button', { name: 'Развернуть просмотр файлов', exact: true }).click();
+  await modal().waitFor();
+  assert.match(await source().inputValue(), /Строка 700:/, 'Expanding the result preserves the selected file');
+  await modal().getByRole('button', { name: 'Закрепить файл рядом с чатом', exact: true }).click();
+  await dock().waitFor();
+  await composer().fill('Обсуждаю файл в узком окне');
+  await page.setViewportSize({ width: 700, height: 640 });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  const stacked = await view().evaluate(node => {
+    const main = node.querySelector('.main-column').getBoundingClientRect();
+    const result = node.querySelector('.result-dock').getBoundingClientRect();
+    const input = node.querySelector('.composer textarea').getBoundingClientRect();
+    return { main: { x: main.x, y: main.y, width: main.width, height: main.height, bottom: main.bottom },
+      result: { x: result.x, y: result.y, right: result.right, bottom: result.bottom, width: result.width },
+      input: { x: input.x, y: input.y, right: input.right, bottom: input.bottom, height: input.height }, width: innerWidth, height: innerHeight };
+  });
+  assert.ok(stacked.result.y >= stacked.main.bottom - 1, 'At 700px the pinned file appears below the chat');
+  assert.ok(Math.abs(stacked.result.x - stacked.main.x) <= 1 && Math.abs(stacked.result.width - stacked.main.width) <= 1, 'Stacked chat and result share the full available width');
+  assert.ok(stacked.input.height > 0 && stacked.input.x >= 0 && stacked.input.y >= 0 && stacked.input.right <= stacked.width + 1 && stacked.input.bottom <= stacked.result.y + 1, 'The composer remains visible above the stacked result');
+  assert.ok(stacked.result.right <= stacked.width + 1 && stacked.result.bottom <= stacked.height + 1, 'Stacked result fits the small viewport');
+  await composer().click();
+  await composer().press('End');
+  await composer().pressSequentially(' — продолжаю писать');
+  assert.match(await composer().inputValue(), /Обсуждаю файл в узком окне — продолжаю писать$/, 'Typing remains usable with a stacked file');
+  await page.screenshot({ path: 'artifacts/file-viewer-docked-700.png' });
+  await dock().getByRole('button', { name: 'Закрыть просмотр файлов', exact: true }).click();
+  await dock().waitFor({ state: 'hidden' });
+  assert.equal(await view().locator('.app-shell.with-result-dock').count(), 0, 'Closing the stacked result restores the regular chat layout');
+  const fullChatHeight = await view().locator('.main-column').evaluate(node => node.getBoundingClientRect().height);
+  assert.ok(fullChatHeight > stacked.main.height + 100, 'Closing the file returns the result area to the chat');
+  await composer().click();
+  await composer().press('End');
+  await composer().pressSequentially(' после закрытия');
+  assert.match(await composer().inputValue(), /после закрытия$/, 'The restored full chat remains editable');
+  await page.screenshot({ path: 'artifacts/file-viewer-closed-700.png' });
   assert.deepEqual(errors, []);
   assert.equal(await page.evaluate(() => window.__files.requests.filter(call => !['thread/list', 'thread/read', 'thread/resume'].includes(call.method)).length), 0);
-  console.log('PASS: Ctrl+P project file search, keyboard open, code/lines, safe Markdown/source/image/binary, selected fragment to existing draft, pagination/errors/retry, stale searches/reads, scoped tabs, 1440/940 layouts. No model requests or user file changes.');
+  console.log('PASS: Ctrl+P project file search, keyboard open, code/lines, safe Markdown/source/image/binary, selected fragment to existing draft, pagination/errors/retry, stale searches/reads, scoped tabs, docked files/Markdown/images, refresh/quoting/focus, retained reading position, 1440/940 layouts and 700px stacked preview with usable composer and full-chat restoration. No model requests or user file changes.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/file-viewer-failure.png' }); console.error(await page.locator('body').innerText()); }
   throw error;

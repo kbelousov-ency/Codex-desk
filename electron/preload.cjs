@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 function forSession(sessionId) {
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) throw new Error('Некорректная сессия.');
@@ -10,6 +10,11 @@ function forSession(sessionId) {
     chooseExecutable: () => ipcRenderer.invoke('host:chooseExecutable', sessionId),
     saveImages: (images) => ipcRenderer.invoke('host:saveImages', images, sessionId),
     chooseComposerFiles: (options) => ipcRenderer.invoke('host:chooseComposerFiles', options, sessionId),
+    getPathForFile: (file) => {
+      try { return webUtils.getPathForFile(file); }
+      catch { return ''; }
+    },
+    readClipboardFiles: (options) => ipcRenderer.invoke('host:readClipboardFiles', options, sessionId),
     readAttachment: (path) => ipcRenderer.invoke('host:readAttachment', path, sessionId),
     getSettings: () => ipcRenderer.invoke('host:getSettings', sessionId),
     setSettings: (settings) => ipcRenderer.invoke('host:setSettings', settings, sessionId),

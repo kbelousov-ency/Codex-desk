@@ -13,8 +13,10 @@ import { getGitStatus, getGitDiff } from './git-reader.mjs';
 import { GitRollbackService } from './git-rollback.mjs';
 import { createWorktree, mergeWorktree, previewWorktreeMerge, removeWorktree, worktreeSummary } from './git-worktree.mjs';
 import { prepareComposerFiles } from './composer-files.mjs';
+import { readClipboardFilePaths } from './clipboard-files.mjs';
 import { ClaudeHistory } from './claude-history.mjs';
 import { ClaudeThreadManagement } from './claude-threads.mjs';
+import { ClaudeArchiveStore } from './claude-archive.mjs';
 import { ClaudeAuthService } from './claude-auth.mjs';
 import { ClaudeLaunchGate, ClaudeTokenStore } from './claude-token.mjs';
 import { HistorySearch } from './history-search.mjs';
@@ -109,6 +111,7 @@ const workspaceStore = new WorkspaceStore(path.join(app.getPath('userData'), 'wo
 const notificationSettings = new NotificationSettingsStore(path.join(app.getPath('userData'), 'notifications.json'));
 const claudeHistory = new ClaudeHistory();
 const bookmarks = new BookmarkStore(app.getPath('userData'));
+const claudeArchive = new ClaudeArchiveStore(app.getPath('userData'));
 const gitRollback = new GitRollbackService({ directory: path.join(app.getPath('userData'), 'git-rollback') });
 const rollbackPreviews = new Map();
 const rollbackReservations = new Set();
@@ -518,10 +521,16 @@ function installHandlers() {
     record.claudeManagement ??= new ClaudeThreadManagement({
       coordinator: threadActions,
       history: claudeHistory,
+      archive: claudeArchive,
       getSessions: () => [...windows.values()].flatMap(item => [...item.sessions.values()].filter(session => session.settings.provider === 'claude')),
       assertActive: () => {
         if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.');
         if (claudeAuth.active) throw new Error('Дождитесь завершения входа в Claude Code.');
+      },
+      onRestore: async cwd => {
+        await directoryPath(cwd);
+        if (record.closingProjects.has(projectKey(cwd))) throw new Error('Проект закрывается.');
+        await workspaceStore.addProject(cwd);
       },
     });
     return record.claudeManagement;
@@ -541,7 +550,10 @@ function installHandlers() {
     const store = management(record, event);
     record.historySearch ??= new HistorySearch({
       listThreads: async ({ cwd, provider, cursor, limit }) => {
-        if (provider === 'claude') return claudeHistory.list({ cwd, cursor, limit });
+        if (provider === 'claude') {
+          const [page, archived] = await Promise.all([claudeHistory.list({ cwd, cursor, limit }), claudeArchive.ids(cwd)]);
+          return { ...page, data: page.data.map(thread => (archived.has(thread.id) ? { ...thread, archived: true } : thread)) };
+        }
         let page = { cursor: cursor || undefined, archived: false };
         if (cursor?.startsWith('search:')) {
           page = JSON.parse(Buffer.from(cursor.slice(7), 'base64url').toString('utf8'));
@@ -553,7 +565,10 @@ function installHandlers() {
         });
       },
       readThread: async ({ cwd, provider, thread, cursor }) => {
-        if (provider === 'claude') return claudeHistory.read({ cwd, threadId: thread.id });
+        if (provider === 'claude') {
+        const result = await claudeHistory.read({ cwd, threadId: thread.id });
+        return { ...result, thread: { ...result.thread, ...(thread.archived ? { archived: true } : {}) } };
+      }
         return store.enqueue(async request => {
           const info = await request('thread/read', { threadId: thread.id, includeTurns: false });
           if (info.thread?.id !== thread.id || (info.thread.cwd && projectKey(info.thread.cwd) !== projectKey(cwd))) throw new Error('Диалог перемещён в другую папку.');
@@ -583,8 +598,9 @@ function installHandlers() {
       let result;
       try { result = await claudeHistory.read({ cwd, threadId: options.threadId, includeTurns: false }); }
       catch { throw new Error('Не удалось открыть исходный диалог Claude. Он мог быть удалён или стать недоступным. Сохранённая закладка остаётся в библиотеке.'); }
+      const archived = await claudeArchive.has(options.threadId).catch(() => false);
       windowForEvent(windows, event);
-      return { ...result.thread, provider: 'claude', archived: false };
+      return { ...result.thread, provider: 'claude', archived };
     }
     return management(record, event).enqueue(async request => {
       let result;
@@ -620,10 +636,37 @@ function installHandlers() {
   });
   workspaceHandle('host:removeBookmark', (_record, _event, id) => bookmarks.remove(id));
   workspaceHandle('host:exportConversation', (record, event, value) => saveConversation(value, options => dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), options)));
-  workspaceHandle('host:listArchivedThreads', (record, event, cursor) => management(record, event).listArchivedThreads(cursor));
+  const archivedClaudeEntry = async threadId => {
+    const entry = await claudeArchive.find(threadId);
+    if (!entry) throw new Error('Диалог уже не находится в архиве. Обновите список.');
+    return entry;
+  };
+  const readArchivedClaudeThread = async (record, event, options) => {
+    if (options.cursor !== undefined) throw new Error('Для этой истории нет следующей страницы.');
+    const entry = await archivedClaudeEntry(options.threadId);
+    windowForEvent(windows, event);
+    // Read-only: the native transcript is parsed without starting the CLI.
+    const { thread } = await claudeHistory.read({ cwd: entry.cwd, threadId: options.threadId });
+    windowForEvent(windows, event);
+    const turns = thread.turns ?? [];
+    return { thread: { ...thread, archived: true }, turns, nextCursor: null,
+      items: turns.flatMap(turn => (turn.items ?? []).map(item => ({ ...item, turnId: turn.id, complete: true }))) };
+  };
+  workspaceHandle('host:listArchivedThreads', async (record, event, cursor) => {
+    const page = await management(record, event).listArchivedThreads(cursor);
+    windowForEvent(windows, event);
+    // Claude's archive is the shell's own finite list, not a paginated server query:
+    // it accompanies the first page and is never repeated on the following ones.
+    if (cursor) return page;
+    const claude = (await claudeArchive.list()).map(entry => ({ ...entry, provider: 'claude', historyMode: 'legacy', archived: true }));
+    windowForEvent(windows, event);
+    return { ...page, data: [...page.data, ...claude].sort((a, b) => (b.updatedAt || b.archivedAt || 0) - (a.updatedAt || a.archivedAt || 0)) };
+  });
   workspaceHandle('host:searchThreads', (record, event, options) => management(record, event).searchThreads(options));
   workspaceHandle('host:readArchivedThread', async (record, event, options) => {
-    const result = await management(record, event).readArchivedThread(options);
+    const result = typeof options?.threadId === 'string' && options.threadId.startsWith('claude:')
+      ? await readArchivedClaudeThread(record, event, options)
+      : await management(record, event).readArchivedThread(options);
     result.items = await hydrateAttachmentPreviews(result.items, channelPaths.attachmentsDirectory);
     windowForEvent(windows, event);
     return result;
@@ -633,7 +676,9 @@ function installHandlers() {
     return (claude ? claudeManagement(record, event) : management(record, event)).manageThread(options);
   });
   workspaceHandle('host:openArchivedPath', async (record, event, options) => {
-    const thread = await management(record, event).readArchivedMetadata(options?.threadId);
+    const thread = typeof options?.threadId === 'string' && options.threadId.startsWith('claude:')
+      ? await archivedClaudeEntry(options.threadId)
+      : await management(record, event).readArchivedMetadata(options?.threadId);
     const assertActive = () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); };
     const params = { target: options?.target, cwd: thread.cwd, shell, assertActive };
     if (options?.menu) return showLocalPathMenu({ ...params, clipboard, Menu, window: record.window });
@@ -670,7 +715,11 @@ function installHandlers() {
     const folder = await directoryPath(cwd); assertWindow();
     const workspace = await workspaceStore.snapshot(); assertWindow();
     if (!workspace.projects.some(project => projectKey(project) === projectKey(folder))) throw new Error('Папка не добавлена в рабочую область.');
-    const [codexPage, claudePage] = await Promise.all([codexOutcome, Promise.allSettled([paging?.claude === null ? Promise.resolve({ data: [], nextCursor: null }) : claudeHistory.list({ cwd: folder, cursor: paging?.claude || undefined, limit: 40 })]).then(([page]) => page)]);
+    const claudeRead = paging?.claude === null ? Promise.resolve({ data: [], nextCursor: null }) : (async () => {
+      const [page, archived] = await Promise.all([claudeHistory.list({ cwd: folder, cursor: paging?.claude || undefined, limit: 40 }), claudeArchive.ids(folder)]);
+      return { ...page, data: page.data.filter(thread => !archived.has(thread.id)) };
+    })();
+    const [codexPage, claudePage] = await Promise.all([codexOutcome, Promise.allSettled([claudeRead]).then(([page]) => page)]);
     assertWindow();
     if (codexPage.status === 'rejected' && claudePage.status === 'rejected') throw codexPage.reason;
     const a = codexPage.status === 'fulfilled' ? codexPage.value : { data: [], nextCursor: null };
@@ -809,6 +858,19 @@ function installHandlers() {
       if (selected.canceled || !selected.filePaths.length) return null;
       return await prepareComposerFiles(selected.filePaths, { ...options, assertActive });
     } finally { session.composerPicker = false; }
+  });
+  handle('host:readClipboardFiles', 1, async ({ session }, options = {}) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['imageSlots', 'imagesSupported'].includes(key)) || (options.imageSlots !== undefined && (!Number.isInteger(options.imageSlots) || options.imageSlots < 0 || options.imageSlots > 10)) || (options.imagesSupported !== undefined && typeof options.imagesSupported !== 'boolean')) throw new Error('Некорректные параметры вставки файлов.');
+    if (session.composerClipboard) throw new Error('Дождитесь завершения вставки файлов.');
+    const generation = session.generation, cwd = session.currentCwd;
+    const assertActive = () => { session.assertActive(generation); if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Вставьте файлы снова.'); };
+    session.composerClipboard = true;
+    try {
+      const paths = await readClipboardFilePaths();
+      assertActive();
+      if (!paths) return null;
+      return await prepareComposerFiles(paths, { ...options, assertActive });
+    } finally { session.composerClipboard = false; }
   });
   handle('host:saveImages', 1, async (_record, images) => {
     if (!Array.isArray(images) || images.length > 12) throw new Error('Можно прикрепить до 12 изображений.');

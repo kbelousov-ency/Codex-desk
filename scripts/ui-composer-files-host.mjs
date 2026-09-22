@@ -5,7 +5,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { _electron as electron } from 'playwright';
 
-// Actual Electron/main/preload IPC, with only the native file chooser replaced.
+// Actual Electron/main/preload IPC, with native chooser/clipboard reads replaced.
 // Every selected file and the App Servers belong to this disposable fixture.
 // No installed Codex, model request, document opening, or user profile is used.
 const root = process.cwd();
@@ -44,6 +44,9 @@ const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toL
 const choose = (id, options = { imageSlots: 10, imagesSupported: true }) => page.evaluate(
   ({ id, options }) => window.codex.forSession(id).chooseComposerFiles(options), { id, options },
 );
+const pasteFiles = (id, options = { imageSlots: 10, imagesSupported: true }) => page.evaluate(
+  ({ id, options }) => window.codex.forSession(id).readClipboardFiles(options), { id, options },
+);
 async function waitUntil(check, label) {
   const deadline = Date.now() + 15_000;
   while (!await check()) { assert.ok(Date.now() < deadline, `Timed out: ${label}`); await delay(50); }
@@ -62,6 +65,37 @@ async function nativeDialog(filePaths, { canceled = false, deferred = false } = 
 }
 const dialogCalls = () => app.evaluate(() => globalThis.composerChooserCalls);
 const finishDialog = () => app.evaluate(() => { globalThis.finishComposerChooser(); globalThis.finishComposerChooser = null; });
+async function nativeClipboard(files, { deferred = false } = {}) {
+  await app.evaluate(async (_electron, response) => {
+    const childProcess = process.getBuiltinModule('child_process');
+    const { promisify } = process.getBuiltinModule('util');
+    if (!globalThis.composerOriginalExecFile) globalThis.composerOriginalExecFile = childProcess.execFile;
+    globalThis.composerClipboardCalls = [];
+    globalThis.finishComposerClipboard = null;
+    const replacement = (...args) => globalThis.composerOriginalExecFile(...args);
+    replacement[promisify.custom] = async (executable, args, options) => {
+      const script = args?.includes('-EncodedCommand') ? Buffer.from(args.at(-1), 'base64').toString('utf16le') : '';
+      if (!script.includes('[System.Windows.Forms.Clipboard]::GetFileDropList()')) {
+        return promisify(globalThis.composerOriginalExecFile)(executable, args, options);
+      }
+      globalThis.composerClipboardCalls.push({ executable, args, options });
+      const result = { stdout: JSON.stringify({ files: response.files }), stderr: '' };
+      return response.deferred ? new Promise(resolve => { globalThis.finishComposerClipboard = () => resolve(result); }) : result;
+    };
+    childProcess.execFile = replacement;
+    process.getBuiltinModule('module').syncBuiltinESMExports();
+  }, { files, deferred });
+}
+const clipboardCalls = () => app.evaluate(() => globalThis.composerClipboardCalls);
+const finishClipboard = () => app.evaluate(() => { globalThis.finishComposerClipboard(); globalThis.finishComposerClipboard = null; });
+async function pasteRejected(id, options, label) {
+  const result = await page.evaluate(async ({ id, options }) => {
+    try { return { accepted: true, value: await window.codex.forSession(id).readClipboardFiles(options) }; }
+    catch (error) { return { accepted: false, message: error.message }; }
+  }, { id, options });
+  assert.equal(result.accepted, false, label);
+  assert.ok(result.message?.length, `${label}: useful error`);
+}
 async function rejected(id, options, label) {
   const result = await page.evaluate(async ({ id, options }) => {
     try { return { accepted: true, value: await window.codex.forSession(id).chooseComposerFiles(options) }; }
@@ -129,6 +163,61 @@ try {
   });
   const before = await Promise.all([projectA, projectB, outside].map(snapshot));
   const attachmentsBefore = await attachments();
+  const clipboardSettingsBefore = await readFile(settingsPath, 'utf8');
+
+  await page.evaluate(() => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.multiple = true; input.id = 'native-file-path-fixture';
+    document.body.appendChild(input);
+  });
+  await page.locator('#native-file-path-fixture').setInputFiles([textPath, pngPath]);
+  const nativePaths = await page.evaluate(() => {
+    const files = document.getElementById('native-file-path-fixture').files;
+    const result = [...files].map(file => window.codex.getPathForFile(file));
+    document.getElementById('native-file-path-fixture').remove();
+    return { result, synthetic: window.codex.getPathForFile(new File(['bytes'], 'fake.pdf')), forged: window.codex.getPathForFile({ path: 'C:\\private.txt' }) };
+  });
+  assert.deepEqual(nativePaths, { result: [textPath, pngPath], synthetic: '', forged: '' });
+  results.push('real native File paths cross contextBridge into webUtils; synthetic File and forged path objects expose no filesystem path');
+
+  await nativeClipboard([pdfPath, textPath, pngPath, pdfPath]);
+  const pasted = await pasteFiles(first);
+  assert.deepEqual(pasted.paths, [pdfPath, textPath]);
+  assert.deepEqual(pasted.images, [{ name: path.basename(pngPath), dataUrl: `data:image/png;base64,${png.toString('base64')}` }]);
+  const [clipboardCall] = await clipboardCalls();
+  assert.equal(clipboardCall.options.windowsHide, true);
+  assert.equal(clipboardCall.options.shell, false);
+  assert.equal(clipboardCall.options.timeout, 5000);
+  assert.ok(clipboardCall.args.includes('-STA'));
+  await nativeClipboard([]);
+  assert.equal(await pasteFiles(first), null);
+  await nativeClipboard([pngPath, pdfPath]);
+  assert.deepEqual((await pasteFiles(second, { imageSlots: 0, imagesSupported: false })).paths, [pngPath, pdfPath]);
+  await nativeClipboard([pngPath]);
+  await pasteRejected(first, { imageSlots: 0 }, 'Clipboard respects remaining image capacity');
+  await nativeClipboard([pdfPath]);
+  for (const options of [null, [], { imageSlots: 11 }, { imageSlots: 1.5 }, { imagesSupported: 1 }, { paths: [pdfPath] }, { filePaths: [pdfPath] }]) {
+    await pasteRejected(first, options, 'Clipboard accepts only typed capacity options');
+  }
+  await pasteRejected('not-owned-by-this-window', {}, 'Clipboard rejects unknown session');
+  assert.deepEqual(await clipboardCalls(), [], 'Invalid options and sessions never read the clipboard');
+  results.push('clipboard IPC returns mixed selections, deduplicates, handles empty/text-only cases, and rejects raw paths, invalid options and missing sessions');
+  assert.equal(await readFile(settingsPath, 'utf8'), clipboardSettingsBefore, 'File paste leaves default Codex settings intact');
+
+  await nativeClipboard([pdfPath], { deferred: true });
+  await page.evaluate(id => {
+    window.pendingComposerPaste = window.codex.forSession(id).readClipboardFiles()
+      .then(value => ({ accepted: true, value }), error => ({ accepted: false, message: error.message }));
+  }, first);
+  await waitUntil(async () => (await clipboardCalls()).length === 1, 'clipboard read pending');
+  await pasteRejected(first, {}, 'Concurrent clipboard request is rejected');
+  await page.evaluate(({ id, cwd }) => window.codex.forSession(id).start({ cwd }), { id: first, cwd: projectB });
+  await finishClipboard();
+  assert.equal((await page.evaluate(() => window.pendingComposerPaste)).accepted, false, 'Clipboard rejects a stale cwd/generation');
+  await nativeClipboard([pdfPath]);
+  assert.deepEqual((await pasteFiles(first)).paths, [pdfPath], 'Clipboard guard recovers after a stale session');
+  await page.evaluate(({ id, cwd }) => window.codex.forSession(id).start({ cwd }), { id: first, cwd: projectA });
+  results.push('concurrent clipboard reads rejected, stale cwd/generation discarded, guard recovers without reading the real clipboard');
   const settingsBefore = await readFile(settingsPath, 'utf8');
 
   await nativeDialog([textPath, pdfPath, zipPath, pngPath]);

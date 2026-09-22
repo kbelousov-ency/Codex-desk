@@ -2,9 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Search, X } from 'lucide-react';
 import Conversation from './Conversation';
 import type { Item, TurnWork } from './types';
+import type { ResultActions } from './TaskResult';
 import './chat-search.css';
 
-type Props = {
+type Props = ResultActions & {
   items: Item[];
   turnWork: Record<string, TurnWork>;
   open: boolean;
@@ -18,6 +19,7 @@ type Props = {
   onBookmark?(item: Item): Promise<void>;
   onAnswerQuestion?(item: Item, answer: string): Promise<boolean>;
   questionDisabled?: boolean;
+  onQuote?(text: string): void;
 };
 
 type Match = { range: Range; key: string };
@@ -69,7 +71,7 @@ function findMatches(root: HTMLElement, query: string): Match[] {
   return matches;
 }
 
-export default function ChatSearch({ items, turnWork, open, active, onClose, hasEarlier, loading, onLoadEarlier, onEditMessage, editDisabled, onBookmark, onAnswerQuestion, questionDisabled }: Props) {
+export default function ChatSearch({ items, turnWork, open, active, onClose, hasEarlier, loading, onLoadEarlier, onEditMessage, editDisabled, onBookmark, onAnswerQuestion, questionDisabled, onQuote, onOpenResultFile, onReviewResult, onJumpToItem }: Props) {
   const [query, setQuery] = useState('');
   const [matches, setMatches] = useState<Match[]>([]);
   const [current, setCurrent] = useState(0);
@@ -204,6 +206,6 @@ export default function ChatSearch({ items, turnWork, open, active, onClose, has
       </div>
       {hasEarlier && <div className="chat-search-history"><span>Поиск по загруженной части чата.</span>{onLoadEarlier && <button type="button" disabled={loading} onClick={onLoadEarlier}>{loading ? 'Загружаем…' : 'Искать в более ранних сообщениях'}</button>}</div>}
     </div>}
-    <div className="chat-search-content" ref={rootRef}><Conversation items={items} turnWork={turnWork} searchable={searching} onEditMessage={onEditMessage} editDisabled={editDisabled} onBookmark={onBookmark} onAnswerQuestion={onAnswerQuestion} questionDisabled={questionDisabled} /></div>
+    <div className="chat-search-content" ref={rootRef}><Conversation items={items} turnWork={turnWork} searchable={searching} onEditMessage={onEditMessage} editDisabled={editDisabled} onBookmark={onBookmark} onAnswerQuestion={onAnswerQuestion} questionDisabled={questionDisabled} onQuote={onQuote} active={active} onOpenResultFile={onOpenResultFile} onReviewResult={onReviewResult} onJumpToItem={onJumpToItem} /></div>
   </>;
 }

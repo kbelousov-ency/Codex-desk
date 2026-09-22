@@ -1,0 +1,19 @@
+.conversation-outline { padding: 16px 12px; min-width: 0; }
+.outline-heading { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+.outline-heading strong { font-size: 13px; }
+.outline-heading > span, .outline-edit small { color: var(--muted, #939c9e); font-size: 11px; }
+.outline-search { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; margin-bottom: 12px; }
+.outline-search input { min-width: 0; width: 100%; background: transparent; color: inherit; border: 0; font-size: 11px; }
+.outline-list { list-style: none; padding: 0; margin: 10px 0; }
+.outline-list li { position: relative; display: flex; align-items: flex-start; border-bottom: 1px solid var(--line); }
+.outline-jump { display: flex; align-items: flex-start; gap: 9px; padding: 12px 4px; flex: 1; min-width: 0; text-align: left; }
+.outline-jump:hover { background: #b6d8cc0a; }
+.outline-jump > svg { margin-top: 3px; color: var(--muted, #939c9e); }
+.outline-jump > span { min-width: 0; }
+.outline-jump strong { display: block; color: var(--accent, #b6d8cc); font-size: 12px; margin-bottom: 5px; overflow-wrap: anywhere; }
+.outline-jump > span > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; white-space: normal; }
+.outline-rename { margin-top: 10px; }
+.outline-edit { padding: 10px 0; width: 100%; }
+.outline-edit label { font-size: 11px; }
+.outline-edit input { width: 100%; display: block; margin: 7px 0; padding: 8px; color: inherit; background: #161a1b; border: 1px solid var(--line); border-radius: 5px; }
+.outline-edit > div { display: flex; align-items: center; justify-content: space-between; }

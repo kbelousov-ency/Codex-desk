@@ -86,6 +86,8 @@ export interface CodexBridge {
   chooseDirectory(): Promise<string | null>;
   saveImages(images: Attachment[]): Promise<Attachment[]>;
   chooseComposerFiles(options?: { imageSlots?: number; imagesSupported?: boolean }): Promise<ComposerFiles | null>;
+  getPathForFile(file: File): string;
+  readClipboardFiles(options?: { imageSlots?: number; imagesSupported?: boolean }): Promise<ComposerFiles | null>;
   readAttachment(path: string): Promise<string | null>;
   onEvent(listener: (event: BridgeEvent) => void): () => void;
   getSettings(): Promise<Settings>;

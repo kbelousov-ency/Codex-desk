@@ -7,7 +7,7 @@ import { folderName } from './useCodex';
 import { useBridge } from './BridgeContext';
 import { changeStatus, diffLines, diffLineStats, groupFileChanges, relativeChangePath } from './change-utils';
 import './changes.css';
-import { DiffReview, ReviewDiff } from './DiffReview';
+import { DiffReview, ReviewDiff, snapshotReviewSelection } from './DiffReview';
 import type { ReviewSelection } from './DiffReview';
 import GitPanel from './GitPanel';
 import ChangeTurnPicker from './ChangeTurnPicker';
@@ -88,8 +88,8 @@ function LineCounts({ text }: { text: string }) {
   return <span className="change-line-counts" data-tooltip={`Строк в этой правке: добавлено ${added}, удалено ${removed}`}><b className="text-green">+{added}</b><b className="text-red">−{removed}</b></span>;
 }
 
-export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}, active = true, hasEarlier = false, loading = false, onLoadEarlier, onReviewChange, busy = false, mutationsAllowed = true }: {
-  items: Item[]; diff: string; cwd?: string; diffTurnId?: string; turnDiffs?: Record<string, string>; active?: boolean; hasEarlier?: boolean; loading?: boolean; onLoadEarlier?(): void; onReviewChange?(open: boolean): void; busy?: boolean; mutationsAllowed?: boolean;
+export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}, active = true, hasEarlier = false, loading = false, onLoadEarlier, onReviewChange, onPinReview, onQuote, externalTurnSelection, busy = false, mutationsAllowed = true }: {
+  items: Item[]; diff: string; cwd?: string; diffTurnId?: string; turnDiffs?: Record<string, string>; active?: boolean; hasEarlier?: boolean; loading?: boolean; onLoadEarlier?(): void; onReviewChange?(open: boolean): void; onPinReview?(selection: ReviewSelection): void; onQuote?(text: string): void; externalTurnSelection?: { turnId: string; key: number }; busy?: boolean; mutationsAllowed?: boolean;
 }) {
   const engineName = useAgentName();
   const bridge = useBridge();
@@ -122,6 +122,10 @@ export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}
   useEffect(() => { if (!active) setReview(null); }, [active]);
   useEffect(() => { if (source === 'conversation') onReviewChange?.(Boolean(review && active)); return () => { if (source === 'conversation') onReviewChange?.(false); }; }, [review, active, source, onReviewChange]);
   useEffect(() => { setReview(null); setTurn('all'); setQuery(''); }, [cwd, bridge]);
+  useEffect(() => {
+    if (!externalTurnSelection) return;
+    setSource('conversation'); setTurn(externalTurnSelection.turnId); setQuery(''); setReview(null);
+  }, [externalTurnSelection]);
   useEffect(() => { if (turn !== 'all' && turn !== 'unknown' && !turns.some(value => value.id === turn)) setTurn('all'); }, [turn, turns]);
   const openFile = async (path: string, menu = false) => {
     setError('');
@@ -132,7 +136,7 @@ export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}
   };
   return <div className="panel-content changes-panel">
     <div className="changes-source-tabs" role="group" aria-label="Источник изменений"><button type="button" aria-pressed={source === 'conversation'} onClick={() => { setSource('conversation'); setReview(null); }}>Из диалога</button><button type="button" aria-pressed={source === 'git'} onClick={() => { setSource('git'); setReview(null); }}><GitBranch size={13} />Git</button></div>
-    {source === 'git' ? <GitPanel cwd={cwd} active={active} refreshKey={`${busy}:${items.filter(item => item.type === 'fileChange').map(item => `${item.id}:${item.status}:${item.complete}`).join('|')}`} onReviewChange={onReviewChange} mutationsAllowed={mutationsAllowed} /> : <>
+    {source === 'git' ? <GitPanel cwd={cwd} active={active} refreshKey={`${busy}:${items.filter(item => item.type === 'fileChange').map(item => `${item.id}:${item.status}:${item.complete}`).join('|')}`} onReviewChange={onReviewChange} onPinReview={onPinReview} onQuote={onQuote} mutationsAllowed={mutationsAllowed} /> : <>
     {error && <div className="link-error" role="alert"><span>{error}</span><button aria-label="Скрыть ошибку открытия файла" onClick={() => setError('')}>×</button></div>}
     {(allFiles.length > 0 || diff || Object.keys(turnDiffs).length > 0) && <div className="changes-filters">
       <ChangeTurnPicker value={turn} turns={turns} unknown={unknown} active={active} onChange={value => { setTurn(value); setReview(null); }} />
@@ -159,7 +163,7 @@ export function ChangesPanel({ items, diff, cwd = '', diffTurnId, turnDiffs = {}
       {showDiff && <details className="file-diff change-turn-diff" open={!files.length || undefined}><summary><GitBranch size={14} /><span className="change-turn-heading">{turn === 'all' ? 'Сводный diff текущего запроса' : 'Сводный diff выбранного запроса'}<LineCounts text={selectedDiff} /></span><ChevronRight size={14} className="disclosure-arrow" /></summary><button type="button" className="text-button" aria-label="Развернуть сводное сравнение" onClick={() => setReview({ title: 'Сводный diff запроса', edits: [{ key: 'summary', path: '', diff: selectedDiff }] })}><Maximize2 size={12} />Развернуть</button><ReviewDiff text={selectedDiff} /></details>}
     </>}
     <div className="panel-footnote"><GitBranch size={13} /><span>Правки из этого диалога. Счётчики +/− относятся к отдельным правкам; повторные изменения сохранены в истории файла.</span></div>
-    {review && active && <DiffReview selection={review} onClose={() => setReview(null)} onOpen={path => bridge.openPath(path)} />}
+    {review && active && <DiffReview selection={review} onClose={() => setReview(null)} onOpen={path => bridge.openPath(path)} onQuote={onQuote} onToggleDock={onPinReview ? () => { onPinReview(snapshotReviewSelection(review)); setReview(null); } : undefined} />}
     </>}
   </div>;
 }
