@@ -1,5 +1,17 @@
 # Release и Nightly
 
+## Публичный Release 0.5.0 — 2026-09-22
+
+По поручению «Тогда переноси в релиз и заливай» Nightly `555b67429eb279364035ba773a3a4d087bd7f144af3699bb5fd4b69e6268da78` перенесена в `release/stable` штатным `release:promote`, без перекомпиляции. Прежняя Release **0.4.0** (`336f2badc12c2e8b998d4441d52dc74246e8f8c5dbd434cf756d0b94fc9de9a2`) сохранена в `release/stable-previous`. Проверка файлов установила, что Nightly уже применена, а очереди нет; запись «ждёт Закрыть» ниже относится к моменту её сборки. Пользовательский Nightly PID 18560 не закрывался.
+
+`npm.cmd run check` прошёл: TypeScript, **552 passed / 2 skipped**, Vite. Manifest содержит 72 файла; все 51 файл electron/dist побайтно совпали с app.asar, включая последние изменения архива Claude (`artifacts/release-050-preflight.json`). SHA-256 app.asar — `96bcaf75078a0b0de2fe5da0473388de51abee679def2fca0b396e47c5ad30f3`. UI composer-files/archive/app-updates/resume и settings memory fixture прошли; готовый Release прошёл Electron/preload/IPC composer-files (`artifacts/composer-files-host-3UTY1A`), app-updates (`artifacts/app-updates-host-jPb3xg`) и archive (`artifacts/archive-host-57e2Ta`). Запросов модели — 0.
+
+Setup `Codex-Desk-Setup-0.5.0.exe`: **100 950 703 байт**, SHA-256 `e1cc3150c06ea0cbd3193b616fbe5edb50a50b6a0a9455a0dbf41eeb866b5e28`. `scripts/test-installer.ps1` проверил установку и обновление без `/D` в `artifacts/installer-test-1bfd3751a8324f1abd236b9f3760ed22`: оба exit 0, все 72 файла совпали. Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-xiOQUq`). Cleanup завершён: тестовая установка удалена, три внешних файла shortcuts/cache восстановлены из snapshot.
+
+[v0.5.0](https://github.com/kbelousov-ency/Codex-desk/releases/tag/v0.5.0) опубликован как **Latest** `2026-09-22T11:08:50Z`, release ID `393658496`. Setup, `SHA256SUMS.txt`, `release-info.json`, `README.txt` проверены по размерам и GitHub SHA-256 digest до публикации и повторно после неё. Анонимный `/releases/latest` возвращает `v0.5.0`; production `releaseUpdate` предлагает правильный Setup для текущей `0.4.0` и не предлагает его для `0.5.0` (`artifacts/github-release/published-verification.json`). Обновления остаются на GitHub.
+
+Исходники и тег `v0.5.0` отправлены в GitHub `main` (release commit `e148441795d25614f5c549b0d57627a7f8c39df9`) и Gerrit `master` (`c2099dfd43066207d4dc689d832d1cf64d58e9b1`). Разные истории сохранены; дерево обоих release commits одинаково: `adbbe06179c218007d17751967e7597f5880b1b8`, 1089 файлов. Gerrit принял `master` при общем `--atomic` push, но отклонил annotated tag с `Unable to resolve object ... Check that the object exists on the server`; отдельный повтор отправки тега после ветки прошёл. В дальнейшем для Gerrit сначала отправлять ветку, затем тег, и проверять оба через `ls-remote`; не считать `--atomic` гарантией отката ветки на этом сервере.
+
 ## Две копии: GitHub и Gerrit — решение 2026-09-22
 
 По указанию пользователя команда **«Заливай»** означает отправку готовых изменений в **оба репозитория**: GitHub `https://github.com/kbelousov-ency/Codex-desk` (копия `E:\My projects\CodexDesk`, ветка `main`) и Gerrit `https://gerrit1.hq.encycam.com/a/CodexDesk` (копия `E:\CodexDesk`, ветка `master`). Сохранять обе истории и несвязанные рабочие изменения; перед отправкой согласовывать содержимое копий, не применять force-push для их выравнивания. При выпуске исходники и публикуемые теги дублируются в оба репозитория.
