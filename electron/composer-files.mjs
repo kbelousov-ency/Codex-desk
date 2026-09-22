@@ -55,7 +55,7 @@ async function readImage(file, assertActive) {
 }
 
 /**
- * Accept only paths returned by the host's native picker, never renderer paths.
+ * Accept only paths from the host's native picker/clipboard, never renderer paths.
  * Explicitly selected links resolve to their ordinary local target, including
  * targets outside the project. Non-image files are references: no content read,
  * copy, execution or model request. Batch failure never returns partial results.

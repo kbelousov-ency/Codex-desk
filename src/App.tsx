@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowDown, ArrowRight, ArrowUp, Brain, ChevronDown, ChevronRight, Code2, CornerDownRight, Cpu, Folder, FolderOpen, FolderPlus, GitBranch, ImagePlus, ListPlus, LoaderCircle, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, RefreshCw, Search, Settings2, Shield, Square, Terminal, X } from 'lucide-react';
-import type { Access, AgentProvider, Attachment, CodexBridge, Item, MessageQueueState, PendingMessage, ScrollAnchor, SessionAttentionEvent, Settings, Thread, UpdateTabSnapshot } from './types';
+import type { Access, AgentProvider, Attachment, CodexBridge, ComposerFiles, Item, MessageQueueState, PendingMessage, ScrollAnchor, SessionAttentionEvent, Settings, Thread, UpdateTabSnapshot } from './types';
 import { BridgeContext } from './BridgeContext';
 import { AgentContext, agentName } from './AgentContext';
 import { BuildBadge } from './BuildInfo';
@@ -380,30 +380,12 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     if (draft) { focusDraftEnd.current = true; setText(draft.text); setAttachments(draft.attachments); }
   };
 
-  const addImages = async (files: File[]) => {
-    if (sending || editPending.current || filePickerPending.current) return;
-    const accepted = files.filter(file => /^image\/(png|jpe?g|webp|gif)$/.test(file.type));
-    if (!accepted.length) { codex.setError('Поддерживаются изображения PNG, JPEG, WebP и GIF.'); return; }
-    if (accepted.some(file => file.size > 20 * 1024 * 1024)) { codex.setError('Размер одного изображения не должен превышать 20 МБ.'); return; }
-    if (attachments.length + accepted.length > 10) { codex.setError('К одному сообщению можно прикрепить до 10 изображений.'); return; }
-    setReadingImages(true);
-    try {
-      const images = await Promise.all(accepted.map(file => new Promise<Attachment>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve({ name: file.name || `image-${Date.now()}.png`, dataUrl: String(reader.result) });
-        reader.onerror = () => reject(new Error(`Не удалось прочитать ${file.name}`));
-        reader.readAsDataURL(file);
-      })));
-      setAttachments(previous => [...previous, ...images].slice(0, 10)); codex.setError('');
-    } catch (e) { codex.setError(errorText(e)); } finally { setReadingImages(false); }
-  };
-  const chooseFiles = async () => {
-    if (filePickerPending.current || readingImages || loadingEdit || sending || !active || workspace?.actionBusy) return;
-    if (!bridge.chooseComposerFiles) { codex.setError('Выбор файлов доступен после обновления приложения. Изображение можно вставить через Ctrl+V.'); return; }
+  const receiveFiles = async (load: () => Promise<ComposerFiles | null>) => {
+    if (filePickerPending.current || readingImages || editPending.current || loadingEdit || sending || !active || workspace?.actionBusy) return;
     const version = filePickerGeneration.current;
     filePickerPending.current = true; setSelectingFiles(true);
     try {
-      const result = await bridge.chooseComposerFiles({ imageSlots: Math.max(0, 10 - attachments.length), imagesSupported });
+      const result = await load();
       if (!result || version !== filePickerGeneration.current) return;
       const totalImages = [...editContext.current.attachments, ...result.images];
       const bytes = (dataUrl: string) => Math.floor((dataUrl.split(',')[1]?.length || 0) * 3 / 4);
@@ -419,6 +401,92 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     } catch (e) { if (version === filePickerGeneration.current) codex.setError(errorText(e)); }
     finally { filePickerPending.current = false; setSelectingFiles(false); }
   };
+  const chooseFiles = () => receiveFiles(async () => {
+    if (!bridge.chooseComposerFiles) throw new Error('Выбор файлов доступен после обновления приложения. Изображение можно вставить через Ctrl+V.');
+    return bridge.chooseComposerFiles({ imageSlots: Math.max(0, 10 - attachments.length), imagesSupported });
+  });
+  const addFiles = (files: File[]) => receiveFiles(async () => {
+    if (!files.length) return null;
+    if (files.length > 20) throw new Error('За один раз можно добавить не больше 20 файлов.');
+    const paths: string[] = [], imageFiles: File[] = [], seen = new Set<string>();
+    let referencedImages = false;
+    for (const file of files) {
+      const path = bridge.getPathForFile?.(file) || '';
+      if (path) {
+        const key = path.replace(/\\/g, '/').toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      const image = /^image\/(png|jpe?g|webp|gif)$/i.test(file.type) || (!file.type && /\.(png|jpe?g|webp|gif)$/i.test(file.name));
+      if (image && imagesSupported) imageFiles.push(file);
+      else {
+        if (!path) throw new Error(`Не удалось получить путь к файлу «${file.name}». Добавьте его кнопкой «+».`);
+        paths.push(path);
+        referencedImages ||= image;
+      }
+    }
+    if (attachments.length + imageFiles.length > 10) throw new Error('К одному сообщению можно прикрепить до 10 изображений.');
+    if (imageFiles.some(file => file.size > 20 * 1024 * 1024)) throw new Error('Размер одного изображения не должен превышать 20 МБ.');
+    if (imageFiles.reduce((sum, file) => sum + file.size, 0) > 60 * 1024 * 1024) throw new Error('Общий размер изображений не должен превышать 60 МБ.');
+    setReadingImages(imageFiles.length > 0);
+    try {
+      const images = await Promise.all(imageFiles.map(file => new Promise<Attachment>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const format = (file.type.split('/')[1] || file.name.split('.').pop() || 'png').toLowerCase().replace(/^jpg$/, 'jpeg');
+          const dataUrl = String(reader.result).replace(/^data:[^;,]*;base64,/, `data:image/${format};base64,`);
+          resolve({ name: file.name || `image-${Date.now()}.png`, dataUrl });
+        };
+        reader.onerror = () => reject(new Error(`Не удалось прочитать ${file.name}`));
+        reader.onabort = () => reject(new Error(`Чтение ${file.name} отменено`));
+        reader.readAsDataURL(file);
+      })));
+      return { images, paths, ...(referencedImages ? { message: 'Текущая модель не принимает изображения: добавлены пути к файлам.' } : {}) };
+    } finally { setReadingImages(false); }
+  });
+  useEffect(() => {
+    if (!active) { setDragOver(false); return; }
+    const hasFiles = (transfer: DataTransfer | null) => Boolean(transfer && Array.from(transfer.types).includes('Files'));
+    const blocked = () => Array.from(document.querySelectorAll('[aria-modal="true"]')).some(modal => modal.getClientRects().length > 0) || Boolean(workspace?.actionBusy);
+    const drag = (event: DragEvent) => {
+      if (!hasFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = blocked() ? 'none' : 'copy';
+      setDragOver(!blocked());
+    };
+    const leave = (event: DragEvent) => { if (!event.relatedTarget) setDragOver(false); };
+    const drop = (event: DragEvent) => {
+      if (!hasFiles(event.dataTransfer)) return;
+      event.preventDefault(); event.stopPropagation(); setDragOver(false);
+      if (blocked()) return;
+      if (Array.from(event.dataTransfer?.items || []).some(item => item.webkitGetAsEntry?.()?.isDirectory)) {
+        codex.setError('Добавлять можно только файлы, без папок.'); return;
+      }
+      void addFiles(Array.from(event.dataTransfer?.files || []));
+    };
+    const paste = (event: ClipboardEvent) => {
+      if (event.defaultPrevented || blocked()) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('input, textarea, [contenteditable="true"], [role="textbox"]') && target !== inputRef.current) return;
+      const transfer = event.clipboardData;
+      const files = Array.from(transfer?.files || []);
+      if (files.length) { event.preventDefault(); void addFiles(files); }
+      else if (bridge.readClipboardFiles && !Array.from(transfer?.types || []).some(type => type === 'text/plain' || type === 'text/html')) {
+        event.preventDefault();
+        void receiveFiles(() => bridge.readClipboardFiles({ imageSlots: Math.max(0, 10 - attachments.length), imagesSupported }));
+      }
+    };
+    document.addEventListener('dragover', drag, true);
+    document.addEventListener('dragleave', leave, true);
+    document.addEventListener('drop', drop, true);
+    document.addEventListener('paste', paste);
+    return () => {
+      document.removeEventListener('dragover', drag, true);
+      document.removeEventListener('dragleave', leave, true);
+      document.removeEventListener('drop', drop, true);
+      document.removeEventListener('paste', paste);
+    };
+  });
   const clearSentDraft = (draft: string, images: Attachment[]) => {
     if (savedDraft.current) { const saved = savedDraft.current; savedDraft.current = null; setEditingMessage(false); setText(saved.text); setAttachments(saved.attachments); }
     else { setText(current => current === draft ? '' : current); setAttachments(current => current.filter(image => !images.includes(image))); }
@@ -586,11 +654,11 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
         {ready && codex.thread && !codex.threadReady && !codex.loading && <div className="alert notice-alert"><span>Для продолжения нужно подключить диалог.</span><button disabled={locked || sending} onClick={() => void codex.resume(codex.thread!, true)}><RefreshCw size={14} />Повторить подключение</button></div>}
         {(editingMessage || loadingEdit) && <div className="composer-edit-banner" role="status"><span><strong>{loadingEdit ? 'Восстанавливаем сообщение…' : 'Редактирование сообщения'}</strong>{loadingEdit ? 'Загружаем исходные изображения.' : 'Исправленный текст отправится новым сообщением. Ваш черновик сохранён.'}</span><button type="button" className="text-button" aria-label="Отменить редактирование" disabled={sending || readingImages || selectingFiles} onClick={cancelEdit}>Отмена</button></div>}
         <MessageQueue queue={queue} blocked={queueBlocked} />
-        <div ref={composerRef} className={`composer ${dragOver ? 'drag-over' : ''} ${queue.state.items.length ? 'with-queue' : ''}`} onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }} onDrop={e => { e.preventDefault(); setDragOver(false); void addImages([...e.dataTransfer.files]); }}>
+        <div ref={composerRef} className={`composer ${dragOver ? 'drag-over' : ''} ${queue.state.items.length ? 'with-queue' : ''}`}>
           {commands.length > 0 && <CommandMenu commands={commands} selected={Math.min(commandIndex, commands.length - 1)} onHighlight={setCommandIndex} onSelect={name => void chooseCommand(name)} />}
-          {dragOver && <div className="drop-overlay"><ImagePlus size={24} />Добавить изображения к сообщению</div>}
+          {dragOver && <div className="drop-overlay"><ImagePlus size={24} />Изображения — вложениями, остальные файлы — путями</div>}
           {attachments.length > 0 && <div className="attachments">{attachments.map((attachment, i) => <div className="attachment" key={`${attachment.name}-${i}`}><img src={attachment.dataUrl} alt={attachment.name} /><button data-tooltip="Удалить изображение" aria-label={`Удалить ${attachment.name}`} disabled={loadingEdit || sending} onClick={() => setAttachments(previous => previous.filter((_, index) => index !== i))}><X size={12} /></button><span>{attachment.name}</span></div>)}</div>}
-          <textarea ref={inputRef} value={text} readOnly={loadingEdit || (editingMessage && sending)} rows={2} placeholder="Что будем делать? Можно вставить изображение…" aria-label={`Сообщение ${engineName}`} onChange={e => { setCommandMenuOpen(false); setText(e.target.value); }} onPaste={e => { const files = [...e.clipboardData.items].filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter((file): file is File => !!file); if (files.length) { e.preventDefault(); void addImages(files); } }} onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === 'Escape' && (editingMessage || loadingEdit)) { e.preventDefault(); cancelEdit(); } else if (commands.length && e.key === 'Escape') { e.preventDefault(); setCommandMenuOpen(false); setCommandDismissed(true); } else if (commands.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setCommandKeyboardSelected(true); setCommandIndex(index => (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length); } else if (commands.length && (matchingCommands(text).length > 0 || commandKeyboardSelected) && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { e.preventDefault(); void chooseCommand(commands[Math.min(commandIndex, commands.length - 1)].name); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+          <textarea ref={inputRef} value={text} readOnly={loadingEdit || (editingMessage && sending)} rows={2} placeholder="Что будем делать? Можно вставить или перенести файлы…" aria-label={`Сообщение ${engineName}`} onChange={e => { setCommandMenuOpen(false); setText(e.target.value); }} onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === 'Escape' && (editingMessage || loadingEdit)) { e.preventDefault(); cancelEdit(); } else if (commands.length && e.key === 'Escape') { e.preventDefault(); setCommandMenuOpen(false); setCommandDismissed(true); } else if (commands.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setCommandKeyboardSelected(true); setCommandIndex(index => (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length); } else if (commands.length && (matchingCommands(text).length > 0 || commandKeyboardSelected) && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { e.preventDefault(); void chooseCommand(commands[Math.min(commandIndex, commands.length - 1)].name); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
           <div className="composer-toolbar"><div className="composer-tools"><button className="icon-button attach-button" data-tooltip="Добавить файлы: изображения с превью, остальные — путями в сообщение" aria-label="Добавить файлы" disabled={readingImages || selectingFiles || loadingEdit || sending || Boolean(workspace?.actionBusy)} onClick={() => void chooseFiles()}>{readingImages || selectingFiles ? <LoaderCircle size={18} className="spin" /> : <Plus size={20} />}</button><span className="toolbar-divider" />
             <button type="button" className="icon-button" aria-label={`Команды ${engineName}`} data-tooltip={`Команды ${engineName} (/)`} disabled={editingMessage || loadingEdit || sending} onClick={() => { setCommandMenuOpen(value => !value); setCommandDismissed(false); setCommandKeyboardSelected(false); inputRef.current?.focus(); }}><Terminal size={16} /></button>
             <ComposerSelect kind="provider" label="Агент" value={codex.provider} options={[{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude Code" }]} icon={<Terminal size={14} />} disabled={!workspace || Boolean(workspace.opening) || Boolean(workspace.actionBusy) || selectingFiles} active={active} onChange={selectProvider} />
@@ -622,7 +690,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       {tab === 'agents' && <SubagentPanel items={codex.items} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} onJump={itemId => { setShowChatSearch(false); if (window.innerWidth <= 1000) setShowPanel(false); setLocalJump({ itemId, key: Date.now() }); }} />}
       {tab === 'changes' && <ChangesPanel key={codex.thread?.id || 'new'} items={codex.items} diff={codex.diff} cwd={codex.cwd} diffTurnId={codex.diffTurnId} turnDiffs={codex.turnDiffs} active={active && !workspace?.actionBusy} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} busy={codex.busy} mutationsAllowed={ready && codex.access !== 'read-only' && !locked && !codex.requests.length && !sending && !readingImages} onLoadEarlier={() => void codex.loadEarlier()} onReviewChange={setShowChangesReview} onPinReview={pinReview} onQuote={appendDraft} externalTurnSelection={externalTurnSelection} />}
     </div><div className="panel-bottom"><span className="status-dot online" /><span>{tab === 'files' ? 'Файлы текущей рабочей папки' : tab === 'outline' ? 'Подписи хранятся только в этом приложении' : 'Изменения сохраняются в проекте'}</span></div></aside>
-    <input ref={filesRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => { void addImages([...(e.target.files || [])]); e.currentTarget.value = ''; }} />
+    <input ref={filesRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => { void addFiles([...(e.target.files || [])]); e.currentTarget.value = ''; }} />
 
     {showHistory && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setShowHistory(false); }}><section className="settings-modal" role="dialog" aria-modal="true" aria-label="История диалогов"><div className="modal-header"><h2>История диалогов</h2><button type="button" className="icon-button" aria-label="Закрыть историю" onClick={() => setShowHistory(false)}><X size={18} /></button></div><div className="command-history">{codex.history.map(thread => <button key={thread.id} disabled={!workspace && locked} onClick={() => { setShowHistory(false); if (workspace) workspace.openThread(codex.cwd, thread); else void codex.resume(thread); }}>{thread.name || thread.preview || 'Новый диалог'}</button>)}{!codex.history.length && <p className="muted">{codex.historyLoading ? 'Загружаем историю…' : 'В этой папке пока нет диалогов.'}</p>}{codex.historyCursor && <button disabled={codex.historyLoading} onClick={() => void codex.refreshHistory(codex.cwd, codex.historyCursor!)}>Загрузить ещё</button>}</div></section></div>}
     {showSettings && <SettingsDialog active={active} busy={memoryRulesBusy} onClose={() => setShowSettings(false)} tabs={[

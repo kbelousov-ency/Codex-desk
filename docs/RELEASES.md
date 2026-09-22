@@ -1,5 +1,19 @@
 # Release и Nightly
 
+## Две копии: GitHub и Gerrit — решение 2026-09-22
+
+По указанию пользователя команда **«Заливай»** означает отправку готовых изменений в **оба репозитория**: GitHub `https://github.com/kbelousov-ency/Codex-desk` (копия `E:\My projects\CodexDesk`, ветка `main`) и Gerrit `https://gerrit1.hq.encycam.com/a/CodexDesk` (копия `E:\CodexDesk`, ветка `master`). Сохранять обе истории и несвязанные рабочие изменения; перед отправкой согласовывать содержимое копий, не применять force-push для их выравнивания. При выпуске исходники и публикуемые теги дублируются в оба репозитория.
+
+Приложение пока продолжает проверять **GitHub Releases**; Setup и метаданные обновлений остаются там. Пользователь первоначально выбрал хранить установщики в том же Gerrit `CodexDesk`, затем отложил переход до решения о способе хранения. Перенастройка updater на Gerrit остановлена до изменения кода. Одна смена Git remote источник обновлений не меняет. Переход полностью на Gerrit выполняется по будущему указанию пользователя; сейчас поддерживаются две копии исходников. Правило явного подтверждения переноса Nightly в Release сохраняется; само определение команды не является поручением немедленно выполнить push или публикацию.
+
+## Перенос и вставка файлов — Nightly 0.5.0, 2026-09-22
+
+[Файлы в сообщении](COMPOSER_FILES.md): drop по всему окну и Ctrl+V файлов из Проводника добавляют изображения с превью, остальные файлы — путями в черновик. Nightly **0.5.0**, build ID `555b67429eb279364035ba773a3a4d087bd7f144af3699bb5fd4b69e6268da78`, собрана `2026-09-22T09:33:58.338Z` через `npm.cmd run package`. Кандидат `artifacts/nightly-update/app` ждёт «Закрыть» или ручного выхода. Промежуточный `7e9b21a2128b` снят штатным discard после остановки только созданного этой задачей Node-помощника; финальный исправляет блокировку вставки скрытым modal другой вкладки. Пользовательский Nightly не закрывался.
+
+TypeScript/Vite, 42 targeted backend/preload/diagnostics tests, `test:composer-files`, `test:edit-message`, `test:message-queue` прошли. Готовый exe прошёл настоящий Electron/preload/IPC `test:composer-files-host` (`artifacts/composer-files-host-KKcx43`), включая native File→webUtils, несколько файлов из clipboard fixture, stale/session guards и неизменность исходных файлов. Windows STA serializer проверен с подставной коллекцией; реальный буфер пользователя не читался/не менялся, натурное Explorer→Chromium paste не проверялось. Запросов модели — 0.
+
+Проверены manifest 72 файлов и точное совпадение 51 файла electron/dist с исходниками (`artifacts/file-transfer-package-verification.json`). SHA-256 кандидата app.asar `96bcaf75078a0b0de2fe5da0473388de51abee679def2fca0b396e47c5ad30f3`; Release `b959e16b0682f462c672955eb04e654e7821547a7cb952abe9412cef441e97a6` не продвигался. Снимок — `artifacts/composer-files-transfer.png`.
+
 ## Статус автоматического реконекта — Nightly 0.5.0, 2026-09-22
 
 [Реконект ответа](THREAD_RECOVERY.md#автоматический-реконект-ответа--2026-09-22) показывает спиннер и номер попытки, автоматически скрывается при восстановлении model events и не стирает несвязанные ошибки. Nightly **0.5.0**, build ID `540d2838236acc26136129a6e1c5ca7ff1c5293a277405bb661f4f8fddef1177`, собрана `2026-09-22T08:25:44.862Z` через `npm.cmd run package`; кандидат `artifacts/nightly-update/app` ждёт «Закрыть» или ручного выхода. Пользовательский Nightly не закрывался, Release не продвигался.

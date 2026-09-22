@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-async function fixture() {
+async function fixture({ getPathForFile = () => '' } = {}) {
   const ipc = new EventEmitter();
   const calls = [];
   const sends = [];
@@ -15,7 +15,7 @@ async function fixture() {
     Buffer,
     require: name => {
       assert.equal(name, 'electron');
-      return { ipcRenderer: ipc, contextBridge: { exposeInMainWorld: (key, value) => { assert.equal(key, 'codex'); bridge = value; } } };
+      return { ipcRenderer: ipc, webUtils: { getPathForFile }, contextBridge: { exposeInMainWorld: (key, value) => { assert.equal(key, 'codex'); bridge = value; } } };
     },
   });
   return { bridge, ipc, calls, sends };
@@ -137,6 +137,29 @@ test('composer picker passes only selection preferences and the owning session',
     ['host:chooseComposerFiles', { imageSlots: 7, imagesSupported: false }, 'a'],
     ['host:chooseComposerFiles', undefined, 'b'],
   ]);
+});
+
+test('clipboard file reads retain the owning session and never accept renderer paths', async () => {
+  const { bridge, calls } = await fixture();
+  await bridge.forSession('a').readClipboardFiles({ imageSlots: 4, imagesSupported: false });
+  await bridge.forSession('b').readClipboardFiles();
+  assert.deepEqual(calls, [
+    ['host:readClipboardFiles', { imageSlots: 4, imagesSupported: false }, 'a'],
+    ['host:readClipboardFiles', undefined, 'b'],
+  ]);
+});
+
+test('native File paths use webUtils synchronously without IPC or synthetic path fallbacks', async () => {
+  const nativeFile = {}, bitmap = {}, invalid = { path: 'C:\\secret.txt' };
+  const { bridge, calls } = await fixture({ getPathForFile: file => {
+    if (file === nativeFile) return 'C:\\файлы\\document.pdf';
+    if (file === bitmap) return '';
+    throw new Error('A File object is required.');
+  } });
+  assert.equal(bridge.forSession('a').getPathForFile(nativeFile), 'C:\\файлы\\document.pdf');
+  assert.equal(bridge.getPathForFile(bitmap), '');
+  assert.equal(bridge.getPathForFile(invalid), '');
+  assert.deepEqual(calls, []);
 });
 
 test('rollback preview, apply and undo retain session ownership without generic RPC', async () => {

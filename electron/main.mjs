@@ -13,6 +13,7 @@ import { getGitStatus, getGitDiff } from './git-reader.mjs';
 import { GitRollbackService } from './git-rollback.mjs';
 import { createWorktree, mergeWorktree, previewWorktreeMerge, removeWorktree, worktreeSummary } from './git-worktree.mjs';
 import { prepareComposerFiles } from './composer-files.mjs';
+import { readClipboardFilePaths } from './clipboard-files.mjs';
 import { ClaudeHistory } from './claude-history.mjs';
 import { ClaudeThreadManagement } from './claude-threads.mjs';
 import { ClaudeArchiveStore } from './claude-archive.mjs';
@@ -857,6 +858,19 @@ function installHandlers() {
       if (selected.canceled || !selected.filePaths.length) return null;
       return await prepareComposerFiles(selected.filePaths, { ...options, assertActive });
     } finally { session.composerPicker = false; }
+  });
+  handle('host:readClipboardFiles', 1, async ({ session }, options = {}) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['imageSlots', 'imagesSupported'].includes(key)) || (options.imageSlots !== undefined && (!Number.isInteger(options.imageSlots) || options.imageSlots < 0 || options.imageSlots > 10)) || (options.imagesSupported !== undefined && typeof options.imagesSupported !== 'boolean')) throw new Error('Некорректные параметры вставки файлов.');
+    if (session.composerClipboard) throw new Error('Дождитесь завершения вставки файлов.');
+    const generation = session.generation, cwd = session.currentCwd;
+    const assertActive = () => { session.assertActive(generation); if (session.currentCwd !== cwd) throw new Error('Рабочая папка изменилась. Вставьте файлы снова.'); };
+    session.composerClipboard = true;
+    try {
+      const paths = await readClipboardFilePaths();
+      assertActive();
+      if (!paths) return null;
+      return await prepareComposerFiles(paths, { ...options, assertActive });
+    } finally { session.composerClipboard = false; }
   });
   handle('host:saveImages', 1, async (_record, images) => {
     if (!Array.isArray(images) || images.length > 12) throw new Error('Можно прикрепить до 12 изображений.');
