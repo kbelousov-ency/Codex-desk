@@ -232,7 +232,9 @@ export class WindowSession {
     const provider = this.settings.provider || 'codex';
     const nextExecutable = await (provider === 'claude' ? this.resolveClaudeExecutable : this.resolveExecutable)(this.settings.executable);
     this.assertActive(generation);
-    if (this.bootstrap && this.client && this.currentCwd === cwd && this.executable === nextExecutable) return this.bootstrap;
+    // A normal start reuses the live bootstrap, but an explicit reconnect may
+    // need to reread a model catalog that changed in the provider/router.
+    if (this.bootstrap && this.client && this.currentCwd === cwd && this.executable === nextExecutable && !options.refreshModels) return this.bootstrap;
     let claudeEnv = {};
     if (provider === 'claude') {
       claudeEnv = await this.claudeEnvironment();

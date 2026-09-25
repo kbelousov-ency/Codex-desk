@@ -326,7 +326,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     setTurnWork(current => Object.fromEntries(Object.entries(current).map(([id, work]) => [id, work.status === 'inProgress' ? { ...work, status: 'disconnected' } : work])));
   }, [invalidateCache, updateInterrupted, pauseQueue]);
 
-  const connect = useCallback(async (directory?: string, options?: { keepThread?: boolean }) => {
+  const connect = useCallback(async (directory?: string, options?: { keepThread?: boolean; refreshModels?: boolean }) => {
     if (connectingRef.current || terminalRef.current || authRef.current) return;
     if (directory && pendingMessageRef.current) { setNotice('Проверьте неподтверждённую отправку перед сменой папки.'); return; }
     connectingRef.current = true;
@@ -342,7 +342,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       settingsRef.current = saved;
       providerRef.current = saved.provider || 'codex'; setProvider(providerRef.current);
       setCapabilities(providerCapabilities(providerRef.current));
-      const result = await bridge.start(directory ? { cwd: directory } : saved.cwd ? { cwd: saved.cwd } : undefined);
+      const startOptions = directory ? { cwd: directory } : saved.cwd ? { cwd: saved.cwd } : {};
+      const result = await bridge.start(options?.refreshModels ? { ...startOptions, refreshModels: true } : startOptions);
       providerRef.current = result.provider || saved.provider || 'codex'; setProvider(providerRef.current);
       setCapabilities({ ...providerCapabilities(providerRef.current), ...result.capabilities });
       const effective = result.config?.config || result.config || {};
@@ -822,7 +823,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
 
   const reconnect = async () => {
     const previous = threadRef.current;
-    await connect(undefined, { keepThread: Boolean(previous) });
+    await connect(undefined, { keepThread: Boolean(previous), refreshModels: true });
     if (connectionRef.current !== 'ready') return false;
     if (!previous || threadRef.current?.id !== previous.id || terminalRef.current) return true;
     return resume(previous, true);

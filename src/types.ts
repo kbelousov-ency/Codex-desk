@@ -6,6 +6,8 @@ export type AgentCapabilities = { compact: boolean; steer: boolean; terminal: bo
 export type AgentDetails = { commands: { name: string; description: string; builtin: boolean }[]; agents: { name: string; description: string }[]; mcpServers: { name: string; status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'; error?: string; scope?: string }[] | null; mcpError?: string };
 export type UsageWindow = { key: string; label: string; utilization: number | null; resetsAt: string | null };
 export type UsageLimits = { available: boolean; subscription?: string | null; windows: UsageWindow[]; updatedAt?: string; message?: string };
+export type RouterLimit = { key: string | null; available: boolean | null; tier: string | null; state: string | null; reset_at: string | null; limit_credits: number | null; used_credits: number | null; ledger_used_credits?: number | null; remaining_credits: number | null; used_percent: number | null };
+export type RouterUsageSnapshot = { available: boolean; fetchedAt?: string; overview?: Record<string, unknown>; limits?: RouterLimit[]; status?: number; reason?: string; limitReason?: string; overviewReason?: string };
 export type ClaudeAuthStatus = { loggedIn: boolean; authMethod?: string; email?: string; subscriptionType?: string; apiProvider?: string; configDirectory?: string; loginInProgress: boolean };
 export type ClaudeTokenInfo = { configured: boolean; savedAt?: string; encryptionAvailable: boolean; error?: string; restarted?: number; busy?: number };
 export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string; provider?: AgentProvider };
@@ -80,7 +82,7 @@ export type McpImportPreview = { previewId: string; configPath: string; servers:
 export type McpSaveResult = { configPath: string; backupPath: string | null; servers: string[]; message?: string };
 export type McpConnectionReport = { servers: { name: string; authStatus: string; status: string; toolCount: number }[]; message?: string };
 export interface CodexBridge {
-  start(options?: { cwd?: string }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities; cliVersion?: string }>;
+  start(options?: { cwd?: string; refreshModels?: boolean }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities; cliVersion?: string }>;
   request(method: string, params?: any): Promise<any>;
   respond(id: number | string, result: any): Promise<void>;
   chooseDirectory(): Promise<string | null>;
@@ -117,6 +119,7 @@ export interface CodexBridge {
   saveMcpImport(options: { previewId: string; replaceExisting: boolean }): Promise<McpSaveResult>;
   reloadMcp(): Promise<{ status: 'applied' | 'deferred'; message: string }>;
   checkMcp(): Promise<McpConnectionReport>;
+  getRouterUsage?(): Promise<RouterUsageSnapshot>;
 }
 export interface WorkspaceBridge extends CodexBridge {
   setup?: SetupBridge;

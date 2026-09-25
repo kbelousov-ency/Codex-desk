@@ -34,6 +34,7 @@ export interface SetupBridge {
   state(): Promise<{ show: boolean; completed: boolean; deferred: boolean; preferredProvider?: AgentProvider }>;
   scan(): Promise<SetupScan>;
   install(id: SetupComponentId): Promise<SetupScan>;
+  update(id: 'codex'): Promise<SetupScan>;
   chooseExecutable(id: SetupComponentId): Promise<SetupScan | null>;
   previewConfig(): Promise<SetupConfigPreview | null>;
   applyConfig(options: { previewId: string; replaceExisting: boolean }): Promise<{ configPath: string; backupPath: string | null }>;

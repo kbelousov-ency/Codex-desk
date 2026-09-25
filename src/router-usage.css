@@ -1,0 +1,14 @@
+.router-usage{position:static;min-width:0;flex:0 1 auto}
+.router-usage-trigger{max-width:200px}
+.router-usage-trigger span{overflow:hidden;text-overflow:ellipsis}
+.router-usage-popover{width:min(400px,100%);max-height:min(620px,65vh);overflow:auto;overscroll-behavior:contain;overflow-wrap:anywhere}
+.router-limits{margin:12px 0;padding:10px 0;border-top:1px solid #34473b;border-bottom:1px solid #34473b}
+.router-limits h2{font-size:12px;font-weight:600;color:#d0ddd4;margin:0 0 9px}
+.router-limit-card+.router-limit-card{border-top:1px solid #34473b;margin-top:12px;padding-top:10px}
+.router-limit-card h3{margin:0;font-size:10px;font-weight:550;color:#aec8b7}
+.router-limit-card dl{display:grid;gap:7px;margin:10px 0 0}
+.router-limit-card dl>div{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+.router-limit-card dt{color:#a1b7a9;flex-shrink:0;font-size:10px}
+.router-limit-card dd{margin:0;text-align:right;font-size:11px;font-weight:600;color:#d0ddd4;font-variant-numeric:tabular-nums;min-width:0}
+.router-limit-card dd small{display:block;margin-top:3px;font-size:9.5px;color:#a1b7a9;font-weight:400}
+.router-limit-missing{color:#d3bb87}

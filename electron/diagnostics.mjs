@@ -41,7 +41,7 @@ const CHANNELS = new Set([
   'host:openDiagnosticsFolder', 'host:rendererError', 'host:getBuildInfo', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate',
   'host:getClaudeAuthStatus', 'host:loginClaude', 'host:getClaudeToken', 'host:setClaudeToken', 'host:clearClaudeToken', 'host:setupClaudeToken',
   'codex:start', 'codex:request', 'codex:respond', 'unknown',
-  'setup:state', 'setup:scan', 'setup:install', 'setup:chooseExecutable', 'setup:previewConfig', 'setup:applyConfig',
+  'setup:state', 'setup:scan', 'setup:install', 'setup:update', 'setup:chooseExecutable', 'setup:previewConfig', 'setup:applyConfig',
   'setup:authStatus', 'setup:login', 'setup:openPortal', 'setup:openGitWebsite', 'setup:complete',
 ]);
 const METHODS = new Set([

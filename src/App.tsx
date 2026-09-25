@@ -38,6 +38,7 @@ import { cliVersionNote } from './cli-versions';
 import EffectiveSettings from './EffectiveSettings';
 import ClaudeAuthSettings from './ClaudeAuthSettings';
 import UsageLimit from './UsageLimit';
+import RouterUsage from './RouterUsage';
 import SubagentPanel from './SubagentPanel';
 import ExportConversation from './ExportConversation';
 import AgentHandoff from './AgentHandoff';
@@ -87,6 +88,25 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   }, []);
   const [showSettings, setShowSettings] = useState(false);
   const [memoryRulesBusy, setMemoryRulesBusy] = useState(false);
+  const [cliUpdateBusy, setCliUpdateBusy] = useState(false);
+  const [cliUpdateProgress, setCliUpdateProgress] = useState('');
+  useEffect(() => {
+    const setup = window.codex.setup;
+    if (!setup) return;
+    return setup.onProgress(event => {
+      if (event.component !== 'codex') return;
+      setCliUpdateProgress(event.message);
+      if (event.stage === 'done' || event.stage === 'error') setCliUpdateBusy(false);
+    });
+  }, []);
+  const updateCodexCli = async () => {
+    const setup = window.codex.setup;
+    if (!setup || cliUpdateBusy || codex.provider !== 'codex') return;
+    setCliUpdateBusy(true);
+    setCliUpdateProgress('Запускаем обновление Codex CLI…');
+    try { await setup.update('codex'); }
+    catch (cause) { setCliUpdateBusy(false); setCliUpdateProgress(''); codex.setError(errorText(cause)); }
+  };
   const [showExport, setShowExport] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
   useEffect(() => { if (!active) setShowHandoff(false); }, [active]);
@@ -673,7 +693,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
             {codex.busy ? <button className="stop-button" onClick={() => void codex.stop()} data-tooltip="Остановить выполнение" aria-label="Остановить выполнение"><Square size={14} fill="currentColor" /></button> : <button className="send-button" data-tooltip="Отправить (Enter)" aria-label="Отправить сообщение" disabled={!ready || locked || selectingFiles || sending || readingImages || loadingEdit || (!text.trim() && !attachments.length)} onClick={() => void send()}><ArrowUp size={20} /></button>}
           </div></div>
         </div>
-        <div className="composer-footer"><AccessSelect provider={codex.provider} value={codex.access} disabled={locked || selectingFiles || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span>{codex.capabilities.usage && <UsageLimit usage={codex.usage} loading={codex.usageLoading} active={active} disabled={!ready || locked || sending} onRefresh={() => void codex.refreshUsage()} onCommand={command => { if (ready && !locked && !sending) void codex.send(command, []); }} />}<CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compactSupported={codex.capabilities.compact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
+        <div className="composer-footer"><AccessSelect provider={codex.provider} value={codex.access} disabled={locked || selectingFiles || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span>{codex.capabilities.usage && <UsageLimit usage={codex.usage} loading={codex.usageLoading} active={active} disabled={!ready || locked || sending} onRefresh={() => void codex.refreshUsage()} onCommand={command => { if (ready && !locked && !sending) void codex.send(command, []); }} />}<RouterUsage bridge={bridge} enabled={codex.provider === 'codex' && codex.config?.model_provider === 'router'} ready={ready} active={active} /><CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compactSupported={codex.capabilities.compact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
       </div>
     </main>
 
@@ -705,8 +725,8 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       { id: 'connection', label: 'Подключение', icon: <Terminal size={15} aria-hidden="true" />, content: <>
         {window.codex.setup && <div className="settings-row"><span><strong>Установка и настройка агентов</strong><small>Добавить Codex или Claude, применить конфигурацию и настроить вход.</small></span><button className="secondary-button" disabled={locked || memoryRulesBusy} onClick={() => { setShowSettings(false); window.dispatchEvent(new Event('codex-desk:open-setup')); }}>Открыть мастер</button></div>}
         <div className="settings-row"><span><strong>Рабочая папка</strong><small>{codex.cwd || 'Не выбрана'}</small></span><button className="secondary-button" disabled={workspace?.opening || (!workspace && locked)} onClick={addProject}><FolderOpen size={14} />Изменить</button></div>
-        <div className="settings-row"><span><strong>{engineName} CLI</strong><small>{codex.executable || 'Автоматический поиск'}{codex.cliVersion ? ` · версия ${codex.cliVersion}` : ''}</small>{cliVersionNote(codex.provider, codex.cliVersion) && <small className="muted">{cliVersionNote(codex.provider, codex.cliVersion)}</small>}</span><button className="secondary-button" disabled={locked} onClick={() => void codex.selectExecutable()}>Выбрать</button></div>
-        <div className="settings-row"><span><strong>Соединение</strong><small>{status}</small></span><button className="secondary-button" disabled={locked} onClick={() => void codex.connect()}><RefreshCw size={14} />Переподключить</button></div>
+        <div className="settings-row"><span><strong>{engineName} CLI</strong><small>{codex.executable || 'Автоматический поиск'}{codex.cliVersion ? ` · версия ${codex.cliVersion}` : ''}</small>{cliVersionNote(codex.provider, codex.cliVersion) && <small className="muted">{cliVersionNote(codex.provider, codex.cliVersion)}</small>}</span><button className="secondary-button" disabled={locked} onClick={() => void codex.selectExecutable()}>Выбрать</button>{codex.provider === 'codex' && window.codex.setup && <button className="secondary-button" disabled={locked || cliUpdateBusy} onClick={() => void updateCodexCli()}>{cliUpdateBusy ? 'Обновляем…' : 'Обновить CLI'}</button>}</div>
+        <div className="settings-row"><span><strong>Соединение</strong><small>{status}</small></span><button className="secondary-button" disabled={locked} onClick={() => void codex.connect(undefined, { refreshModels: true })}><RefreshCw size={14} />Переподключить</button></div>
         {codex.diagnostics.length > 0 && <details className="diagnostics"><summary>Диагностика подключения</summary><pre>{codex.diagnostics.join('\n')}</pre></details>}
       </> },
       { id: 'mcp', label: 'MCP', icon: <Plug size={15} aria-hidden="true" />, content: codex.capabilities.mcp ? <McpSettings bridge={bridge} active={active && showSettings} /> : <p className="muted">Подключения Claude Code настраиваются через его CLI. Импорт MCP из этого окна пока доступен для Codex.</p> },
