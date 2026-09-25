@@ -102,6 +102,25 @@ test('install is explicit, uses official URLs in a hidden no-shell process, and 
   assert.equal(f.calls.filter(value => value.args.includes('-EncodedCommand')).length, 1);
 });
 
+test('Codex update uses the native update command and preserves settings', async t => {
+  const f = await fixture(t);
+  const executable = path.join(f.root, 'codex.exe');
+  f.installed.add('codex');
+  f.settings.codex = { executable, model: 'preserved', effort: 'high' };
+  const progress = [];
+  const result = await f.service.update('codex', value => progress.push(value));
+  const update = f.calls.find(value => value.args[0] === 'update');
+  assert.equal(update.file, executable);
+  assert.deepEqual(update.args, ['update']);
+  assert.equal(update.options.shell, false);
+  assert.equal(update.options.windowsHide, true);
+  assert.equal(update.options.env.CODEX_NON_INTERACTIVE, '1');
+  assert.equal(update.options.env.TERM, undefined);
+  assert.equal(update.options.timeout, 15 * 60_000);
+  assert.deepEqual(progress.map(value => value.stage), ['installing', 'checking', 'done']);
+  assert.equal(result.components[0].status, 'installed');
+  assert.deepEqual(f.settings.codex, { executable, model: 'preserved', effort: 'high' });
+});
 test('Claude native install uses its official script and preserves existing Codex preferences', async t => {
   const f = await fixture(t);
   f.settings.codex = { model: 'custom', effort: 'high' };

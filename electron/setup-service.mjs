@@ -53,11 +53,11 @@ async function findGit({ env, home, platform, run }) {
 export class SetupService {
   constructor({ directory, env = process.env, home = env.USERPROFILE || os.homedir(), platform = process.platform,
     getSettings = async () => ({}), saveSettings = async () => {}, getClaudeEnvironment = async () => env,
-    assertMutable = () => {}, initialExisting = false, hasExistingUser, now = Date.now, run = execFileAsync,
+    assertMutable = () => {}, beforeUpdate = async () => {}, initialExisting = false, hasExistingUser, now = Date.now, run = execFileAsync,
     finders = {}, beforeConfigCommit = async () => {}, writeBackup = writeFile,
     memoryRules = new MemoryRulesService({ env, home }) } = {}) {
     if (!directory || !path.isAbsolute(directory)) throw new TypeError('SetupService requires an absolute directory.');
-    Object.assign(this, { directory, env, home, platform, getSettings, saveSettings, getClaudeEnvironment,
+    Object.assign(this, { directory, env, home, platform, getSettings, saveSettings, getClaudeEnvironment, beforeUpdate,
       assertMutable, initialExisting, hasExistingUser, now, run, beforeConfigCommit, writeBackup, memoryRules });
     this.finders = {
       codex: (preferred, options) => findCodex(preferred, options),
@@ -195,19 +195,65 @@ export class SetupService {
     if (!values.some(value => value.toLowerCase() === directory.toLowerCase())) this.env[key] = [directory, ...values].join(delimiter);
   }
 
+  async update(id, onProgress) {
+    componentId(id);
+    if (id !== 'codex') throw new Error('Обновлять из Desk можно только Codex CLI.');
+    if (this.platform !== 'win32') throw new Error('Автоматическое обновление доступно только в Windows.');
+    return this._exclusive(id, async () => {
+      const current = await this._check(id);
+      if (current.status !== 'installed' || !current.executable) throw new Error('Codex CLI не найден или не запускается.');
+      this.assertMutable(id);
+      await this.beforeUpdate(id);
+      this.assertMutable(id);
+      this._progress(onProgress, id, 'installing', 'Обновляется Codex CLI. Это может занять несколько минут.');
+      try {
+        try {
+          const updateEnv = { ...this.env, CODEX_NON_INTERACTIVE: '1' };
+          delete updateEnv.TERM;
+          await this.run(current.executable, ['update'], {
+            env: updateEnv, cwd: this.home, shell: false, windowsHide: true,
+            timeout: 15 * 60_000, maxBuffer: 2 * 1024 * 1024,
+          });
+        } catch {
+          const defaultExecutable = path.join(this.env.LOCALAPPDATA || path.join(this.home, 'AppData', 'Local'), 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe');
+          if (path.resolve(current.executable).toLowerCase() !== path.resolve(defaultExecutable).toLowerCase()) throw new Error('Штатное обновление не завершилось для выбранного пути Codex CLI. Укажите native Codex CLI или обновите его вручную.');
+          // Native update may require an interactive terminal. Fall back to the same
+          // fixed official installer used for first-time Codex setup.
+          try {
+            const script = "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $setupScript = Invoke-RestMethod -Uri '" + INSTALL_URLS.codex + "' -TimeoutSec 60; & ([scriptblock]::Create($setupScript)); if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }";
+            const powershell = this.env.SystemRoot ? path.join(this.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe';
+            await this.run(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
+              env: { ...this.env, CODEX_NON_INTERACTIVE: '1' }, cwd: this.home, shell: false, windowsHide: true,
+              timeout: 15 * 60_000, maxBuffer: 2 * 1024 * 1024,
+            });
+          } catch { throw new Error('Не удалось обновить Codex CLI. Проверьте сеть и повторите попытку.'); }
+        }
+        this._progress(onProgress, id, 'checking', 'Проверяется обновлённый Codex CLI.');
+        const updated = await this._check(id);
+        if (updated.status !== 'installed' || !updated.executable) throw new Error('Обновление завершилось, но Codex CLI пока не запускается.');
+        await this.saveSettings(id, { executable: updated.executable });
+        this._includePath(updated.executable);
+        this._progress(onProgress, id, 'done', 'Codex CLI обновлён, версия ' + updated.version + '.');
+        return await this.scan();
+      } catch (error) {
+        this._progress(onProgress, id, 'error', error.message);
+        throw error;
+      }
+    });
+  }
   async install(id, onProgress) {
     componentId(id);
     if (this.platform !== 'win32') throw new Error('Автоматическая установка доступна только в Windows.');
     return this._exclusive(id, async () => {
       const current = await this._check(id);
       if (current.status === 'installed') {
-        this._progress(onProgress, id, 'done', `${LABELS[id]} уже установлен.`);
+        this._progress(onProgress, id, 'done', LABELS[id] + ' уже установлен.');
         return this.scan();
       }
       // Existing but broken executables require explicit path repair. Never silently replace a working installation.
       if (current.status === 'error') throw new Error(`${LABELS[id]} уже обнаружен, но не запускается. Сначала проверьте путь к исполняемому файлу.`);
       this.assertMutable(id);
-      this._progress(onProgress, id, 'installing', `Устанавливается ${LABELS[id]}. Это может занять несколько минут.`);
+      this._progress(onProgress, id, 'installing', 'Устанавливается ' + LABELS[id] + '. Это может занять несколько минут.');
       try {
         if (id === 'git') {
           try { await this.run('winget.exe', ['--version'], { env: this.env, shell: false, windowsHide: true, timeout: 15_000, maxBuffer: 64 * 1024 }); }
@@ -229,7 +275,7 @@ export class SetupService {
         if (installed.status !== 'installed') throw new Error(`Установщик завершился, но ${LABELS[id]} пока не запускается. Нажмите «Проверить снова» или укажите путь к установленному файлу.`);
         if (id !== 'git') await this.saveSettings(id, { executable: installed.executable });
         this._includePath(installed.executable);
-        this._progress(onProgress, id, 'done', `${LABELS[id]} установлен, версия ${installed.version}.`);
+        this._progress(onProgress, id, 'done', LABELS[id] + ' установлен, версия ' + installed.version + '.');
         return await this.scan();
       } catch (error) {
         this._progress(onProgress, id, 'error', error.message);

@@ -26,12 +26,13 @@ test('setup bridge exposes fixed workspace operations and removable progress sub
   await bridge.setup.state();
   await bridge.setup.scan();
   await bridge.setup.install('claude');
+  await bridge.setup.update('codex');
   await bridge.setup.previewConfig();
   await bridge.setup.applyConfig({ previewId: 'opaque-id', replaceExisting: true });
   await bridge.setup.authStatus('claude');
   await bridge.setup.login('codex');
   await bridge.setup.complete({ provider: 'claude' });
-  assert.deepEqual(calls.map(call => call[0]), ['setup:state', 'setup:scan', 'setup:install', 'setup:previewConfig', 'setup:applyConfig', 'setup:authStatus', 'setup:login', 'setup:complete']);
+  assert.deepEqual(calls.map(call => call[0]), ['setup:state', 'setup:scan', 'setup:install', 'setup:update', 'setup:previewConfig', 'setup:applyConfig', 'setup:authStatus', 'setup:login', 'setup:complete']);
   assert.equal(bridge.forSession('a').setup, undefined);
   const events = [];
   const remove = bridge.setup.onProgress(progress => events.push(progress));

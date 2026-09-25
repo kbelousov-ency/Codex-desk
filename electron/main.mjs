@@ -38,6 +38,7 @@ import { persistShellIcon, watchShellShortcutIcon } from './windows-shell-icon.m
 import { SetupService } from './setup-service.mjs';
 import { SetupAuth, setupProvider } from './setup-auth.mjs';
 import { AppUpdateService, AppUpdateStore } from './app-updates.mjs';
+import { RouterUsageClient } from './router-usage.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let buildInfo = {};
@@ -87,6 +88,7 @@ const appUpdates = new AppUpdateService({
   },
 });
 const threadActions = new ThreadActionCoordinator();
+const routerUsage = new RouterUsageClient({ fetchImpl: (...args) => net.fetch(...args) });
 // A long-lived `claude setup-token` credential, encrypted with DPAPI, keeps the app's Claude processes off the
 // shared single-use refresh token that Claude Desktop, IDE extensions and parallel tabs otherwise race for.
 const claudeToken = new ClaudeTokenStore({
@@ -132,6 +134,7 @@ let updateGeneration = 0;
 let updateStorageBusy = false;
 let checkpointCleanup = Promise.resolve();
 let setupService;
+let codexUpdatePrepared = false;
 let setupInitiallyNew = false;
 const setupAuth = new SetupAuth({
   getSettings: provider => settingsStore.snapshotProvider(provider),
@@ -243,7 +246,7 @@ async function traced(channel, event, context, fn) {
   if (updateFrozen && !updateAllowedChannels.has(channel)) throw new Error('Nightly перезапускается для применения обновления.');
   const owner = windows.get(event.sender.id);
   if (owner?.workspaceClosing) {
-    const reads = new Set(['host:completeWorkspaceSave', 'host:getWorkspace', 'host:getSettings', 'host:getBuildInfo', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:completeUpdateRestore', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
+    const reads = new Set(['host:completeWorkspaceSave', 'host:getWorkspace', 'host:getSettings', 'host:getBuildInfo', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:completeUpdateRestore', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus', 'host:getRouterUsage']);
     const rpcReads = new Set(['thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'model/list', 'account/read', 'config/read']);
     if (!reads.has(channel) && !(channel === 'codex:request' && rpcReads.has(context.method))) throw new Error('Окно закрывается. Новые действия остановлены.');
   }
@@ -318,6 +321,7 @@ function addSession(record, settings) {
 }
 
 function installHandlers() {
+  workspaceHandle('host:getRouterUsage', () => routerUsage.overview());
   workspaceHandle('memoryRules:preview', (_record, _event, provider) => setupService.previewMemoryRules(provider));
   workspaceHandle('memoryRules:apply', async (_record, _event, options) => {
     const result = await setupService.applyMemoryRules(options);
@@ -326,6 +330,21 @@ function installHandlers() {
   });
   workspaceHandle('setup:state', async () => ({ ...await setupService.state(), preferredProvider: (await settingsStore.snapshot()).provider }));
   workspaceHandle('setup:scan', () => setupService.scan());
+  workspaceHandle('setup:update', async (record, _event) => {
+    codexUpdatePrepared = false;
+    try {
+      const result = await setupService.update('codex', progress => {
+        if (!record.window.isDestroyed()) record.window.webContents.send('setup:progress', progress);
+      });
+      reconnectAfterSetup('codex', 'Codex CLI обновлён. Подключение и каталог моделей обновляются.');
+      return result;
+    } catch (error) {
+      if (codexUpdatePrepared) reconnectAfterSetup('codex', 'Обновление Codex CLI не завершилось. Подключение восстановлено.');
+      throw error;
+    } finally {
+      codexUpdatePrepared = false;
+    }
+  });
   workspaceHandle('setup:install', (record, _event, id) => setupService.install(id, progress => {
     if (!record.window.isDestroyed()) record.window.webContents.send('setup:progress', progress);
   }));
@@ -1126,6 +1145,13 @@ else {
         }
       },
       getClaudeEnvironment: async () => ({ ...process.env, ...(await claudeToken.environment()) }),
+      beforeUpdate: async provider => {
+        if (provider !== 'codex') return;
+        codexUpdatePrepared = true;
+        for (const record of windows.values()) for (const session of record.sessions.values()) {
+          if ((session.settings.provider || 'codex') === provider) session.stop();
+        }
+      },
       assertMutable: provider => {
         if (provider === null) {
           if (quitting || updateFrozen) throw new Error('Приложение закрывается.');

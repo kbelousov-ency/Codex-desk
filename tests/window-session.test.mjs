@@ -91,6 +91,16 @@ test('two sessions run concurrent turns with isolated events, cwd, approvals and
   assert.deepEqual(await bTurn, { completed: true });
 });
 
+test('explicit model refresh replaces a cached bootstrap without changing the project', async () => {
+  const a = fixture();
+  const first = await a.session.start();
+  assert.strictEqual(await a.session.start(), first);
+  const refreshed = await a.session.start({ refreshModels: true });
+  assert.notStrictEqual(refreshed, first);
+  assert.equal(a.clients.length, 2);
+  assert.equal(a.clients[0].stops, 1);
+  assert.equal(a.clients[1].options.cwd, 'project-a');
+});
 test('changing a project or executable and closing a window leaves the other transport running', async () => {
   const a = fixture();
   const b = fixture({ cwd: 'project-b' });
