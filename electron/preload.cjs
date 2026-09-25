@@ -81,6 +81,8 @@ contextBridge.exposeInMainWorld('codex', {
   },
   ...forSession(),
   getBuildInfo: () => ipcRenderer.invoke('host:getBuildInfo'),
+  getReleaseNotes: () => ipcRenderer.invoke('host:getReleaseNotes'),
+  acknowledgeReleaseNotes: () => ipcRenderer.invoke('host:acknowledgeReleaseNotes'),
   getAppUpdateStatus: () => ipcRenderer.invoke('host:getAppUpdateStatus'),
   checkAppUpdates: () => ipcRenderer.invoke('host:checkAppUpdates'),
   setAppUpdatePreferences: (patch) => ipcRenderer.invoke('host:setAppUpdatePreferences', patch),

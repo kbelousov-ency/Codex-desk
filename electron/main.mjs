@@ -39,10 +39,18 @@ import { SetupService } from './setup-service.mjs';
 import { SetupAuth, setupProvider } from './setup-auth.mjs';
 import { AppUpdateService, AppUpdateStore } from './app-updates.mjs';
 import { RouterUsageClient } from './router-usage.mjs';
+import { ReleaseNotesService, ReleaseNotesStore, parseReleaseNotes } from './release-notes.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let buildInfo = {};
 try { buildInfo = JSON.parse(readFileSync(path.join(here, 'build-info.json'), 'utf8')); } catch { /* Development build. */ }
+let releaseNotes = [];
+try { releaseNotes = parseReleaseNotes(JSON.parse(readFileSync(path.join(here, 'release-notes.json'), 'utf8'))); }
+catch {
+  // Source runs do not have the packaged artifact; keep the same notes as a
+  // packaged build by reading the repository changelog when available.
+  try { releaseNotes = parseReleaseNotes(readFileSync(path.join(here, '..', 'CHANGELOG.md'), 'utf8')); } catch { /* no notes in a minimal fixture */ }
+}
 let releaseInfo;
 try { releaseInfo = resolveReleaseChannel({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, buildInfo: { ...buildInfo, version: buildInfo.version || app.getVersion() } }); }
 catch {
@@ -74,6 +82,8 @@ process.on('uncaughtExceptionMonitor', error => diagnostics.error('app.fatal', e
 process.on('unhandledRejection', error => diagnostics.error('app.unhandled', error));
 app.on('child-process-gone', (_event, details) => diagnostics.record('error', 'app.childGone', { reason: details.reason, exitCode: details.exitCode }));
 const windows = new Map();
+const releaseNotesStore = new ReleaseNotesStore(path.join(channelPaths.userData, 'release-state.json'));
+let releaseNotesService;
 const appUpdates = new AppUpdateService({
   buildInfo: releaseInfo,
   store: new AppUpdateStore(path.join(channelPaths.userData, 'updates.json')),
@@ -192,7 +202,7 @@ const workspaceSave = createWorkspaceSaveHandshake({
   },
   save: (record, snapshot) => workspaceState.save(captureWorkspaceState(snapshot, record.sessions)),
 });
-const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate', 'host:getBuildInfo', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
+const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate', 'host:getBuildInfo', 'host:getReleaseNotes', 'host:acknowledgeReleaseNotes', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
 const projectKey = cwd => process.platform === 'win32' ? path.resolve(cwd).toLowerCase() : path.resolve(cwd);
 
 function updateBusy() {
@@ -246,7 +256,7 @@ async function traced(channel, event, context, fn) {
   if (updateFrozen && !updateAllowedChannels.has(channel)) throw new Error('Nightly перезапускается для применения обновления.');
   const owner = windows.get(event.sender.id);
   if (owner?.workspaceClosing) {
-    const reads = new Set(['host:completeWorkspaceSave', 'host:getWorkspace', 'host:getSettings', 'host:getBuildInfo', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:completeUpdateRestore', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus', 'host:getRouterUsage']);
+    const reads = new Set(['host:completeWorkspaceSave', 'host:getWorkspace', 'host:getSettings', 'host:getBuildInfo', 'host:getReleaseNotes', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:completeUpdateRestore', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus', 'host:getRouterUsage']);
     const rpcReads = new Set(['thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'model/list', 'account/read', 'config/read']);
     if (!reads.has(channel) && !(channel === 'codex:request' && rpcReads.has(context.method))) throw new Error('Окно закрывается. Новые действия остановлены.');
   }
@@ -422,6 +432,10 @@ function installHandlers() {
     }
   });
   workspaceHandle('host:getBuildInfo', () => releaseInfo);
+  workspaceHandle('host:getReleaseNotes', () => releaseNotesService?.get() ?? {
+    currentVersion: releaseInfo.version, previousVersion: null, releases: [], shouldShow: false,
+  });
+  workspaceHandle('host:acknowledgeReleaseNotes', () => releaseNotesService?.acknowledge());
   workspaceHandle('host:getAppUpdateStatus', () => appUpdates.status());
   workspaceHandle('host:checkAppUpdates', () => appUpdates.check());
   workspaceHandle('host:setAppUpdatePreferences', (_record, _event, patch) => appUpdates.setPreferences(patch));
@@ -1163,6 +1177,8 @@ else {
       },
     });
     await setupService.state();
+    releaseNotesService = new ReleaseNotesService({ channel: releaseInfo.channel, currentVersion: releaseInfo.version,
+      releases: releaseNotes, store: releaseNotesStore, isNewProfile: setupInitiallyNew });
     diagnostics.record(initialized.status === 'failed' ? 'warn' : 'info', 'app.profile', { success: initialized.status !== 'failed', count: initialized.copied.length });
     diagnostics.record('info', 'app.ready'); installHandlers();
     let checkpoint = null;
@@ -1216,7 +1232,7 @@ else {
         record.historySession?.dispose();
         record.management?.dispose();
       }
-      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), bookmarks.flush(), claudeToken.flush(), closeUpdater, closeAppUpdates]);
+      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), bookmarks.flush(), claudeToken.flush(), releaseNotesStore.flush(), closeUpdater, closeAppUpdates]);
       diagnostics.record('info', 'app.quit');
       await diagnostics.flush();
       settingsFlushed = true; app.quit();

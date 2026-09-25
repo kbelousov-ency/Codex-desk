@@ -59,6 +59,14 @@ export type AppUpdateStatus = {
   error?: string;
   skippedVersion?: string;
 };
+/** Curated user-facing changes shown once after a stable release update. */
+export type ReleaseNotesRelease = { version: string; date?: string; items: string[] };
+export type ReleaseNotesState = {
+  currentVersion: string;
+  previousVersion?: string | null;
+  releases: ReleaseNotesRelease[];
+  shouldShow: boolean;
+};
 export type BuildInfo = { channel: 'stable' | 'nightly' | 'development'; version: string; buildId?: string; builtAt?: string };
 export type DiagnosticsStatus = { enabled: boolean; directory: string | null; error?: string };
 export type RendererErrorReport = { kind: 'error' | 'unhandledrejection' | 'react'; name?: string; message?: string; stack?: string; componentStack?: string };
@@ -142,6 +150,8 @@ export interface WorkspaceBridge extends CodexBridge {
   setAppUpdatePreferences(patch: { enabled?: boolean; skippedVersion?: string | null }): Promise<AppUpdateStatus>;
   openAppUpdateDownload(): Promise<void>;
   onAppUpdateStatus(listener: (status: AppUpdateStatus) => void): () => void;
+  getReleaseNotes?(): Promise<ReleaseNotesState>;
+  acknowledgeReleaseNotes?(): Promise<void>;
   getDiagnosticsStatus(): Promise<DiagnosticsStatus>;
   exportDiagnostics(): Promise<{ canceled: boolean; path?: string }>;
   exportConversation(file: { filename: string; content: string; format: 'markdown' | 'html' }): Promise<{ canceled: boolean; path?: string }>;

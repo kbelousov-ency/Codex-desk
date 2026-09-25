@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { Archive, ArchiveRestore, Bell, BellRing, BookMarked, Command, FolderPlus, FolderTree, GitBranch, GitFork, History, LoaderCircle, MessageSquare, Pin, PinOff, Plus, RefreshCw, RotateCcw, Terminal, X } from 'lucide-react';
+import { Archive, ArchiveRestore, Bell, BellRing, BookMarked, Command, FolderPlus, FolderTree, GitBranch, GitFork, History, LoaderCircle, MessageSquare, Pin, PinOff, Plus, RefreshCw, RotateCcw, Sparkles, Terminal, X } from 'lucide-react';
 import CommandPalette, { type PaletteCommand } from './CommandPalette';
 import AgentLogo from './AgentLogo';
 import WorktreePanel from './WorktreePanel';
@@ -10,6 +10,7 @@ import ProjectSidebar from './ProjectSidebar';
 import ArchiveView from './ArchiveView';
 import { BuildBadge } from './BuildInfo';
 import { AppUpdateBanner, AppUpdateDialog, useAppUpdates } from './AppUpdates';
+import { ReleaseNotesDialog, useReleaseNotes } from './ReleaseNotes';
 import { OpenAppUpdatesContext } from './AppUpdateContext';
 import { errorText, folderName } from './useCodex';
 import type { AgentProvider, Attachment, CodexBridge, HistoryTarget, MessageQueueState, PendingMessage, PreservedDraft, ScrollAnchor, SessionAttentionEvent, SessionInfo, Settings, Thread, ThreadAction, UpdateSnapshot, UpdateStatus, UpdateTabSnapshot } from './types';
@@ -53,7 +54,9 @@ export default function Workspace() {
 
 function TabbedWorkspace() {
   const appUpdates = useAppUpdates();
+  const releaseNotes = useReleaseNotes();
   const [showAppUpdates, setShowAppUpdates] = useState(false);
+  const [showReleaseNotes, setShowReleaseNotes] = useState(false);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [projects, setProjects] = useState<string[]>([]);
   const [activeId, setActiveId] = useState('');
@@ -113,6 +116,7 @@ function TabbedWorkspace() {
   const savingWorkspace = useRef(false);
   const workspaceClosing = useRef(false);
   const updateRequest = useRef<string | null>(null);
+  const releaseNotesAutoOpened = useRef(false);
   const restorePending = useRef(false);
   const actionPending = useRef(false);
   const archiveRequest = useRef(0);
@@ -130,8 +134,13 @@ function TabbedWorkspace() {
   projectsRef.current = projects;
   summariesRef.current = summaries;
   historiesRef.current = histories;
-  const updateState = useRef({ activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings, showAppUpdates, showLibrary, showPalette });
-  updateState.current = { activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings, showAppUpdates, showLibrary, showPalette };
+  const updateState = useRef({ activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings, showAppUpdates, showReleaseNotes, showLibrary, showPalette });
+  updateState.current = { activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings, showAppUpdates, showReleaseNotes, showLibrary, showPalette };
+  useEffect(() => {
+    if (starting || releaseNotesAutoOpened.current || !releaseNotes.state?.shouldShow) return;
+    releaseNotesAutoOpened.current = true;
+    setShowReleaseNotes(true);
+  }, [releaseNotes.state, starting]);
   const registerUpdateCapture = useCallback((id: string, capture: (persistent?: boolean) => UpdateTabSnapshot | null) => {
     updateCaptures.current.set(id, capture);
     return () => { if (updateCaptures.current.get(id) === capture) updateCaptures.current.delete(id); };
@@ -270,7 +279,7 @@ function TabbedWorkspace() {
       updateRequest.current = requestId;
       const prepare = async () => {
         const current = updateState.current;
-        if (current.starting || current.opening || current.closing || current.confirmClose || current.confirmCloseProject || current.actionDialog || current.showNotificationSettings || current.showAppUpdates || current.showLibrary || current.showPalette || actionPending.current || pendingOpen.current) {
+        if (current.starting || current.opening || current.closing || current.confirmClose || current.confirmCloseProject || current.actionDialog || current.showNotificationSettings || current.showAppUpdates || current.showReleaseNotes || current.showLibrary || current.showPalette || actionPending.current || pendingOpen.current) {
           await window.codex.completeUpdatePrepare({ requestId, defer: true });
           updateRequest.current = null;
           return;
@@ -730,6 +739,7 @@ function TabbedWorkspace() {
       { id: 'library', group: 'Действия', label: 'История и закладки', hint: 'Поиск по сообщениям Codex и Claude', icon: BookMarked, run: () => setShowLibrary(true) },
       { id: 'archive', group: 'Действия', label: archiveOpen ? 'Скрыть архив' : 'Показать архив', icon: ArchiveRestore, run: () => { setArchiveOpen(previous => !previous); if (!archiveOpen) void loadArchive(); } },
       { id: 'attention', group: 'Действия', label: 'Требуют внимания', hint: attentionTabs.length ? `${attentionTabs.length} диалог(ов)` : 'Все просмотрено', icon: BellRing, run: () => setShowAttention(true) },
+      { id: 'release-notes', group: 'Действия', label: 'Что нового?', hint: releaseNotes.state?.currentVersion ? `Изменения версии ${releaseNotes.state.currentVersion}` : 'Изменения Codex Desk', icon: Sparkles, run: () => setShowReleaseNotes(true) },
       { id: 'app-updates', group: 'Действия', label: 'Обновления приложения', hint: 'Новая версия Codex Desk', icon: RefreshCw, run: () => setShowAppUpdates(true) },
       { id: 'notifications', group: 'Действия', label: 'Настройки уведомлений', icon: Bell, run: () => setShowNotificationSettings(true) },
     );
@@ -870,6 +880,7 @@ function TabbedWorkspace() {
     {worktreeNotice && <div className="alert notice-alert workspace-notice" role="status"><span>{worktreeNotice}</span><button className="icon-button small" aria-label="Скрыть уведомление" data-tooltip="Скрыть" onClick={() => setWorktreeNotice('')}><X size={14} /></button></div>}
     {preparingUpdate && <div className="nightly-update-overlay" role="dialog" aria-modal="true" aria-labelledby="nightly-update-title" tabIndex={-1}><section><LoaderCircle size={24} className="spin" /><h2 id="nightly-update-title">Nightly обновляется…</h2><p>Сохраняем вкладки и перезапускаем приложение.</p></section></div>}
     {showAppUpdates && <AppUpdateDialog control={appUpdates} onClose={() => setShowAppUpdates(false)} />}
+    {showReleaseNotes && <ReleaseNotesDialog control={releaseNotes} onClose={() => setShowReleaseNotes(false)} />}
     {showNotificationSettings && <NotificationSettings onClose={() => setShowNotificationSettings(false)} />}
     {showLibrary && <HistoryLibrary projects={projects} initialCwd={controls.activeCwd} onClose={() => setShowLibrary(false)} onOpen={(target: HistoryTarget) => {
       setShowLibrary(false);
