@@ -271,6 +271,15 @@ test('build identity stays available without an App Server at workspace scope', 
   assert.equal(bridge.forSession('a').getBuildInfo, undefined);
 });
 
+test('release notes stay at workspace scope with fixed IPC channels', async () => {
+  const { bridge, calls } = await fixture();
+  await bridge.getReleaseNotes();
+  await bridge.acknowledgeReleaseNotes();
+  assert.deepEqual(calls, [['host:getReleaseNotes'], ['host:acknowledgeReleaseNotes']]);
+  assert.equal(bridge.forSession('a').getReleaseNotes, undefined);
+  assert.equal(bridge.forSession('a').acknowledgeReleaseNotes, undefined);
+});
+
 test('renderer reports expose only known string fields and enforce UTF-8 byte limits before IPC', async () => {
   const { bridge, sends } = await fixture();
   bridge.reportRendererError({ kind: 'react', name: 'TypeError', message: 'fixture failure', stack: 'fixture stack', componentStack: 'fixture component', secret: 'never transmitted', payload: { content: 'never transmitted' } });

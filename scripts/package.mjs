@@ -7,6 +7,7 @@ import { checkedTree, fileChecksums, publishNightly, removeChecked, withReleaseL
 import { assertNoPendingUpdate, findNightlyInstance, launchUpdateHelper, queueNightlyUpdate } from './nightly-update.mjs';
 
 import { assertReleaseVersion } from './release-version.mjs';
+import { parseReleaseNotes } from '../electron/release-notes.mjs';
 
 // Only Nightly is built from source. Release is promoted from these exact bytes.
 const root = process.cwd();
@@ -27,6 +28,11 @@ try {
       await checkedTree(root, path.join(root, directory));
       await cp(path.join(root, directory), path.join(stage, directory), { recursive: true });
     }
+    // Keep release notes offline and versioned with the exact bytes that are
+    // packaged. Development builds fall back to CHANGELOG.md in the host.
+    const releaseNotes = parseReleaseNotes(await readFile(path.join(root, 'CHANGELOG.md'), 'utf8'));
+    if (!releaseNotes.length) throw new Error('CHANGELOG.md не содержит заметок релиза.');
+    await writeFile(path.join(stage, 'electron', 'release-notes.json'), `${JSON.stringify({ format: 1, releases: releaseNotes }, null, 2)}\n`);
     // Renderer dependencies are bundled by Vite; the host needs the TOML parser.
     await checkedTree(root, path.join(root, 'node_modules', '@iarna', 'toml'));
     await mkdir(path.join(stage, 'node_modules', '@iarna'), { recursive: true });
