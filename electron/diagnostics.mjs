@@ -43,6 +43,7 @@ const CHANNELS = new Set([
   'codex:start', 'codex:request', 'codex:respond', 'unknown',
   'setup:state', 'setup:scan', 'setup:install', 'setup:update', 'setup:chooseExecutable', 'setup:previewConfig', 'setup:applyConfig',
   'setup:authStatus', 'setup:login', 'setup:openPortal', 'setup:openGitWebsite', 'setup:complete',
+  'setup:startPortalConfig', 'setup:pollPortalConfig', 'setup:openPortalVerification', 'setup:cancelPortalConfig', 'setup:applyPortalConfig',
 ]);
 const METHODS = new Set([
   'initialize', 'initialized', 'thread/start', 'thread/resume', 'thread/read', 'thread/list',

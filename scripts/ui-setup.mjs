@@ -15,7 +15,7 @@ const server = await createServer({
       } catch (error) { response.writeHead(500); response.end(String(error)); }
     });
   }, resolveId(id) { return id === 'virtual:setup-fixture' ? id : null; }, load(id) {
-    if (id === 'virtual:setup-fixture') return 'import React from "react"; import { createRoot } from "react-dom/client"; import SetupWizard from "/src/SetupWizard.tsx"; import "/src/styles.css"; const root = createRoot(document.getElementById("root")); root.render(React.createElement(SetupWizard, { initial: new URLSearchParams(location.search).get("scenario") !== "manual", onClose: provider => { window.__setup.closed.push(provider); root.unmount(); } }));';
+    if (id === 'virtual:setup-fixture') return 'import React from "react"; import { createRoot } from "react-dom/client"; import SetupWizard from "/src/SetupWizard.tsx"; import "/src/styles.css"; const root = createRoot(document.getElementById("root")); window.__setup.unmount = () => root.unmount(); root.render(React.createElement(SetupWizard, { initial: new URLSearchParams(location.search).get("scenario") !== "manual", onClose: provider => { window.__setup.closed.push(provider); root.unmount(); } }));';
   } }],
 });
 await server.listen();
@@ -34,6 +34,7 @@ try {
     const fixture = window.__setup = {
       calls: [], closed: [], progressListeners: new Set(), login: {}, authCalls: {},
       failClaude: scenario !== 'missing', holdApply: false, releaseApply: null,
+      portal: { ready: false, denied: false, starts: 0, holdPoll: false, releasePoll: null, holdCancel: false, releaseCancel: null, holdStart: false, releaseStart: null, browserOpened: true, applyBlocked: false },
       scan: {
         platformSupported: true,
         components: [
@@ -62,6 +63,30 @@ try {
         fixture.calls.push({ method: 'applyConfig', options });
         if (fixture.holdApply) await new Promise(resolve => { fixture.releaseApply = resolve; });
         return { configPath: fixture.scan.config.targetPath, backupPath: 'D:\\Codex Home\\config.toml.setup-2026.bak' };
+      },
+      async startPortalConfig() {
+        const flowId = `flow-${++fixture.portal.starts}`;
+        fixture.calls.push({ method: 'startPortalConfig', flowId });
+        if (fixture.portal.holdStart) await new Promise(resolve => { fixture.portal.releaseStart = resolve; });
+        return { flowId, userCode: 'ABCD-1234', verificationUri: 'https://portal.example.test/device', expiresAt: new Date(Date.now() + 600_000).toISOString(), intervalMs: 100, browserOpened: fixture.portal.browserOpened };
+      },
+      async pollPortalConfig(flowId) {
+        fixture.calls.push({ method: 'pollPortalConfig', flowId });
+        if (fixture.portal.holdPoll) await new Promise(resolve => { fixture.portal.releasePoll = resolve; });
+        if (fixture.portal.denied) throw new Error('Подключение отклонено на портале. Начните заново.');
+        if (!fixture.portal.ready) return { state: 'pending', intervalMs: 100 };
+        return { state: 'ready', preview: { previewId: `portal-preview-${flowId}`, configPath: fixture.scan.config.targetPath, exists: true, model: 'gpt-5', providerName: 'router', providerLabel: 'Router', baseUrl: 'https://router.example.test/v1', changes: [{ key: 'model', before: 'gpt-4.1', after: 'gpt-5' }, { key: 'model_provider', before: null, after: 'router' }, { key: 'Ключ подключения', before: 'Сохранён', after: 'Обновится' }] } };
+      },
+      async openPortalVerification(flowId) { fixture.calls.push({ method: 'openPortalVerification', flowId }); },
+      async cancelPortalConfig(flowId) {
+        fixture.calls.push({ method: 'cancelPortalConfig', flowId });
+        if (fixture.portal.holdCancel) await new Promise(resolve => { fixture.portal.releaseCancel = resolve; });
+      },
+      async applyPortalConfig(options) {
+        fixture.calls.push({ method: 'applyPortalConfig', options });
+        if (fixture.portal.applyBlocked) return { blocked: true, message: 'Завершите задачи и подтверждения выбранного агента перед изменением настройки.' };
+        if (fixture.holdApply) await new Promise(resolve => { fixture.releaseApply = resolve; });
+        return { configPath: fixture.scan.config.targetPath, backupPath: 'D:\\Codex Home\\config.toml.backup-portal' };
       },
       async authStatus(provider) {
         fixture.calls.push({ method: 'authStatus', provider });
@@ -105,10 +130,10 @@ try {
   await page.waitForFunction(() => window.__setup.scan.components.find(component => component.id === 'git').status === 'installed');
   assert.deepEqual(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'install').map(call => call.id)), ['claude', 'git']);
   await page.getByRole('button', { name: 'Установить и продолжить', exact: true }).click();
-  await page.getByRole('heading', { name: 'Настройки Codex — из вашего файла' }).waitFor();
+  await page.getByRole('heading', { name: 'Подключите Codex через браузер' }).waitFor();
   assert.deepEqual(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'install').map(call => call.id)), ['claude', 'git', 'claude']);
   await page.setViewportSize({ width: 1100, height: 800 });
-  await page.getByRole('button', { name: 'Открыть портал', exact: true }).click();
+  await page.getByRole('button', { name: 'Скачать файл с портала', exact: true }).click();
   await page.getByRole('button', { name: 'Выбрать файл…', exact: true }).click();
   await page.getByText('portal-config.toml', { exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Применить файл', exact: true }).isDisabled(), true);
@@ -206,8 +231,141 @@ try {
     await page.getByRole('button', { name: 'Начать работу', exact: true }).click();
     assert.deepEqual(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'complete')), [{ method: 'complete', options: changeDefault ? { provider: 'codex', deferred: false } : { deferred: false } }]);
   }
+  const openConfig = async () => {
+    await page.goto(`${url}?scenario=manual`);
+    await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+    await page.getByRole('heading', { name: 'Подключите Codex через браузер' }).waitFor();
+  };
+  // Browser confirmation receives only safe metadata, then requires a separate apply action.
+  await openConfig();
+  await page.getByRole('button', { name: 'Выбрать файл…', exact: true }).click();
+  await page.getByText('portal-config.toml', { exact: true }).waitFor();
+  await page.evaluate(() => { window.__setup.portal.browserOpened = false; });
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).click();
+  await page.getByText('Ожидаем подтверждения в браузере', { exact: true }).waitFor();
+  await page.getByText('Браузер не открылся автоматически.', { exact: false }).waitFor();
+  assert.equal(await page.getByText('portal-config.toml', { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel('Код подключения').textContent(), 'ABCD-1234');
+  await page.waitForFunction(() => window.__setup.calls.filter(call => call.method === 'pollPortalConfig').length >= 2);
+  assert.equal(await page.evaluate(() => window.__setup.calls.some(call => ['applyPortalConfig', 'applyConfig'].includes(call.method))), false);
+  await page.getByRole('button', { name: 'Открыть браузер снова', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'openPortalVerification')), [{ method: 'openPortalVerification', flowId: 'flow-1' }]);
+  assert.equal(await page.evaluate(() => window.__setup.portal.starts), 1);
+  await page.evaluate(() => { window.__setup.portal.ready = true; });
+  await page.getByRole('region', { name: 'Настройки с портала' }).waitFor();
+  await page.getByText('Ключ подключения будет сохранён в config.toml.', { exact: false }).waitFor();
+  assert.equal(await page.getByRole('cell', { name: 'gpt-5', exact: true }).count(), 1);
+  await page.evaluate(() => { window.__setup.portal.applyBlocked = true; });
+  await page.getByRole('button', { name: 'Применить настройки', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Завершите задачи и подтверждения' }).waitFor();
+  assert.equal(await page.getByRole('alert').filter({ hasText: 'Завершите задачи и подтверждения' }).evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const body = element.closest('.setup-body').getBoundingClientRect();
+    return bounds.top >= body.top && bounds.bottom <= body.bottom;
+  }), true);
+  assert.equal(await page.getByRole('region', { name: 'Настройки с портала' }).count(), 1);
+  assert.equal(await page.evaluate(() => window.__setup.calls.some(call => call.method === 'cancelPortalConfig')), false);
+  assert.equal(await page.evaluate(() => window.__setup.portal.starts), 1);
+  await page.evaluate(() => { window.__setup.portal.applyBlocked = false; });
+  await page.setViewportSize({ width: 800, height: 600 });
+  assert.equal(await page.locator('.setup-dialog').evaluate(element => element.scrollWidth === element.clientWidth), true);
+  assert.equal(await page.locator('.setup-footer').evaluate(element => element.getBoundingClientRect().bottom <= innerHeight), true);
+  await page.screenshot({ path: 'artifacts/setup-portal-config.png' });
+  await page.evaluate(() => { window.__setup.holdApply = true; });
+  await page.getByRole('button', { name: 'Применить настройки', exact: true }).click();
+  await page.waitForFunction(() => window.__setup.releaseApply);
+  assert.equal(await page.getByRole('button', { name: 'Закрыть мастер настройки', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Назад', exact: true }).isDisabled(), true);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => window.__setup.closed.length), 0);
+  await page.evaluate(() => window.__setup.releaseApply());
+  await page.getByText('Конфигурация применена', { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'applyPortalConfig')), Array.from({ length: 2 }, () => ({ method: 'applyPortalConfig', options: { previewId: 'portal-preview-flow-1' } })));
+  assert.equal(await page.evaluate(() => window.__setup.portal.starts), 1);
+  assert.equal(await page.getByRole('region', { name: 'Настройки с портала' }).count(), 0);
+  await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
+  await page.getByText('Настроен провайдер', { exact: true }).waitFor();
+
+  // The main footer applies the ready portal settings. A busy response stays on this page.
+  await openConfig();
+  await page.evaluate(() => { window.__setup.portal.ready = true; window.__setup.portal.applyBlocked = true; });
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).click();
+  await page.getByRole('region', { name: 'Настройки с портала' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Оставить текущую', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Назад', exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Пропустить', exact: true }).isEnabled(), true);
+  await page.getByRole('button', { name: 'Применить и продолжить', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Завершите задачи и подтверждения' }).waitFor();
+  assert.equal(await page.locator('.setup-dialog').getAttribute('data-step'), '1');
+  await page.evaluate(() => { window.__setup.portal.applyBlocked = false; });
+  await page.getByRole('button', { name: 'Применить и продолжить', exact: true }).click();
+  await page.getByRole('heading', { name: 'Подключите свои аккаунты' }).waitFor();
+  await page.getByText('Настроен провайдер', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Назад', exact: true }).click();
+  await page.getByText('Конфигурация применена', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('region', { name: 'Настройки с портала' }).count(), 0);
+  assert.equal(await page.evaluate(() => window.__setup.portal.starts), 1);
+
+  // A denied request can be restarted, and changing back to file import cancels the flow.
+  await openConfig();
+  await page.evaluate(() => { window.__setup.portal.denied = true; });
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'Подключение отклонено на портале' }).waitFor();
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).waitFor();
+  await page.evaluate(() => { window.__setup.portal.denied = false; });
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).click();
+  await page.getByText('Ожидаем подтверждения в браузере', { exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Выбрать файл…', exact: true }).click();
+  await page.getByText('portal-config.toml', { exact: true }).waitFor();
+  assert.deepEqual(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'cancelPortalConfig').map(call => call.flowId)), ['flow-1', 'flow-2']);
+  assert.equal(await page.getByText('Ожидаем подтверждения в браузере', { exact: true }).count(), 0);
+
+  // Polling is sequential; cancellation invalidates a delayed success even if a new flow starts.
+  await openConfig();
+  await page.evaluate(() => { window.__setup.portal.holdPoll = true; });
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).click();
+  await page.waitForFunction(() => window.__setup.portal.releasePoll);
+  await page.waitForTimeout(350);
+  assert.equal(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'pollPortalConfig').length), 1);
+  await page.getByRole('button', { name: 'Отменить подключение', exact: true }).click();
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).click();
+  await page.getByText('Ожидаем подтверждения в браузере', { exact: true }).waitFor();
+  await page.evaluate(() => {
+    const oldPoll = window.__setup.portal.releasePoll;
+    window.__setup.portal.releasePoll = null;
+    window.__setup.portal.ready = true;
+    oldPoll();
+  });
+  await page.waitForFunction(() => window.__setup.calls.some(call => call.method === 'pollPortalConfig' && call.flowId === 'flow-2'));
+  assert.equal(await page.getByRole('region', { name: 'Настройки с портала' }).count(), 0);
+  await page.getByRole('button', { name: 'Отменить подключение', exact: true }).click();
+  await page.evaluate(() => window.__setup.portal.releasePoll());
+  await page.waitForTimeout(150);
+  assert.equal(await page.getByRole('region', { name: 'Настройки с портала' }).count(), 0);
+  assert.equal(await page.evaluate(() => window.__setup.calls.some(call => call.method === 'applyPortalConfig')), false);
+
+  // Navigation waits for host cancellation rather than abandoning an active request.
+  await openConfig();
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).click();
+  await page.getByText('Ожидаем подтверждения в браузере', { exact: true }).waitFor();
+  await page.evaluate(() => { window.__setup.portal.holdCancel = true; });
+  await page.getByRole('button', { name: 'Назад', exact: true }).click();
+  await page.waitForFunction(() => window.__setup.portal.releaseCancel);
+  assert.equal(await page.locator('.setup-dialog').getAttribute('data-step'), '1');
+  await page.evaluate(() => { window.__setup.portal.holdCancel = false; window.__setup.portal.releaseCancel(); });
+  await page.getByRole('heading', { name: 'Настроим ваше рабочее место' }).waitFor();
+  assert.equal(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'cancelPortalConfig').length), 1);
+
+  // A late start reply after unmount is cancelled; no browser flow survives the wizard.
+  await openConfig();
+  await page.evaluate(() => { window.__setup.portal.holdStart = true; });
+  await page.getByRole('button', { name: 'Подключить через браузер', exact: true }).click();
+  await page.waitForFunction(() => window.__setup.portal.releaseStart);
+  await page.evaluate(() => { window.__setup.unmount(); window.__setup.portal.releaseStart(); });
+  await page.waitForFunction(() => window.__setup.calls.some(call => call.method === 'cancelPortalConfig' && call.flowId === 'flow-1'));
+  assert.equal(await page.evaluate(() => window.__setup.calls.some(call => call.method === 'pollPortalConfig')), false);
   assert.deepEqual(errors, []);
-  console.log('Setup wizard browser checks passed: installation selection/retry, config confirmation, auth polling, explicit memory enable/skip/write lock, responsive layout, focus, skip/defer and preservation of the default agent. No real CLI or model calls.');
+  console.log('Setup wizard browser checks passed: installation, browser confirmation/pending/reopen/denial/restart, explicit portal apply, cancellation/navigation/late replies, file import, auth polling, memory rules, responsive layout and default agent. No real CLI, portal or model calls.');
 } finally {
   await browser?.close();
   await server.close();

@@ -1,5 +1,23 @@
 # Release и Nightly
 
+## Release 0.8.0 — 2026-09-26
+
+По поручению «всё в релиз, заливай в герит и в гит» Nightly **0.8.0** (`49e11d391243cde668f6434fb6539715295915ce63405692be27e13484bbc7ce`) перенесена в `release/stable` без перекомпиляции. Перед переносом очередь уже была применена: журнал `published` 2026-09-26T08:14:39Z, `complete` 08:14:40Z; пользовательский Nightly не закрывался агентом. Старый локальный stable **0.6.0** (`f3eee0c209e8…`) сохранён в stable-previous. Он отличался от версии исходников `0.7.0`; это проверено по app.asar/manifest, а не по старому active-build.txt.
+
+`npm.cmd run check` — **618 passed / 2 skipped**, TypeScript/Vite. Утверждённый manifest содержит 72 файла; все 56 файлов electron/dist побайтно совпали с исходниками (`artifacts/release-080-preflight.json`). Release-exe прошёл `test:portal-host` (`artifacts/portal-host-lRlin4`): настоящий Electron/preload/IPC и native Codex с отдельным CODEX_HOME, подставные ответы портала, без настоящего SSO или model turns.
+
+Setup **Codex-Desk-Setup-0.8.0.exe**: **100 964 717 байт**, SHA-256 `198bfbb61dc22be93e32bd640bf747bad1bbf7fd423c83960e11bcb624c97fae`. Изолированная установка и повторное обновление без `/D` прошли с exit 0 и точным совпадением 72 файлов (`artifacts/installer-test-f91bd8b2707f4f5794274096e1c44a56`). Cleanup завершён; три внешних файла восстановлены, тестовая установка удалена. `release:prepare` подготовил четыре asset-файла и описание для GitHub. README и инструкция установщика обновлены: браузерное подтверждение вместо обязательного скачивания TOML. Публикация и отправка refs проверяются следующим шагом.
+
+Gerrit HTTPS сначала вернул HTTP 400 «No required SSL certificate was sent». Существующий сертификат Windows `CN=kirill,O=DEV.ENCYCAM.IO` подключён разовыми параметрами Git `-c http.sslBackend=schannel -c http.sslCert=CurrentUser\\MY\\C997C2D1DE578D68F8966090C4D45C248E1130BE`. Проверка remote прошла; ключ не экспортировался, проверка TLS не отключалась, постоянные настройки не менялись. Base-деревья GitHub `c90f741` и Gerrit `52a91d3` совпали (`2c8e28afafb7a0b49d1553f5d4b2aba70a9abecc`); обе истории сохраняются.
+
+## Настройка Codex через браузер — Nightly 0.8.0, 2026-09-25
+
+По повторному явному поручению пользователя реализован полный [device flow](ROUTER_CONNECT.md): браузерное подтверждение, получение provider/defaults, предпросмотр и native-применение config.toml без скачивания файла. Последний установленный Nightly `58c735b38002` содержал только изменение кнопки/ссылки; он не выполнял исходную задачу. Прежнее предположение об отсутствии API по web-bundle исправлено: GET device endpoint возвращает 405, provider/defaults без ключа — 401.
+
+Nightly **0.8.0**, build ID `49e11d391243cde668f6434fb6539715295915ce63405692be27e13484bbc7ce`, собран `npm.cmd run package` и поставлен в штатную очередь. Применение ждёт «Закрыть» в чате или ручного выхода; пользовательский процесс не закрывался. Release не менялся и не публиковался. Номер повышен штатным `version:minor` для новой возможности; публичный `0.7.0` сохранён.
+
+Полный `check` прошёл (617 passed, 2 skipped до финального дополнительного теста повторов). После review прошли 59 targeted portal/config/service/preload тестов, 20 release/auth тестов, `test:setup` и `test:setup-host`. Финальная сборка снова прошла TypeScript/Vite. Сценарий `test:portal-host` на исходниках (`artifacts/portal-host-rx9q0G`) и на готовом exe (`artifacts/portal-host-4813zf`) использовал настоящий Electron/preload/IPC и установленный Codex в отдельном CODEX_HOME с mock-ответами портала: файл не пишется до Apply, ключ не попадает в renderer/журналы, комментарии/effort/profiles/MCP сохраняются, backup точен, внешняя правка отклоняется. Модельных запросов и настоящего SSO в тестах нет. Manifest кандидата проверен; все 56 файлов electron/dist побайтно совпали с исходниками.
+
 ## Публичный Release 0.5.1 — 2026-09-22
 
 По поручению «переноси в релиз всё что сделали и заливай» обе правки — [прогресс после уточнений](WORK_LOG.md#прогресс-после-уточнений--2026-09-22) и [контраст пункта запуска Setup](SETUP.md) — объединены в patch **0.5.1**. Номер повышен штатным `npm version patch --no-git-tag-version --ignore-scripts`, поскольку публичный `0.5.0` нельзя переиспользовать. Nightly `bb958a576c1e2de15d0399a12b4f4f1eddc1569eefbf39bc4624e9eac6530d0c` собрана `2026-09-22T13:24:29.548Z` и применена пользователем до переноса; очереди уже не было. `release:promote` перенёс проверенные байты в stable без перекомпиляции; прежняя `0.5.0` (`555b67429eb279364035ba773a3a4d087bd7f144af3699bb5fd4b69e6268da78`) сохранена в stable-previous. Пользовательские процессы не закрывались агентом.

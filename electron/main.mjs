@@ -39,6 +39,8 @@ import { SetupService } from './setup-service.mjs';
 import { SetupAuth, setupProvider } from './setup-auth.mjs';
 import { AppUpdateService, AppUpdateStore } from './app-updates.mjs';
 import { RouterUsageClient } from './router-usage.mjs';
+import { RouterPortalClient } from './router-portal.mjs';
+import { PortalSetupService } from './portal-setup.mjs';
 import { ReleaseNotesService, ReleaseNotesStore, parseReleaseNotes } from './release-notes.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -186,6 +188,21 @@ function reconnectAfterSetup(provider, message) {
       session.send('auth', { state: 'closed', provider, message });
     }
   }
+}
+function portalSetupFor(record) {
+  record.portalSetup ??= new PortalSetupService({
+    portal: new RouterPortalClient({ fetchImpl: (...args) => net.fetch(...args) }),
+    getSettings: () => settingsStore.snapshotProvider('codex'),
+    openExternal: uri => shell.openExternal(uri),
+    assertActive: () => {
+      if (quitting || updateFrozen || record.rendererGone || record.workspaceClosing || record.window.isDestroyed()) throw new Error('Окно настройки закрывается.');
+    },
+    assertAvailable: () => {
+      if (setupService.busy || setupAuth.activeProvider || setupAuth.checking.size) throw new Error('Дождитесь завершения настройки агента.');
+    },
+    runMutation: task => setupService._exclusive('codex', task),
+  });
+  return record.portalSetup;
 }
 const notifications = new NotificationService({
   // Automated IPC fixtures use isolated profiles and must never toast on the user's desktop.
@@ -368,6 +385,7 @@ function installHandlers() {
     return result;
   });
   workspaceHandle('setup:previewConfig', async (record, event) => {
+    record.portalSetup?.cancel();
     const selected = await dialog.showOpenDialog(record.window, { title: 'Выбрать конфигурацию Codex', properties: ['openFile'], filters: [{ name: 'Конфигурация TOML', extensions: ['toml'] }] });
     windowForEvent(windows, event);
     if (selected.canceled || !selected.filePaths[0]) return null;
@@ -376,6 +394,18 @@ function installHandlers() {
   workspaceHandle('setup:applyConfig', async (_record, _event, options) => {
     const result = await setupService.applyConfig(options);
     reconnectAfterSetup('codex', 'Конфигурация применена. Подключение обновлено.');
+    return result;
+  });
+  workspaceHandle('setup:startPortalConfig', record => {
+    setupService.invalidatePreview();
+    return portalSetupFor(record).start();
+  });
+  workspaceHandle('setup:pollPortalConfig', (record, _event, flowId) => portalSetupFor(record).poll(flowId));
+  workspaceHandle('setup:openPortalVerification', (record, _event, flowId) => portalSetupFor(record).openVerification(flowId));
+  workspaceHandle('setup:cancelPortalConfig', (record, _event, flowId) => record.portalSetup?.cancel(flowId));
+  workspaceHandle('setup:applyPortalConfig', async (record, _event, options) => {
+    const result = await portalSetupFor(record).apply(options);
+    if (!result.blocked) reconnectAfterSetup('codex', 'Настройки с портала сохранены. Подключение обновлено.');
     return result;
   });
   workspaceHandle('setup:authStatus', (_record, _event, provider) => {
@@ -387,9 +417,11 @@ function installHandlers() {
     if (setupService.busy) throw new Error('Дождитесь завершения настройки.');
     return setupAuth.login(provider, record);
   });
-  workspaceHandle('setup:openPortal', () => shell.openExternal('https://coder-portal.encycam.com'));
+  // Manual file import remains available as a fallback.
+  workspaceHandle('setup:openPortal', () => shell.openExternal('https://coder-portal.encycam.com/#codex'));
   workspaceHandle('setup:openGitWebsite', () => shell.openExternal('https://git-scm.com/downloads/win'));
-  workspaceHandle('setup:complete', async (_record, _event, options) => {
+  workspaceHandle('setup:complete', async (record, _event, options) => {
+    record.portalSetup?.cancel();
     if (options?.provider !== undefined) setupProvider(options.provider);
     const result = await setupService.complete(options);
     if (options?.provider) await settingsStore.update({ provider: options.provider });
@@ -1069,6 +1101,7 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
   win.webContents.on('preload-error', (_event, _preloadPath, error) => diagnostics.error('window.preloadError', error, { windowId: contentsId }));
   win.on('unresponsive', () => diagnostics.record('warn', 'window.unresponsive', { windowId: contentsId }));
   win.webContents.on('render-process-gone', (_event, details) => {
+    record.portalSetup?.dispose(); record.portalSetup = null;
     record.historySearch?.dispose(); record.historySearch = null;
     record.rendererGone = true;
     notifications.closeWindow(record);
@@ -1096,6 +1129,7 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
     });
   });
   win.on('closed', () => {
+    record.portalSetup?.dispose();
     record.historySearch?.dispose();
     notifications.closeWindow(record);
     workspaceSave.cancel(record);
@@ -1217,6 +1251,7 @@ else {
     const closeAppUpdates = appUpdates.close();
     void (async () => {
       await setupService?.waitForIdle();
+      for (const record of windows.values()) record.portalSetup?.dispose();
       setupService?.dispose();
       // Capture while sessions still exist; the final quit then skips window handshakes.
       const records = [...windows.values()];
