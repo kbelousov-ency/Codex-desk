@@ -99,6 +99,21 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
   assert.throws(() => bridge.forSession(null), /Некорректная/);
 });
 
+test('portal configuration uses fixed workspace IPC carrying only opaque flow and preview IDs', async () => {
+  const { bridge, calls } = await fixture();
+  await bridge.setup.startPortalConfig();
+  await bridge.setup.pollPortalConfig('flow-1');
+  await bridge.setup.openPortalVerification('flow-1');
+  await bridge.setup.cancelPortalConfig('flow-1');
+  await bridge.setup.applyPortalConfig({ previewId: 'preview-1' });
+  assert.deepEqual(calls, [
+    ['setup:startPortalConfig'], ['setup:pollPortalConfig', 'flow-1'],
+    ['setup:openPortalVerification', 'flow-1'], ['setup:cancelPortalConfig', 'flow-1'],
+    ['setup:applyPortalConfig', { previewId: 'preview-1' }],
+  ]);
+  assert.equal(bridge.forSession('a').setup, undefined);
+});
+
 test('Git readers keep file selection and staged area scoped to their session', async () => {
   const { bridge, calls } = await fixture();
   await bridge.forSession('project-a').getGitStatus();
