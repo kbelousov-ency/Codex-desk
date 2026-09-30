@@ -167,6 +167,15 @@ try {
   await close();
   await launch();
   await page.getByRole('button', { name: 'Настроить агентов', exact: true }).waitFor();
+  // The fixture closes immediately after setup.complete(), before the first
+  // release-notes baseline is necessarily saved. Stable may show notes after
+  // this restart; acknowledge them through the UI before reopening setup.
+  const notes = await page.evaluate(() => window.codex.getReleaseNotes());
+  if (notes.shouldShow) {
+    const notesDialog = page.locator('.release-notes-dialog');
+    await notesDialog.getByRole('button', { name: 'Понятно', exact: true }).click();
+    await notesDialog.waitFor({ state: 'hidden' });
+  }
   assert.equal(await page.locator('.setup-dialog').count(), 0);
   for (const [provider, fixture] of Object.entries(memoryFixtures)) {
     const preview = await page.evaluate(provider => window.codex.memoryRules.preview(provider), provider);

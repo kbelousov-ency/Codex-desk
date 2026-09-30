@@ -121,7 +121,11 @@ export default function RouterUsage({ bridge, enabled, ready, active = true }: {
   }, [open, active]);
   if (!enabled || !bridge.getRouterUsage) return null;
   const info = snapshot && snapshot.available ? details(snapshot) : null;
-  const singleLimit = snapshot?.limits?.length === 1 ? snapshot.limits[0] : null;
+  // Unavailable keys (for example FREE_POOL) have no current quota and must not
+  // hide the percentage of the only available limit. Unknown availability stays
+  // a candidate; multiple candidates still cannot be combined into one quota.
+  const availableLimits = snapshot?.limits?.filter(limit => limit.available !== false) || [];
+  const singleLimit = availableLimits.length === 1 ? availableLimits[0] : null;
   const percent = singleLimit ? limitUsage(singleLimit).percent : null;
   // Without a published quota a percentage cannot be computed, so the badge falls
   // back to the measured daily spend instead of an empty «Роутер · —».

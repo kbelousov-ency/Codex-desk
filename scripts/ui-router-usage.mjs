@@ -119,6 +119,40 @@ try {
     assert.equal(await trigger().getAttribute('aria-label'), expectedTrigger, `${scenario.name}: trigger uses the same percentage as the card`);
   }
 
+  // FREE_POOL entries must not hide the one available period quota, regardless of ordering.
+  const activeLimit = { ...periodLimit, limit_credits: 32000, ledger_used_credits: 8284.012071 };
+  const freePoolLimit = { key: 'free-pool-fixture', available: false, tier: null, state: 'FREE_POOL', reset_at: null, limit_credits: null, used_credits: null, remaining_credits: null, used_percent: null, ledger_used_credits: null };
+  for (const limits of [[activeLimit, freePoolLimit], [freePoolLimit, activeLimit]]) {
+    await setSnapshot({ available: true, fetchedAt: '2026-09-30T10:00:00.000Z', overview: { last_24h: { credits: 4073.63 } }, limits });
+    await dialog().getByRole('button', { name: 'Обновить статистику роутера', exact: true }).click();
+    await page.waitForFunction(firstKey => document.querySelectorAll('[data-router-limit]').length === 2
+      && document.querySelector('[data-router-limit] h3')?.textContent === firstKey
+      && document.querySelector('.router-usage-trigger')?.getAttribute('aria-label') === 'Роутер · 25,9%', limits[0].key);
+    assert.equal(await trigger().getAttribute('aria-label'), 'Роутер · 25,9%', 'The available quota uses ledger spend while the unavailable FREE_POOL remains separate');
+    assert.equal(await dialog().locator('[data-router-limit]').count(), 2, 'Both the active key and FREE_POOL card remain visible');
+    const activeCard = dialog().getByRole('region', { name: `Лимит: ${activeLimit.key}`, exact: true });
+    const freePoolCard = dialog().getByRole('region', { name: `Лимит: ${freePoolLimit.key}`, exact: true });
+    assert.equal(await activeCard.locator('[data-limit-field="used"] dd').innerText(), credits(8284.012071));
+    assert.equal(await activeCard.locator('[data-limit-field="total"] dd').innerText(), credits(32000));
+    assert.equal(await activeCard.locator('[data-limit-field="percent"] dd').innerText(), '25,9%');
+    assert.equal(await freePoolCard.locator('[data-limit-field="percent"] dd').innerText(), '—');
+    assert.match(await freePoolCard.innerText(), /Лимит этого ключа недоступен\./);
+    if (limits[0] === activeLimit) await page.screenshot({ path: 'artifacts/router-active-limit.png' });
+  }
+
+  for (const scenario of [
+    { name: 'An unavailable key cannot supply the badge percentage even if its numbers are present', limits: [{ ...activeLimit, available: false }] },
+    { name: 'Unknown availability is retained, so two possible quotas cannot supply a combined percentage', limits: [activeLimit, { ...periodLimit, key: 'unknown-fixture', available: null }] },
+  ]) {
+    await setSnapshot({ available: true, fetchedAt: '2026-09-30T10:01:00.000Z', overview: { last_24h: { credits: 4073.63 } }, limits: scenario.limits });
+    await dialog().getByRole('button', { name: 'Обновить статистику роутера', exact: true }).click();
+    await page.waitForFunction(({ count, label }) => document.querySelectorAll('[data-router-limit]').length === count
+      && document.querySelector('.router-usage-trigger')?.getAttribute('aria-label') === label,
+    { count: scenario.limits.length, label: `Роутер · ${credits(4073.63)} кр./сут` });
+    assert.equal(await trigger().getAttribute('aria-label'), `Роутер · ${credits(4073.63)} кр./сут`, scenario.name);
+    assert.equal(await dialog().locator('[data-router-limit]').count(), scenario.limits.length, 'Availability does not remove detailed cards');
+  }
+
   // Numeric zero is data; null means unavailable and is rendered as an em dash.
   await setSnapshot({ available: true, fetchedAt: '2026-09-22T10:01:00.000Z', overview: { email: 'fixture@example.test', last_24h: { credits: 0, requests: 0, failures: 0 } }, limits: [{ key: 'coder-fixture', available: true, tier: 'TierA', state: 'ACTIVE', reset_at: null, limit_credits: null, used_credits: 0, remaining_credits: 0 }] });
   const callsBeforeZero = await page.evaluate(() => window.__router.calls);
@@ -169,7 +203,7 @@ try {
     await page.keyboard.press('Escape'); await dialog().waitFor({ state: 'hidden' });
   }
   assert.deepEqual(errors, []);
-  console.log('PASS: router usage appears only for model_provider=router; ledger spend priority, zero/null ledger and quotas, usage fallback, overspending, daily overview, multiple keys, partial limit errors, refresh, Escape focus and narrow viewports are covered. Fixture bridge only; no real token or model request.');
+  console.log('PASS: router usage appears only for model_provider=router; ledger spend priority, zero/null ledger and quotas, usage fallback, overspending, daily overview, available quota with FREE_POOL in both orders, unavailable and unknown availability, multiple keys, partial limit errors, refresh, Escape focus and narrow viewports are covered. Fixture bridge only; no real token or model request.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/router-usage-failure.png' }); console.error(await page.locator('body').innerText()); }
   throw error;
