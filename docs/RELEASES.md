@@ -1,5 +1,17 @@
 # Release и Nightly
 
+## Release 0.8.1 — 2026-09-30
+
+По поручению «давай обновлять, переливай всё в релиз и заливай» исправление [процента лимита роутера при FREE_POOL](ROUTER_USAGE.md) включено в patch **0.8.1**. Публичный номер 0.8.0 не переиспользуется. Nightly `12bd144a5f62e114e8ca788c070faf6adaf42fc5cef7eb5e4a51ac66c9a6bd78`, собранная `2026-09-30T13:50:21.992Z`, перенесена из проверенного кандидата очереди в `release/stable` без перекомпиляции. Предыдущий Release 0.8.0 (`49e11d391243cde668f6434fb6539715295915ce63405692be27e13484bbc7ce`) сохранён в `stable-previous`. Пользовательский Nightly не закрывался агентом; применение очереди остаётся за пользователем.
+
+Первый `check`: TypeScript прошёл, Node — 616 passed / 2 failed / 2 skipped. Оба сбоя — Windows `EPERM` при rename временного `.transaction.json` в изолированных тестах `nightly-update.test.mjs` и `release.test.mjs`. Повтор обоих файлов с `--test-concurrency=1` прошёл: **41 passed**, без изменений кода. Отдельные TypeScript/Vite, `test:router-usage` и финальная упаковка прошли. Логи: `artifacts/release-081-check.log`, `release-081-retry.log`, `release-081-package.log`.
+
+Manifest содержит 72 файла; все 56 файлов electron/dist и встроенные заметки версий побайтно сверены с исходниками (`artifacts/release-081-preflight.json`). Packaged `test:ui` прошёл на кандидате: настоящий Electron/preload/IPC и установленный Codex bootstrap, 7 моделей, Astra/Ultra, PNG и отсутствие renderer errors. UI роутера проверен на подставных данных, модельные запросы не отправлялись.
+
+Setup `Codex-Desk-Setup-0.8.1.exe`: **100 967 015 байт**, SHA-256 `e24ce5123f7b43e4b828f870e67e58530d3747750cc4df9976af82bb7c3d1bc3`. Изолированная установка 0.8.0 и обновление до 0.8.1 без `/D` прошли с exit 0 и точным совпадением всех 72 файлов (`artifacts/installer-test-2f1f8a3505af4d1bbc1177f0a9f41f58`). Первый update остановлен guard: Nightly обновил байты Start Menu shortcut, сохранив TargetPath/Arguments/IconLocation/Description/WorkingDirectory. Обе копии сохранены, актуальный ярлык принят для восстановления после проверки (`shortcut-refresh.json`, `before-1-original.bin`, `snapshot-before-shortcut-refresh.json`); временный тестовый ярлык восстановлен из проверенного Desktop shortcut. Cleanup завершён: три внешних файла восстановлены, тестовая установка и реестр удалены.
+
+Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-ZUTPAm`): настоящий Electron/preload/IPC с fixture CLI и отдельными профилями, мастер и enable/restart/disable правил памяти обоих агентов, точные backups. Старый сценарий после немедленного закрытия `setup.complete()` не учитывал штатное окно заметок Release и получил timeout; сценарий теперь при `getReleaseNotes().shouldShow` нажимает «Понятно» через UI перед повторным входом в мастер. Runtime/ASAR при этой правке теста не менялись. Запросов модели, SSO и установки CLI в smoke-тесте нет. `release:prepare` подготовил четыре assets и заметки для GitHub.
+
 ## Release 0.8.0 — 2026-09-26
 
 По поручению «всё в релиз, заливай в герит и в гит» Nightly **0.8.0** (`49e11d391243cde668f6434fb6539715295915ce63405692be27e13484bbc7ce`) перенесена в `release/stable` без перекомпиляции. Перед переносом очередь уже была применена: журнал `published` 2026-09-26T08:14:39Z, `complete` 08:14:40Z; пользовательский Nightly не закрывался агентом. Старый локальный stable **0.6.0** (`f3eee0c209e8…`) сохранён в stable-previous. Он отличался от версии исходников `0.7.0`; это проверено по app.asar/manifest, а не по старому active-build.txt.
