@@ -4,6 +4,10 @@ export type Access = 'inherited' | 'auto' | 'read-only' | 'workspace-write' | 'd
 export type AgentProvider = 'codex' | 'claude';
 export type AgentCapabilities = { compact: boolean; steer: boolean; terminal: boolean; mcp: boolean; archive: boolean; usage?: boolean };
 export type AgentDetails = { commands: { name: string; description: string; builtin: boolean }[]; agents: { name: string; description: string }[]; mcpServers: { name: string; status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'; error?: string; scope?: string }[] | null; mcpError?: string };
+export type AgentSkillSource = 'project' | 'user' | 'shared' | 'synced' | 'plugin';
+export type AgentSkill = { id: string; name: string; description: string; source: AgentSkillSource; root: string; path: string; directory: string; updatedAt: string | null; plugin?: string; duplicates?: string[] };
+export type AgentSkillsSnapshot = { provider: AgentProvider; cwd: string; readAt: string; roots: { source: AgentSkillSource; path: string; exists: boolean; count: number }[]; skills: AgentSkill[]; errors: { path: string; message: string }[]; truncated: boolean };
+export interface AgentSkillsBridge { list(options: { provider: AgentProvider; cwd?: string }): Promise<AgentSkillsSnapshot>; }
 export type UsageWindow = { key: string; label: string; utilization: number | null; resetsAt: string | null };
 export type UsageLimits = { available: boolean; subscription?: string | null; windows: UsageWindow[]; updatedAt?: string; message?: string };
 export type RouterLimit = { key: string | null; available: boolean | null; tier: string | null; state: string | null; reset_at: string | null; limit_credits: number | null; used_credits: number | null; ledger_used_credits?: number | null; remaining_credits: number | null; used_percent: number | null };
@@ -87,6 +91,7 @@ export type GitRollbackRecord = { undoId: string; path: string; createdAt: strin
 export type McpServerSummary = { name: string; transport: 'http' | 'stdio'; address: string; enabled: boolean; headerNames: string[]; envNames: string[] };
 export type McpConfigInfo = { configPath: string; servers: McpServerSummary[] };
 export type McpImportPreview = { previewId: string; configPath: string; servers: (McpServerSummary & { exists: boolean })[]; conflicts: string[] };
+export type McpRemovalPreview = { previewId: string; configPath: string; server: McpServerSummary };
 export type McpSaveResult = { configPath: string; backupPath: string | null; servers: string[]; message?: string };
 export type McpConnectionReport = { servers: { name: string; authStatus: string; status: string; toolCount: number }[]; message?: string };
 export interface CodexBridge {
@@ -125,6 +130,8 @@ export interface CodexBridge {
   getMcpConfig(): Promise<McpConfigInfo>;
   previewMcpImport(text: string): Promise<McpImportPreview>;
   saveMcpImport(options: { previewId: string; replaceExisting: boolean }): Promise<McpSaveResult>;
+  previewMcpRemoval(name: string): Promise<McpRemovalPreview>;
+  removeMcpServer(options: { previewId: string }): Promise<McpSaveResult>;
   reloadMcp(): Promise<{ status: 'applied' | 'deferred'; message: string }>;
   checkMcp(): Promise<McpConnectionReport>;
   getRouterUsage?(): Promise<RouterUsageSnapshot>;
@@ -132,6 +139,7 @@ export interface CodexBridge {
 export interface WorkspaceBridge extends CodexBridge {
   setup?: SetupBridge;
   memoryRules?: MemoryRulesBridge;
+  skills?: AgentSkillsBridge;
   searchHistory(options: { query: string; cwd: string; provider: AgentProvider | 'all'; cursor?: string }): Promise<HistorySearchPage>;
   resolveHistoryTarget(options: { cwd: string; provider: AgentProvider; threadId: string }): Promise<Thread>;
   listBookmarks(options?: { cwd?: string; provider?: AgentProvider | 'all' }): Promise<Bookmark[]>;

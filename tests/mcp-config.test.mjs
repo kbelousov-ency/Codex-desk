@@ -44,8 +44,9 @@ async function fixture(t, { contents = original, ...options } = {}) {
     config.mcp_servers ??= {};
     for (const edit of params.edits) {
       assert.equal(edit.mergeStrategy, 'replace');
-      const [, name] = edit.keyPath.split('.');
-      config.mcp_servers[name] = edit.value;
+      const [name] = Object.keys(TOML.parse(`${edit.keyPath} = true`).mcp_servers);
+      if (edit.value === null) delete config.mcp_servers[name];
+      else config.mcp_servers[name] = edit.value;
     }
     await writeFile(configPath, TOML.stringify(config));
     return { status: state.writeStatus, filePath: configPath, version: 'after', overriddenMetadata: null };
@@ -363,4 +364,145 @@ test('MCP overridden response gives a generic notice without returning metadata'
   const preview = await manager.preview(httpImport);
   const result = await manager.save({ previewId: preview.previewId });
   assert.match(result.message, /переопределена другим уровнем/);
+});
+
+test('MCP removal previews only the selected base user server and creates an exact backup on confirmation', async t => {
+  const contents = `${original}\r\n${httpImport}`;
+  const { manager, configPath, calls, folder } = await fixture(t, { contents });
+  const preview = await manager.previewRemoval('team');
+  assert.deepEqual(preview.server, { name: 'team', transport: 'http', address: 'https://mcp.example.test/service', enabled: true, headerNames: ['Authorization'], envNames: [] });
+  assert.equal(preview.configPath, configPath);
+  assert.doesNotMatch(JSON.stringify(preview), new RegExp(`${secret}|password|Bearer`));
+  assert.deepEqual(await readdir(folder), ['custom-user-config.toml']);
+  assert.equal(await readFile(configPath, 'utf8'), contents);
+  assert.ok(calls.every(call => call.method === 'config/read'));
+  const result = await manager.remove({ previewId: preview.previewId });
+  assert.deepEqual(await readFile(result.backupPath), Buffer.from(contents));
+  assert.equal(result.configPath, configPath);
+  assert.deepEqual(result.servers, ['team']);
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+  const saved = TOML.parse(await readFile(configPath, 'utf8'));
+  assert.deepEqual(saved.mcp_servers, { old: { command: 'node', args: ['old-server.mjs'] } });
+  assert.equal(saved.model, 'existing-model');
+  assert.equal(saved.model_reasoning_effort, 'high');
+  const write = calls.find(call => call.method === 'config/batchWrite');
+  assert.deepEqual(write.params.edits, [{ keyPath: 'mcp_servers."team"', value: null, mergeStrategy: 'replace' }]);
+  assert.equal(write.params.filePath, configPath);
+  assert.equal(write.params.reloadUserConfig, false);
+  assert.equal(typeof write.params.expectedVersion, 'string');
+  await assert.rejects(manager.remove({ previewId: preview.previewId }), /истекло|отменено/);
+});
+
+test('MCP removal quotes complete existing names and does not delete a sibling or interpret a path', async t => {
+  for (const name of ['with.dot', 'with space', 'quote"name', 'back\\slash', '__proto__', 'пример', 'old.url', 'old".url']) {
+    const contents = TOML.stringify({ model: 'existing-model', mcp_servers: Object.fromEntries([
+      ['old', { command: 'node', args: ['keep.mjs'] }], [name, { command: 'remove-command', enabled: false }],
+    ]) });
+    const { manager, configPath, calls } = await fixture(t, { contents });
+    const preview = await manager.previewRemoval(name);
+    assert.equal(preview.server.name, name);
+    const result = await manager.remove({ previewId: preview.previewId });
+    assert.deepEqual(result.servers, [name]);
+    const saved = TOML.parse(await readFile(configPath, 'utf8'));
+    assert.deepEqual(Object.keys(saved.mcp_servers), ['old']);
+    assert.deepEqual(saved.mcp_servers.old, { command: 'node', args: ['keep.mjs'] });
+    assert.deepEqual(calls.find(call => call.method === 'config/batchWrite').params.edits,
+      [{ keyPath: `mcp_servers.${JSON.stringify(name)}`, value: null, mergeStrategy: 'replace' }]);
+  }
+});
+
+test('MCP removal requires an existing base server and never accepts project, profile or prototype names', async t => {
+  const { manager, calls, folder } = await fixture(t);
+  for (const name of [null, {}, [], 1, '']) await assert.rejects(manager.previewRemoval(name), /Выберите/);
+  assert.equal(calls.length, 0);
+  for (const name of ['missing', 'project', 'profile', '__proto__', 'constructor']) {
+    await assert.rejects(manager.previewRemoval(name), /больше не найден/);
+  }
+  assert.ok(calls.every(call => call.method === 'config/read'));
+  assert.deepEqual(await readdir(folder), ['custom-user-config.toml']);
+});
+
+test('MCP import and removal confirmations cannot be interchanged and new previews invalidate old ones', async t => {
+  const { manager, calls } = await fixture(t);
+  const importing = await manager.preview(httpImport);
+  await assert.rejects(manager.remove({ previewId: importing.previewId }), /истекло|отменено/);
+  const removing = await manager.previewRemoval('old');
+  await assert.rejects(manager.save({ previewId: removing.previewId }), /истекла|отменена/);
+  await assert.rejects(manager.save({ previewId: importing.previewId }), /истекла|отменена/);
+  await manager.preview(httpImport);
+  await assert.rejects(manager.remove({ previewId: removing.previewId }), /истекло|отменено/);
+  const replaced = await manager.previewRemoval('old');
+  await manager.previewRemoval('old');
+  await assert.rejects(manager.remove({ previewId: replaced.previewId }), /истекло|отменено/);
+  assert.ok(calls.every(call => call.method === 'config/read'));
+});
+
+test('MCP removal refuses external changes before creating a backup or writing', async t => {
+  const { manager, configPath, calls, folder } = await fixture(t);
+  const preview = await manager.previewRemoval('old');
+  await writeFile(configPath, `${original}# Changed independently.\r\n`);
+  await assert.rejects(manager.remove({ previewId: preview.previewId }), /изменилась после проверки/);
+  assert.ok(calls.every(call => call.method !== 'config/batchWrite'));
+  assert.deepEqual(await readdir(folder), ['custom-user-config.toml']);
+});
+
+test('MCP removal expires, invalidates on disconnect, and requires backup before native deletion', async t => {
+  let now = Date.now();
+  const { manager, configPath, calls } = await fixture(t, { now: () => now,
+    writeFile: async () => { throw new Error(secret); } });
+  const expired = await manager.previewRemoval('old');
+  now += 10 * 60 * 1000;
+  await assert.rejects(manager.remove({ previewId: expired.previewId }), /истекло/);
+  const cancelled = await manager.previewRemoval('old');
+  manager.invalidate();
+  await assert.rejects(manager.remove({ previewId: cancelled.previewId }), /отменено/);
+  const backupFailure = await manager.previewRemoval('old');
+  await assert.rejects(manager.remove({ previewId: backupFailure.previewId }), error => {
+    assert.match(error.message, /резервную копию/);
+    assert.doesNotMatch(error.message, new RegExp(secret));
+    return true;
+  });
+  assert.equal(await readFile(configPath, 'utf8'), original);
+  assert.ok(calls.every(call => call.method !== 'config/batchWrite'));
+});
+
+test('MCP removal native failures mask secrets, keep backup and consume confirmation', async t => {
+  const { manager, configPath, state, folder } = await fixture(t);
+  const preview = await manager.previewRemoval('old');
+  state.nativeError = true;
+  await assert.rejects(manager.remove({ previewId: preview.previewId }), error => {
+    assert.match(error.message, /не подтвердил удаление/);
+    assert.doesNotMatch(error.message, new RegExp(secret));
+    return true;
+  });
+  assert.equal(await readFile(configPath, 'utf8'), original);
+  assert.equal((await readdir(folder)).filter(file => file.includes('.backup-')).length, 1);
+  await assert.rejects(manager.remove({ previewId: preview.previewId }), /истекло|отменено/);
+});
+
+test('MCP concurrent removal and import writes share one mutation lock', async t => {
+  let release;
+  let enter;
+  const entered = new Promise(resolve => { enter = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const { manager, calls } = await fixture(t, { writeFile: async (...args) => { enter(); await gate; return writeFile(...args); } });
+  const preview = await manager.previewRemoval('old');
+  const removing = manager.remove({ previewId: preview.previewId });
+  await entered;
+  await assert.rejects(manager.remove({ previewId: preview.previewId }), /Дождитесь сохранения/);
+  await assert.rejects(manager.save({ previewId: preview.previewId }), /Дождитесь сохранения/);
+  await assert.rejects(manager.preview(httpImport), /Дождитесь сохранения/);
+  await assert.rejects(manager.previewRemoval('old'), /Дождитесь сохранения/);
+  release();
+  await removing;
+  assert.equal(calls.filter(call => call.method === 'config/batchWrite').length, 1);
+});
+
+test('MCP removal overridden response explains remaining layers without returning metadata', async t => {
+  const { manager, state } = await fixture(t);
+  state.writeStatus = 'okOverridden';
+  const preview = await manager.previewRemoval('old');
+  const result = await manager.remove({ previewId: preview.previewId });
+  assert.match(result.message, /другом уровне/);
+  assert.equal(result.overriddenMetadata, undefined);
 });

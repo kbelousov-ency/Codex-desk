@@ -1,6 +1,6 @@
 {
   "name": "codex-desk",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "description": "Local desktop interface for Codex CLI",
   "type": "module",
@@ -21,6 +21,7 @@
     "package:installer": "node scripts/installer.mjs --nightly",
     "test:setup": "node scripts/ui-setup.mjs",
     "test:memory-rules-ui": "node scripts/ui-memory-rules.mjs",
+    "test:skills": "node scripts/ui-skills.mjs",
     "test:setup-host": "node scripts/ui-setup-host.mjs",
     "test:portal-host": "node scripts/ui-portal-host.mjs",
     "release:rollback": "node scripts/rollback.mjs",

@@ -16,7 +16,7 @@ const cwd = path.join(fixture, 'project');
 await mkdir(isolatedHome);
 await mkdir(cwd);
 const configPath = path.join(isolatedHome, 'config.toml');
-const original = '# Native MCP import fixture: this comment must survive.\r\nmodel = "gpt-5.4"\r\nmodel_reasoning_effort = "high"\r\n\r\n[mcp_servers.existing]\r\nurl = "http://127.0.0.1:1/mcp"\r\nenabled = false\r\n[mcp_servers.existing.http_headers]\r\nAuthorization = "Bearer native-fixture-only-old"\r\n';
+const original = '# Native MCP import fixture: this comment must survive.\r\nmodel = "gpt-5.4"\r\nmodel_reasoning_effort = "high"\r\n\r\n[mcp_servers.existing]\r\nurl = "http://127.0.0.1:1/mcp"\r\nenabled = false\r\n[mcp_servers.existing.http_headers]\r\nAuthorization = "Bearer native-fixture-only-old"\r\n\r\n[mcp_servers."with.dot"]\r\ncommand = "node"\r\nenabled = false\r\n';
 await writeFile(configPath, original);
 const methods = [];
 const client = new CodexClient({
@@ -31,7 +31,7 @@ try {
   await client.start();
   const list = await manager.list();
   assert.equal(path.normalize(list.configPath), path.normalize(configPath));
-  assert.deepEqual(list.servers.map(server => server.name), ['existing']);
+  assert.deepEqual(list.servers.map(server => server.name), ['existing', 'with.dot']);
   assert.doesNotMatch(JSON.stringify(list), /native-fixture-only-old/);
 
   const preview = await manager.preview(JSON.stringify({ mcpServers: {
@@ -80,8 +80,70 @@ try {
     assert.equal(unchanged.model_reasoning_effort, 'low');
     assert.equal(unchanged.mcp_servers.racing, undefined);
   } finally { racingManager.dispose(); }
+
+  const beforeRemoval = await readFile(configPath);
+  const removing = await manager.previewRemoval('new-server');
+  assert.equal(removing.server.address, 'http://127.0.0.1:1/new');
+  assert.doesNotMatch(JSON.stringify(removing), /native-fixture-only-new|native-fixture-only-query/);
+  assert.deepEqual(await readFile(configPath), beforeRemoval, 'Opening confirmation never writes the configuration');
+  const removed = await manager.remove({ previewId: removing.previewId });
+  assert.deepEqual(await readFile(removed.backupPath), beforeRemoval);
+  const removedText = await readFile(configPath, 'utf8');
+  assert.match(removedText, /# Native MCP import fixture: this comment must survive\./);
+  const afterRemoval = TOML.parse(removedText);
+  assert.equal(afterRemoval.mcp_servers['new-server'], undefined);
+  assert.deepEqual(afterRemoval.mcp_servers.existing, replaced.mcp_servers.existing);
+  assert.deepEqual(afterRemoval.mcp_servers['local-json'], parsed.mcp_servers['local-json']);
+  assert.equal(afterRemoval.model, 'gpt-5.4');
+  assert.equal(afterRemoval.model_reasoning_effort, 'low');
+  await assert.rejects(manager.remove({ previewId: removing.previewId }), /истекло|отменено/);
+
+  const dottedRemoval = await manager.previewRemoval('with.dot');
+  await manager.remove({ previewId: dottedRemoval.previewId });
+  assert.equal(TOML.parse(await readFile(configPath, 'utf8')).mcp_servers['with.dot'], undefined);
+
+  const staleRemoval = await manager.previewRemoval('existing');
+  await writeFile(configPath, `${await readFile(configPath, 'utf8')}\n# External edit before removal.\n`);
+  const writesBeforeStaleRemoval = methods.filter(method => method === 'config/batchWrite').length;
+  await assert.rejects(manager.remove({ previewId: staleRemoval.previewId }), /изменилась после проверки/);
+  assert.equal(methods.filter(method => method === 'config/batchWrite').length, writesBeforeStaleRemoval);
+
+  const racingRemovalManager = new McpConfigManager({ request: async (method, params) => {
+    if (method === 'config/batchWrite') {
+      const current = await readFile(configPath, 'utf8');
+      await writeFile(configPath, current.replace('model_reasoning_effort = "low"', 'model_reasoning_effort = "high"'));
+    }
+    return client.request(method, params);
+  } });
+  try {
+    const racingRemoval = await racingRemovalManager.previewRemoval('existing');
+    await assert.rejects(racingRemovalManager.remove({ previewId: racingRemoval.previewId }), /не подтвердил удаление/);
+    const preserved = TOML.parse(await readFile(configPath, 'utf8'));
+    assert.equal(preserved.model_reasoning_effort, 'high');
+    assert.deepEqual(preserved.mcp_servers.existing, replaced.mcp_servers.existing);
+  } finally { racingRemovalManager.dispose(); }
+
+  for (const name of ['local-json', 'existing']) {
+    const lastRemoval = await manager.previewRemoval(name);
+    await manager.remove({ previewId: lastRemoval.previewId });
+  }
+  assert.deepEqual((await manager.list()).servers, []);
+
+  // Existing configurations are not constrained by the importer's name regex.
+  // The native parser must receive each quoted name as one literal key.
+  const unusualNames = ['with space', 'quote"name', 'back\\slash', '__proto__', 'constructor', 'пример'];
+  const unusualServers = Object.fromEntries(unusualNames.map(name => [name, { command: 'node', enabled: false }]));
+  await writeFile(configPath, `${await readFile(configPath, 'utf8')}\n${TOML.stringify({ mcp_servers: unusualServers })}`);
+  let remainingNames = [...unusualNames];
+  for (const name of unusualNames) {
+    const literalRemoval = await manager.previewRemoval(name);
+    await manager.remove({ previewId: literalRemoval.previewId });
+    remainingNames = remainingNames.filter(item => item !== name);
+    assert.deepEqual((await manager.list()).servers.map(server => server.name).sort(), [...remainingNames].sort());
+  }
+  assert.equal(TOML.parse(await readFile(configPath, 'utf8')).model, 'gpt-5.4');
   assert.ok(!methods.includes('turn/start'));
-  console.log(JSON.stringify({ result: 'PASS: native MCP config list/import/replace/backup/stale checks in isolated CODEX_HOME; no model turns or enabled MCP servers', fixture, nativeWrites: callsBefore }, null, 2));
+  console.log(JSON.stringify({ result: 'PASS: native MCP config list/import/replace/remove/backup/stale checks in isolated CODEX_HOME; no model turns or enabled MCP servers', fixture, nativeWrites: methods.filter(method => method === 'config/batchWrite').length }, null, 2));
 } finally {
   manager.dispose();
   client.stop();

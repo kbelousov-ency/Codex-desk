@@ -25,6 +25,7 @@ import { searchProjectFiles, readProjectFile } from './file-viewer.mjs';
 import { saveConversation } from './conversation-export.mjs';
 import { ThreadActionCoordinator, ThreadManagement } from './thread-management.mjs';
 import { McpConfigService } from './mcp-service.mjs';
+import { AgentSkillsService } from './agent-skills.mjs';
 import { readAttachment, hydrateAttachmentPreviews } from './attachments.mjs';
 import { SettingsStore, WorkspaceStore, WindowSession, cleanSettings, sessionForEvent, windowForEvent } from './window-session.mjs';
 import { createDiagnostics } from './diagnostics.mjs';
@@ -101,6 +102,7 @@ const appUpdates = new AppUpdateService({
 });
 const threadActions = new ThreadActionCoordinator();
 const routerUsage = new RouterUsageClient({ fetchImpl: (...args) => net.fetch(...args) });
+const agentSkills = new AgentSkillsService();
 // A long-lived `claude setup-token` credential, encrypted with DPAPI, keeps the app's Claude processes off the
 // shared single-use refresh token that Claude Desktop, IDE extensions and parallel tabs otherwise race for.
 const claudeToken = new ClaudeTokenStore({
@@ -349,6 +351,7 @@ function addSession(record, settings) {
 
 function installHandlers() {
   workspaceHandle('host:getRouterUsage', () => routerUsage.overview());
+  workspaceHandle('skills:list', (_record, _event, options) => agentSkills.list(options || {}));
   workspaceHandle('memoryRules:preview', (_record, _event, provider) => setupService.previewMemoryRules(provider));
   workspaceHandle('memoryRules:apply', async (_record, _event, options) => {
     const result = await setupService.applyMemoryRules(options);
@@ -558,6 +561,8 @@ function installHandlers() {
   handle('host:getMcpConfig', 0, ({ session }) => mcpConfig(session).list());
   handle('host:previewMcpImport', 1, ({ session }, text) => mcpConfig(session).preview(text));
   handle('host:saveMcpImport', 1, ({ session }, options) => mcpConfig(session).save(options));
+  handle('host:previewMcpRemoval', 1, ({ session }, name) => mcpConfig(session).previewRemoval(name));
+  handle('host:removeMcpServer', 1, ({ session }, options) => mcpConfig(session).remove(options));
   handle('host:reloadMcp', 0, ({ session }) => session.mcpRuntime());
   handle('host:checkMcp', 0, ({ session }) => session.mcpRuntime(true));
   handle('codex:start', 1, ({ session }, options) => session.start(options));

@@ -25,9 +25,10 @@ import ProjectSidebar from './ProjectSidebar';
 import { ActivityPanel, ChangesPanel, reasoningText, activityLabel } from './Panels';
 import './terminal.css';
 import SettingsDialog from './SettingsDialog';
-import { BookOpen, Plug } from 'lucide-react';
+import { BookOpen, Plug, Sparkles } from 'lucide-react';
 import McpSettings from './McpSettings';
 import MemoryRulesSettings from './MemoryRulesSettings';
+import SkillsSettings from './SkillsSettings';
 import UpdateNotice from './UpdateNotice';
 import MessageQueue from './MessageQueue';
 import { useMessageQueue } from './useMessageQueue';
@@ -730,6 +731,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
         {codex.diagnostics.length > 0 && <details className="diagnostics"><summary>Диагностика подключения</summary><pre>{codex.diagnostics.join('\n')}</pre></details>}
       </> },
       { id: 'mcp', label: 'MCP', icon: <Plug size={15} aria-hidden="true" />, content: codex.capabilities.mcp ? <McpSettings bridge={bridge} active={active && showSettings} /> : <p className="muted">Подключения Claude Code настраиваются через его CLI. Импорт MCP из этого окна пока доступен для Codex.</p> },
+      { id: 'skills', label: 'Навыки', icon: <Sparkles size={15} aria-hidden="true" />, content: <SkillsSettings provider={codex.provider} cwd={codex.cwd} active={active && showSettings} /> },
       { id: 'memory', label: 'Память', icon: <BookOpen size={15} aria-hidden="true" />, content: <MemoryRulesSettings onBusyChange={setMemoryRulesBusy} /> },
     ]} />}
 

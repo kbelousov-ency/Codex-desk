@@ -26,9 +26,26 @@ const memoryFixtures = {
 const baseInstructions = '# Base Codex instructions must remain untouched.\r\n';
 await writeFile(path.join(config, 'AGENTS.md'), baseInstructions);
 for (const fixture of Object.values(memoryFixtures)) await writeFile(fixture.instructionPath, fixture.original);
+// Installed skills are read from these isolated folders over the real preload/IPC path; nothing is written.
+const skillProject = path.join(run, 'skill-project');
+const skillFixtures = [
+  [path.join(config, 'skills', 'host-codex'), 'host-codex', 'Навык Codex из изолированного профиля'],
+  [path.join(claudeHome, 'skills', 'host-claude'), 'host-claude', 'Навык Claude из изолированного профиля'],
+  [path.join(home, '.agents', 'skills', 'host-shared'), 'host-shared', 'Общий навык обоих агентов'],
+  [path.join(skillProject, '.codex', 'skills', 'host-project'), 'host-project', 'Проектный навык Codex'],
+];
+for (const [directory, name, description] of skillFixtures) {
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, 'SKILL.md'), `---
+name: ${name}
+description: ${description}
+---
+
+# ${name}
+`);
+}
 const initialMemoryFiles = Object.fromEntries(await Promise.all(Object.entries(memoryFixtures).map(async ([provider, fixture]) => [provider, (await readdir(fixture.directory)).sort()])));
 const memoryEnabled = {};
-
 const ps = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const compile = "$ErrorActionPreference='Stop'; Add-Type -TypeDefinition (Get-Content -LiteralPath $env:SETUP_SOURCE -Raw -Encoding UTF8) -ReferencedAssemblies 'System.Web.Extensions' -OutputAssembly $env:SETUP_EXE -OutputType ConsoleApplication";
 await promisify(execFile)(ps, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(compile, 'utf16le').toString('base64')], {
@@ -205,8 +222,29 @@ try {
   assert.ok(rpc.trim().split('\n').every(method => ['initialize', 'account/read'].includes(method)));
   const calls = (await readFile(path.join(run, 'calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.ok(calls.every(({ args }) => args[0] === '--version' || args[0] === 'app-server' || (args[0] === 'auth' && ['status', 'login'].includes(args[1]))), 'Only version, authentication and app-server fixture operations are allowed');
+  const skillSnapshots = await page.evaluate(cwd => Promise.all(['codex', 'claude'].map(provider => window.codex.skills.list({ provider, cwd }))), skillProject);
+  assert.deepEqual(skillSnapshots[0].skills.map(skill => `${skill.source}:${skill.name}`), ['project:host-project', 'user:host-codex', 'shared:host-shared']);
+  assert.deepEqual(skillSnapshots[1].skills.map(skill => `${skill.source}:${skill.name}`), ['user:host-claude', 'shared:host-shared']);
+  assert.equal(skillSnapshots[0].skills[1].path, path.join(config, 'skills', 'host-codex', 'SKILL.md'));
+  assert.equal(skillSnapshots[0].skills[1].description, 'Навык Codex из изолированного профиля');
+  assert.deepEqual(skillSnapshots[0].errors, []);
+  assert.deepEqual((await readdir(path.join(config, 'skills'))).sort(), ['host-codex'], 'Listing skills must not create files');
+  const skillsRejected = await page.evaluate(async () => {
+    const result = [];
+    for (const options of [{ provider: 'gemini' }, {}, { provider: 'codex', cwd: 'relative/path' }]) {
+      try { const snapshot = await window.codex.skills.list(options); result.push(snapshot.roots.some(root => root.source === 'project')); } catch { result.push(true); }
+    }
+    return result;
+  });
+  assert.deepEqual(skillsRejected, [true, true, false], 'An unknown agent is refused and a relative working folder adds no project root');
+  const skillsFrameRejected = await app.evaluate(async ({ ipcMain, BrowserWindow }) => {
+    const handler = ipcMain._invokeHandlers.get('skills:list');
+    if (!handler) return 'missing';
+    try { await handler({ sender: BrowserWindow.getAllWindows()[0].webContents, senderFrame: {} }, { provider: 'codex' }); return false; } catch { return true; }
+  });
+  assert.equal(skillsFrameRejected, true);
   assert.deepEqual(errors, []);
-  console.log(`PASS: setup first launch/restart/manual entry, real IPC, frame and input guards, native fixture detection, custom CODEX_HOME, preview/backup/import, provider auth, native Claude login, memory preview/text/enable/restart/disable for both agents, exact instruction backups, no model/install/network. Artifacts: ${run}`);
+  console.log(`PASS: setup first launch/restart/manual entry, real IPC, frame and input guards, native fixture detection, custom CODEX_HOME, preview/backup/import, provider auth, native Claude login, memory preview/text/enable/restart/disable for both agents, exact instruction backups, installed skills by agent, no model/install/network. Artifacts: ${run}`);
 } catch (error) {
   await page?.screenshot({ path: path.join(run, 'failure.png') }).catch(() => {});
   console.error(`Setup host artifacts: ${run}`); throw error;

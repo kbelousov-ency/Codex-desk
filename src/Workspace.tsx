@@ -21,6 +21,7 @@ import { NotificationSettings } from './NotificationSettings';
 import './notifications.css';
 import HistoryLibrary from './HistoryLibrary';
 import SetupGate from './SetupGate';
+import { sameSessionSummary } from './session-summary';
 import ParallelActivity from './ParallelActivity';
 
 type Tab = SessionInfo & { bridge?: CodexBridge; initialThread?: Thread; archivedThread?: Thread; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; restoreSettings?: Settings; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; jump?: { itemId: string; turnId?: string; key: number; excerpt?: string }; pinned?: boolean; pendingMessage?: PendingMessage; fork?: { lastTurnId?: string } };
@@ -75,6 +76,7 @@ function TabbedWorkspace() {
   const [showNotificationSettings, setShowNotificationSettings] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
   const focusedWindow = useRef(document.hasFocus());
+  const notifiedSession = useRef<string | undefined>(undefined);
   const attentionMenu = useRef<HTMLDivElement>(null);
   const attentionButton = useRef<HTMLButtonElement>(null);
   const [savingBeforeClose, setSavingBeforeClose] = useState(false);
@@ -182,7 +184,12 @@ function TabbedWorkspace() {
   }, [clearAttention]);
   useEffect(() => {
     const selected = tabs.find(tab => tab.id === activeId && !tab.archivedThread);
-    void window.codex.setNotificationContext?.({ activeSessionId: selected?.id }).catch(() => {});
+    // The host only needs the visible dialogue; repeating the same value on every
+    // render floods IPC and keeps the renderer busy instead of drawing the answer.
+    if (notifiedSession.current !== selected?.id) {
+      notifiedSession.current = selected?.id;
+      void window.codex.setNotificationContext?.({ activeSessionId: selected?.id }).catch(() => {});
+    }
     if (focusedWindow.current) clearAttention(activeId);
     const ids = new Set(tabs.map(tab => tab.id));
     setAttention(previous => Object.keys(previous).every(id => ids.has(id)) ? previous : Object.fromEntries(Object.entries(previous).filter(([id]) => ids.has(id))));
@@ -420,8 +427,11 @@ function TabbedWorkspace() {
 
   const report = useCallback((id: string, summary: SessionSummary) => {
     if (!tabsRef.current.some(tab => tab.id === id)) return;
-    setSummaries(previous => ({ ...previous, [id]: summary }));
-    if (summary.cwd) setTabs(previous => previous.map(tab => tab.id === id && tab.cwd !== summary.cwd ? { ...tab, cwd: summary.cwd } : tab));
+    // Equal reports must keep the previous state objects: a new identity on every
+    // streamed delta re-renders the whole workspace and piles up nested updates.
+    setSummaries(previous => sameSessionSummary(previous[id], summary) ? previous : { ...previous, [id]: summary });
+    if (summary.cwd) setTabs(previous => previous.some(tab => tab.id === id && tab.cwd !== summary.cwd)
+      ? previous.map(tab => tab.id === id ? { ...tab, cwd: summary.cwd } : tab) : previous);
     if (summary.cwd) setProjects(previous => previous.some(folder => sameFolder(folder, summary.cwd)) ? previous : [...previous, summary.cwd]);
   }, []);
 
