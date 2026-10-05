@@ -1,5 +1,23 @@
 # Release и Nightly
 
+## Release 0.9.0 — 2026-10-05
+
+По поручению «Давай все изменения в релиз и заливай» в Release перенесены [удаление MCP](MCP.md), [список навыков](SKILLS.md), [устранение цикла перерисовки](UI_FIXES.md) и [диагностика React](DIAGNOSTICS.md). Nightly `26cf8b5b08527468afb6c1b8cde44cf9192eb46ca82eb27969156b03ccec8b59`, собранная `2026-10-05T06:27:13.173Z`, перенесена из проверенного кандидата очереди без перекомпиляции. Предыдущий Release 0.8.1 (`12bd144a5f62e114e8ca788c070faf6adaf42fc5cef7eb5e4a51ac66c9a6bd78`) сохранён в `stable-previous`. Пользовательский Nightly не закрывался агентом; очередь применяется штатной кнопкой «Закрыть» или после ручного выхода.
+
+Финальный `npm.cmd run check`: TypeScript, **639 passed / 2 skipped / 0 failed**, Vite. Первый прогон нашёл зависимость нового diagnostics-теста от имени старого Vite bundle `index-5wfJiN5H.js`; fixture заменена стабильным `App.tsx`, production-фильтр не ослаблен. Ревью также выявило гонку списка навыков при завершении подключения: после смены cwd запоздалое чтение могло совпасть с новым числовым ID. Уникальный `Symbol` устранил коллизию; UI-сценарий воспроизвёл ошибку до исправления и прошёл после. Логи: `artifacts/release-090-check.log`, `release-090-check-final.log`, `release-090-package.log`.
+
+Manifest проверяет 72 файла; все 57 файлов electron/dist и встроенные заметки версий побайтно сверены с исходниками (`artifacts/release-090-preflight.json`). Packaged `test:ui` подтвердил настоящий Electron/preload/IPC, установленный Codex bootstrap, 7 моделей, наследуемые Astra/Ultra, PNG и отсутствие renderer errors. Прошли `test:skills`, `test:mcp`, packaged `test:mcp-host` (`artifacts/mcp-host-AZSw6L`) и `test:mcp-native` с настоящим Codex и отдельным CODEX_HOME (`artifacts/mcp-native-5xy1IH`). Model turns не отправлялись; MCP-сценарии использовали тестовые конфигурации.
+
+Setup `Codex-Desk-Setup-0.9.0.exe`: **100 970 770 байт**, SHA-256 `13626548dcd19a59651ecc92977a3866db5f68a76012bbf537db1067f49fee51`. Изолированная установка 0.8.1 и обновление до 0.9.0 без `/D` прошли с exit 0 и совпадением всех 72 файлов (`artifacts/installer-test-a00ac5db99fd49449aa29ca92b1bd7ce`). Установленный exe прошёл `test:setup-host` (`artifacts/setup-host-nB1e7f`): настоящий Electron/preload/IPC, fixture CLI, мастер, правила памяти и навыки обоих агентов, без model turns/SSO/установки CLI. Cleanup восстановил три внешних файла и удалил только тестовую установку с её реестром. `release:prepare` подготовил Setup, SHA256SUMS.txt, release-info.json, README.txt и заметки для GitHub.
+
+## Список установленных навыков — Nightly 0.9.0, 2026-10-02
+
+По просьбе пользователя в настройки добавлена вкладка [«Навыки»](SKILLS.md) с подвкладками Codex и Claude Code. Nightly собран `npm.cmd run package`, build ID `f78f0a311a1c9e101f12203c18bc770e236cd917858b516251798a149019690a`, поставлен в штатную очередь (`artifacts/nightly-update/state.json`, `2026-10-02T11:14:53.565Z`). Применение ждёт «Закрыть» в чате или ручного выхода; агент пользовательский Nightly не закрывал. RELEASE не изменён, номер версии не повышался — 0.9.0 ещё не публиковалась.
+
+Перед сборкой: `npm run check` — TypeScript, 637 тестов (635 прошли, 2 платформенных пропущены), Vite. Один более ранний полный прогон дал единичный отказ без сохранённого имени; три последующих прогона прошли без ошибок. Прошли новый `npm.cmd run test:skills` и `npm.cmd run test:setup-host` с настоящим Electron и изолированными профилями (`artifacts/setup-host-tByUQr`).
+
+В кандидате очереди проверено: `electron/agent-skills.mjs`, `electron/preload.cjs` и `electron/main.mjs` в `app.asar` побайтно совпали с исходниками, renderer-бандл содержит строки новой вкладки. Запросов модели при сборке и проверках не было.
+
 ## Release 0.8.1 — 2026-09-30
 
 По поручению «давай обновлять, переливай всё в релиз и заливай» исправление [процента лимита роутера при FREE_POOL](ROUTER_USAGE.md) включено в patch **0.8.1**. Публичный номер 0.8.0 не переиспользуется. Nightly `12bd144a5f62e114e8ca788c070faf6adaf42fc5cef7eb5e4a51ac66c9a6bd78`, собранная `2026-09-30T13:50:21.992Z`, перенесена из проверенного кандидата очереди в `release/stable` без перекомпиляции. Предыдущий Release 0.8.0 (`49e11d391243cde668f6434fb6539715295915ce63405692be27e13484bbc7ce`) сохранён в `stable-previous`. Пользовательский Nightly не закрывался агентом; применение очереди остаётся за пользователем.

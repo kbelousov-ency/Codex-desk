@@ -243,7 +243,7 @@ export class McpConfigManager {
     this._active(generation);
     const previewId = randomUUID();
     const conflicts = Object.keys(servers).filter(name => own(snapshot.servers, name));
-    this._pending = { previewId, servers, configPath: snapshot.configPath, version: snapshot.version, hash: snapshot.hash,
+    this._pending = { action: 'import', previewId, servers, configPath: snapshot.configPath, version: snapshot.version, hash: snapshot.hash,
       expiresAt: this._now() + PREVIEW_TTL_MS, conflicts };
     this._timer = setTimeout(() => this.invalidate(), PREVIEW_TTL_MS);
     this._timer.unref?.();
@@ -256,13 +256,40 @@ export class McpConfigManager {
   }
 
   async save({ previewId, replaceExisting = false } = {}) {
+    return this._save({ previewId, replaceExisting, action: 'import' });
+  }
+
+  async previewRemoval(name) {
+    if (this._saving) throw new Error('Дождитесь сохранения MCP-серверов.');
+    this.invalidate();
+    const generation = this._generation;
+    this._active(generation);
+    if (typeof name !== 'string' || !name.length) throw new Error('Выберите MCP-сервер для удаления.');
+    const snapshot = await this._snapshot();
+    this._active(generation);
+    if (!own(snapshot.servers, name)) throw new Error('MCP-сервер больше не найден в пользовательской конфигурации. Обновите список.');
+    const previewId = randomUUID();
+    this._pending = { action: 'remove', previewId, name, configPath: snapshot.configPath, version: snapshot.version,
+      hash: snapshot.hash, expiresAt: this._now() + PREVIEW_TTL_MS };
+    this._timer = setTimeout(() => this.invalidate(), PREVIEW_TTL_MS);
+    this._timer.unref?.();
+    return { previewId, configPath: snapshot.configPath, server: summary(name, snapshot.servers[name]) };
+  }
+
+  async remove({ previewId } = {}) {
+    return this._save({ previewId, action: 'remove' });
+  }
+
+  async _save({ previewId, replaceExisting = false, action }) {
     if (this._saving) throw new Error('Дождитесь сохранения MCP-серверов.');
     const pending = this._pending;
-    if (!pending || typeof previewId !== 'string' || pending.previewId !== previewId || pending.expiresAt <= this._now()) {
+    const removing = action === 'remove';
+    if (!pending || pending.action !== action || typeof previewId !== 'string' || pending.previewId !== previewId || pending.expiresAt <= this._now()) {
       if (pending?.expiresAt <= this._now()) this.invalidate();
-      throw new Error('Проверка MCP истекла или была отменена. Вставьте и проверьте блок заново.');
+      throw new Error(removing ? 'Подтверждение удаления MCP истекло или было отменено. Выберите сервер заново.'
+        : 'Проверка MCP истекла или была отменена. Вставьте и проверьте блок заново.');
     }
-    if (pending.conflicts.length && replaceExisting !== true) throw new Error('Подтвердите замену существующих MCP-серверов или отмените импорт.');
+    if (!removing && pending.conflicts.length && replaceExisting !== true) throw new Error('Подтвердите замену существующих MCP-серверов или отмените импорт.');
     const generation = this._generation;
     this._active(generation);
     this._saving = true;
@@ -271,7 +298,8 @@ export class McpConfigManager {
       this._active(generation);
       if (snapshot.configPath !== pending.configPath || snapshot.version !== pending.version || snapshot.hash !== pending.hash) {
         this.invalidate();
-        throw new Error('Конфигурация Codex изменилась после проверки. Проверьте блок MCP заново.');
+        throw new Error(removing ? 'Конфигурация Codex изменилась после проверки. Обновите список и выберите сервер заново.'
+          : 'Конфигурация Codex изменилась после проверки. Проверьте блок MCP заново.');
       }
       let backupPath = null;
       if (snapshot.bytes !== null) {
@@ -283,14 +311,18 @@ export class McpConfigManager {
       let result;
       try {
         result = await this._request('config/batchWrite', {
-          edits: Object.entries(pending.servers).map(([name, server]) => ({ keyPath: `mcp_servers.${name}`, value: server, mergeStrategy: 'replace' })),
+          // JSON string quoting is valid TOML key quoting and keeps dots, spaces,
+          // quotes and backslashes in an existing name within a single key.
+          edits: removing ? [{ keyPath: `mcp_servers.${JSON.stringify(pending.name)}`, value: null, mergeStrategy: 'replace' }]
+            : Object.entries(pending.servers).map(([name, server]) => ({ keyPath: `mcp_servers.${name}`, value: server, mergeStrategy: 'replace' })),
           filePath: snapshot.configPath,
           expectedVersion: snapshot.version,
           reloadUserConfig: false,
         });
       } catch {
         this.invalidate();
-        throw new Error('Codex не подтвердил сохранение MCP. Обновите список и проверьте конфигурацию; повторный импорт требует новой проверки.');
+        throw new Error(removing ? 'Codex не подтвердил удаление MCP. Обновите список и проверьте конфигурацию; повторное удаление требует нового подтверждения.'
+          : 'Codex не подтвердил сохранение MCP. Обновите список и проверьте конфигурацию; повторный импорт требует новой проверки.');
       }
       this.invalidate();
       if (!['ok', 'okOverridden'].includes(result?.status)) {
@@ -299,8 +331,10 @@ export class McpConfigManager {
       return {
         configPath: snapshot.configPath,
         backupPath,
-        servers: Object.keys(pending.servers),
-        ...(result.status === 'okOverridden' ? { message: 'Настройки сохранены, но часть значений переопределена другим уровнем конфигурации Codex.' } : {}),
+        servers: removing ? [pending.name] : Object.keys(pending.servers),
+        ...(result.status === 'okOverridden' ? { message: removing
+          ? 'MCP удалён из пользовательской конфигурации, но может оставаться настроенным на другом уровне конфигурации Codex.'
+          : 'Настройки сохранены, но часть значений переопределена другим уровнем конфигурации Codex.' } : {}),
       };
     } finally { this._saving = false; }
   }

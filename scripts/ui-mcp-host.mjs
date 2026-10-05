@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -52,9 +52,13 @@ input.on('line', line => {
     if (params.filePath !== configPath || params.expectedVersion !== version()) return send({ id, error: { code: -32000, message: 'Fixture unexpected file/version' } });
     const next = config();
     for (const edit of params.edits) {
-      if (edit.mergeStrategy !== 'replace' || !/^mcp_servers\.[a-zA-Z0-9_-]+$/.test(edit.keyPath)) return send({ id, error: { code: -32000, message: 'Fixture unexpected edit' } });
+      const key = TOML.parse(edit.keyPath + ' = true');
+      const names = Object.keys(key.mcp_servers || {});
+      if (edit.mergeStrategy !== 'replace' || Object.keys(key).length !== 1 || names.length !== 1 || key.mcp_servers[names[0]] !== true) return send({ id, error: { code: -32000, message: 'Fixture unexpected edit' } });
       next.mcp_servers ||= {};
-      next.mcp_servers[edit.keyPath.slice('mcp_servers.'.length)] = edit.value;
+      const name = names[0];
+      if (edit.value === null) delete next.mcp_servers[name];
+      else next.mcp_servers[name] = edit.value;
     }
     writeFileSync(configPath, TOML.stringify(next));
     return reply(id, { status: 'ok', version: version(), filePath: configPath });
@@ -183,8 +187,82 @@ try {
   await settings().getByText(/Codex перечитал MCP/).waitFor();
   assert.equal(await count('thread/start'), 1, 'Same conversation survives save/check/reload');
   assert.equal(await count('turn/start'), 2, 'Only explicit fixture tasks create model turns');
+
+  // Real scoped IPC deletion must preserve the exact previous file in its
+  // backup, reject a stale confirmation, and remove only the selected server.
+  await button('Закрыть настройки').click();
+  await input().fill('Черновик после удаления MCP');
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await settings().getByRole('tab', { name: 'MCP', exact: true }).click();
+  const configured = () => settings().getByRole('list', { name: 'Настроенные MCP-серверы', exact: true });
+  const removal = () => settings().getByRole('group', { name: 'Удаление MCP company', exact: true });
+  const beforeRemoval = await readFile(configPath, 'utf8');
+  const backupsBeforeRemoval = (await readdir(codexHome)).filter(name => name.startsWith('config.toml.backup-')).sort();
+  const writesBeforeRemoval = await count('config/batchWrite');
+  const reloadsBeforeRemoval = await count('config/mcpServer/reload');
+  await button('Удалить MCP company').click();
+  await removal().waitFor();
+  await noSecret();
+  assert.equal(await readFile(configPath, 'utf8'), beforeRemoval, 'Removal preview does not touch the config');
+  assert.equal(await count('config/batchWrite'), writesBeforeRemoval);
+  await removal().getByRole('button', { name: 'Отмена', exact: true }).click();
+  assert.equal(await removal().count(), 0);
+  assert.equal(await readFile(configPath, 'utf8'), beforeRemoval, 'Cancelled removal preserves exact file bytes');
+  assert.equal(await count('config/batchWrite'), writesBeforeRemoval, 'Cancelled removal sends no native write');
+  assert.deepEqual((await readdir(codexHome)).filter(name => name.startsWith('config.toml.backup-')).sort(), backupsBeforeRemoval, 'Cancelled removal creates no backup');
+  assert.equal(await configured().getByText('company', { exact: true }).count(), 1);
+
+  await button('Удалить MCP company').click();
+  await removal().waitFor();
+  const changedBeforeRemoval = `${beforeRemoval}\n# External change after removal preview\n`;
+  await writeFile(configPath, changedBeforeRemoval);
+  await removal().getByRole('button', { name: 'Удалить сервер', exact: true }).click();
+  await settings().getByRole('alert').filter({ hasText: /изменилась после проверки/ }).waitFor();
+  assert.equal(await readFile(configPath, 'utf8'), changedBeforeRemoval, 'Stale deletion preserves the external edit');
+  assert.equal(await count('config/batchWrite'), writesBeforeRemoval, 'Stale deletion fails before native write');
+  assert.deepEqual((await readdir(codexHome)).filter(name => name.startsWith('config.toml.backup-')).sort(), backupsBeforeRemoval, 'Stale deletion creates no backup');
+  assert.equal(await configured().getByText('company', { exact: true }).count(), 1);
+  await noSecret();
+
+  await button('Удалить MCP company').click();
+  await removal().waitFor();
+  await page.screenshot({ path: path.join(runDir, 'mcp-removal-confirmation.png') });
+  await removal().getByRole('button', { name: 'Удалить сервер', exact: true }).click();
+  await settings().locator('.mcp-backup code').waitFor();
+  const removalBackupPath = await settings().locator('.mcp-backup code').innerText();
+  assert.notEqual(removalBackupPath, backupPath, 'Deletion has its own backup');
+  assert.equal(await readFile(removalBackupPath, 'utf8'), changedBeforeRemoval, 'Removal backup retains exact original bytes');
+  const afterRemoval = TOML.parse(await readFile(configPath, 'utf8'));
+  const expectedAfterRemoval = TOML.parse(changedBeforeRemoval);
+  delete expectedAfterRemoval.mcp_servers.company;
+  assert.deepEqual(afterRemoval, expectedAfterRemoval, 'Deletion preserves all other servers, model, effort and provider configuration');
+  assert.equal(await count('config/batchWrite'), writesBeforeRemoval + 1);
+  const removalWrite = (await log()).filter(entry => entry.method === 'config/batchWrite').at(-1);
+  assert.equal(removalWrite.params.filePath, configPath);
+  assert.equal(removalWrite.params.reloadUserConfig, false);
+  assert.deepEqual(removalWrite.params.edits, [{ keyPath: 'mcp_servers."company"', value: null, mergeStrategy: 'replace' }]);
+  assert.notEqual(removalWrite.pid, threadPid, 'Removal uses the private config service');
+  await waitFor(() => configured().getByText('company', { exact: true }).count().then(count => count === 0), 'deleted server disappears');
+  assert.equal(await configured().getByText('existing', { exact: true }).count(), 1);
+  assert.equal(await removal().count(), 0);
+  assert.equal(await count('config/mcpServer/reload'), reloadsBeforeRemoval, 'Deletion does not implicitly change runtime connections');
+  assert.equal(await count('thread/start'), 1, 'Deletion preserves the current conversation');
+  assert.equal(await count('turn/start'), 2, 'Deletion never submits a model request');
+  assert.equal(await input().inputValue(), 'Черновик после удаления MCP');
+  assert.match(await view().getByRole('combobox', { name: 'Модель', exact: true }).innerText(), /fixture-model/);
+  await noSecret();
+  await button('Применить в этой сессии').click();
+  await settings().getByText(/Codex перечитал MCP/).waitFor();
+  await button('Проверить подключение').click();
+  const runtimeAfterRemoval = settings().getByRole('list', { name: 'Подключения MCP текущей сессии', exact: true });
+  await runtimeAfterRemoval.waitFor();
+  assert.equal(await runtimeAfterRemoval.getByText('company', { exact: true }).count(), 0);
+  assert.equal(await runtimeAfterRemoval.getByText('existing', { exact: true }).count(), 1);
+  assert.equal(await count('thread/start'), 1);
+  assert.equal(await count('turn/start'), 2);
+  await page.screenshot({ path: path.join(runDir, 'mcp-removed.png') });
   assert.deepEqual(errors, []);
-  console.log(`PASS: real Electron/preload/scoped IPC, private config service, JSON HTTP normalization and malformed input, TOML fallback, exact backup, native batchWrite, unchanged provider/model/other MCP, hidden secrets, stale-file detection, same-thread reload and busy deferral. Fixture-only. Artifacts: ${runDir}`);
+  console.log(`PASS: real Electron/preload/scoped IPC, private config service, JSON HTTP normalization and malformed input, TOML fallback, import/removal confirmation and cancellation, exact backups, native batchWrite/null deletion, unchanged provider/model/other MCP, hidden secrets, stale-file detection, preserved draft/thread, explicit runtime reload and busy deferral. Fixture-only. Artifacts: ${runDir}`);
 } catch (error) {
   if (page && !page.isClosed()) await page.screenshot({ path: path.join(runDir, 'failure.png') }).catch(() => {});
   console.error(`MCP host artifacts: ${runDir}`); throw error;

@@ -26,6 +26,7 @@ const EVENTS = new Set([
 const CHANNELS = new Set([
   'host:getSettings', 'host:setSettings', 'host:openTerminal', 'host:getMcpConfig',
   'host:previewMcpImport', 'host:saveMcpImport', 'host:reloadMcp', 'host:checkMcp',
+  'host:previewMcpRemoval', 'host:removeMcpServer',
   'host:getWorkspace', 'host:listArchivedThreads', 'host:searchThreads',
   'host:saveWorkspaceState', 'host:completeWorkspaceSave',
   'host:getNotificationSettings', 'host:setNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus',
@@ -80,7 +81,7 @@ const CATEGORIES = new Set([
   'permission_denied', 'disk_full', 'connection_closed', 'connection_failed',
   'authentication', 'rate_limit', 'context_limit', 'cancelled', 'invalid_json',
   'invalid_request', 'unsupported_method', 'protocol', 'thread_not_found',
-  'config_conflict', 'sandbox', 'server_error',
+  'config_conflict', 'sandbox', 'server_error', 'render_loop',
 ]);
 const CODEX_ERRORS = new Set([
   'contextWindowExceeded', 'sessionBudgetExceeded', 'usageLimitExceeded', 'rateLimitExceeded',
@@ -91,7 +92,7 @@ const CODEX_ERRORS = new Set([
 ]);
 const NUMBERS = new Set([
   'windowId', 'requestId', 'durationMs', 'generation', 'count', 'exitCode', 'code',
-  'suppressedCount', 'httpStatusCode', 'bytes', 'files', 'entries', 'line', 'column',
+  'suppressedCount', 'httpStatusCode', 'bytes', 'files', 'entries', 'line', 'column', 'reactError',
 ]);
 const BOOLEANS = new Set(['success', 'canceled', 'retry', 'packaged', 'available']);
 const IDS = new Set(['sessionId', 'clientId', 'threadId', 'turnId', 'projectId', 'fingerprint']);
@@ -178,6 +179,8 @@ function safeError(value) {
   if (CODEX_ERRORS.has(codexErrorInfo)) result.codexErrorInfo = codexErrorInfo;
   const httpStatusCode = field(value, 'httpStatusCode');
   if (Number.isInteger(httpStatusCode) && httpStatusCode >= 100 && httpStatusCode <= 599) result.httpStatusCode = httpStatusCode;
+  const reactError = field(value, 'reactError');
+  if (Number.isInteger(reactError) && reactError > 0 && reactError <= 9999) result.reactError = reactError;
   const frames = field(value, 'frames');
   if (Array.isArray(frames)) {
     result.frames = frames.slice(0, 8).flatMap(frame => {
@@ -239,7 +242,14 @@ function classify(error, hash) {
   else if (/oversized protocol|without a result/i.test(message)) category = 'protocol';
   const inheritedName = error instanceof TypeError ? 'TypeError' : error instanceof RangeError ? 'RangeError'
     : error instanceof ReferenceError ? 'ReferenceError' : error instanceof SyntaxError ? 'SyntaxError' : 'Error';
+  // React states its own failures by number. The number is a fixed invariant id,
+  // not user content, and without it a minified renderer stack says nothing.
+  const reactError = Number(message.match(/Minified React error #(\d{1,4})\b/)?.[1]);
   const result = { category, name: ERROR_NAMES.has(field(error, 'name')) ? field(error, 'name') : inheritedName, fingerprint: hash(message), frames: safeFrames(field(error, 'stack')) };
+  if (Number.isInteger(reactError)) result.reactError = reactError;
+  // #185 and its unminified text both mean one thing: renders schedule more
+  // renders without settling. The category keeps that visible without the text.
+  if (reactError === 185 || /Maximum update depth exceeded/i.test(message)) result.category = 'render_loop';
   if ((typeof code === 'number' && Number.isSafeInteger(code)) || ERROR_CODES.has(code)) result.code = code;
   const info = field(error, 'codexErrorInfo');
   const infoType = typeof info === 'string' && CODEX_ERRORS.has(info) ? info

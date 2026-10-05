@@ -61,6 +61,8 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
   await a.getMcpConfig();
   await b.previewMcpImport('fixture config');
   await b.saveMcpImport({ previewId: 'preview', replaceExisting: true });
+  await a.previewMcpRemoval('existing');
+  await b.removeMcpServer({ previewId: 'removal' });
   await a.reloadMcp();
   await b.checkMcp();
   await a.openTerminal({ threadId: 'thread-a', model: 'configured-model', effort: 'high', access: 'auto' });
@@ -86,6 +88,8 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
     ['host:getMcpConfig', 'a'],
     ['host:previewMcpImport', 'fixture config', 'b'],
     ['host:saveMcpImport', { previewId: 'preview', replaceExisting: true }, 'b'],
+    ['host:previewMcpRemoval', 'existing', 'a'],
+    ['host:removeMcpServer', { previewId: 'removal' }, 'b'],
     ['host:reloadMcp', 'a'],
     ['host:checkMcp', 'b'],
     ['host:openTerminal', { threadId: 'thread-a', model: 'configured-model', effort: 'high', access: 'auto' }, 'a'],

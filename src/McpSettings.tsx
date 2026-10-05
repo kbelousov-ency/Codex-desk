@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, CircleCheck, LoaderCircle, Plus, Plug, RefreshCw, Server, ShieldCheck } from 'lucide-react';
+import { Check, CircleCheck, LoaderCircle, Plus, Plug, RefreshCw, Server, ShieldCheck, Trash2 } from 'lucide-react';
 import type { CodexBridge } from './types';
 import './mcp-settings.css';
 
 type Config = Awaited<ReturnType<CodexBridge['getMcpConfig']>>;
 type Preview = Awaited<ReturnType<CodexBridge['previewMcpImport']>>;
+type Removal = Awaited<ReturnType<CodexBridge['previewMcpRemoval']>>;
 type CheckResult = Awaited<ReturnType<CodexBridge['checkMcp']>>;
 type ServerSummary = Config['servers'][number];
-type Action = 'load' | 'preview' | 'save' | 'apply' | 'check' | null;
+type Action = 'load' | 'preview' | 'save' | 'preview-removal' | 'remove' | 'apply' | 'check' | null;
 
-function ServerRow({ server, exists = false }: { server: ServerSummary; exists?: boolean }) {
+function ServerRow({ server, exists = false, onRemove, disabled }: { server: ServerSummary; exists?: boolean; onRemove?(button: HTMLButtonElement): void; disabled?: boolean }) {
   return <li className="mcp-server-row">
     <Server size={14} aria-hidden="true" />
     <div className="mcp-server-info">
@@ -18,6 +19,7 @@ function ServerRow({ server, exists = false }: { server: ServerSummary; exists?:
       {!!server.headerNames.length && <small>Заголовки: {server.headerNames.join(', ')} · значения скрыты</small>}
       {!!server.envNames.length && <small>Переменные: {server.envNames.join(', ')} · значения скрыты</small>}
     </div>
+    {onRemove && <button type="button" className="secondary-button mcp-remove-button" aria-label={`Удалить MCP ${server.name}`} disabled={disabled} onClick={event => onRemove(event.currentTarget)}><Trash2 size={13} aria-hidden="true" />Удалить</button>}
   </li>;
 }
 
@@ -39,6 +41,7 @@ export default function McpSettings({ bridge, active, onApplied }: { bridge: Cod
   const [editor, setEditor] = useState(false);
   const [text, setText] = useState('');
   const [preview, setPreview] = useState<Preview | null>(null);
+  const [removal, setRemoval] = useState<Removal | null>(null);
   const [replace, setReplace] = useState(false);
   const [action, setAction] = useState<Action>(null);
   const [error, setError] = useState('');
@@ -47,11 +50,25 @@ export default function McpSettings({ bridge, active, onApplied }: { bridge: Cod
   const [checked, setChecked] = useState<CheckResult | null>(null);
   const generation = useRef(0);
   const pending = useRef(false);
+  const section = useRef<HTMLElement>(null);
+  const cancelRemoval = useRef<HTMLButtonElement>(null);
+  const removalTrigger = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (action || !active || section.current?.closest('[hidden]')) return;
+    if (removal) cancelRemoval.current?.focus();
+    else if (removalTrigger.current) {
+      const trigger = removalTrigger.current;
+      removalTrigger.current = null;
+      if (trigger.isConnected && !trigger.disabled) trigger.focus();
+      else section.current?.querySelector<HTMLButtonElement>('.mcp-heading button')?.focus();
+    }
+  }, [removal, action, active]);
 
   useEffect(() => {
     const current = ++generation.current;
     pending.current = active;
-    setText(''); setPreview(null); setReplace(false); setEditor(false);
+    setText(''); setPreview(null); setRemoval(null); setReplace(false); setEditor(false);
     setConfig(null); setChecked(null); setError(''); setNotice(''); setBackupPath(null);
     setAction(active ? 'load' : null);
     if (active) {
@@ -105,6 +122,37 @@ export default function McpSettings({ bridge, active, onApplied }: { bridge: Cod
       if (generation.current === current) setConfig(refreshed);
     });
   };
+  const inspectRemoval = (name: string, button: HTMLButtonElement) => void run('preview-removal', async current => {
+    removalTrigger.current = button;
+    setNotice(''); setBackupPath(null);
+    const result = await bridge.previewMcpRemoval(name);
+    if (generation.current === current) setRemoval(result);
+  });
+  const remove = () => {
+    if (!removal) return;
+    const selected = removal;
+    void run('remove', async current => {
+      let result;
+      try { result = await bridge.removeMcpServer({ previewId: selected.previewId }); }
+      catch (cause) {
+        if (generation.current === current) {
+          setRemoval(null);
+          setChecked(null);
+          // A failed native response may still have written the file. Read it again
+          // and require a fresh confirmation instead of replaying the old token.
+          const refreshed = await bridge.getMcpConfig().catch(() => null);
+          if (generation.current === current && refreshed) setConfig(refreshed);
+        }
+        throw cause;
+      }
+      if (generation.current !== current) return;
+      setRemoval(null); setChecked(null); setBackupPath(result.backupPath);
+      setConfig(previous => previous && { ...previous, servers: previous.servers.filter(server => server.name !== selected.server.name) });
+      setNotice(result.message || `MCP-сервер «${selected.server.name}» удалён из пользовательской конфигурации.`);
+      const refreshed = await bridge.getMcpConfig();
+      if (generation.current === current) setConfig(refreshed);
+    });
+  };
   const apply = () => void run('apply', async current => {
     const result = await bridge.reloadMcp();
     if (generation.current !== current) return;
@@ -117,12 +165,18 @@ export default function McpSettings({ bridge, active, onApplied }: { bridge: Cod
   });
 
   if (!active) return null;
-  return <section className="mcp-settings" aria-label="MCP-серверы">
-    <div className="mcp-heading"><div><Plug size={16} aria-hidden="true" /><h3>MCP-серверы</h3></div>{!editor && <button type="button" className="secondary-button" disabled={!!action} onClick={startEditor}><Plus size={13} />Добавить из текста</button>}</div>
+  return <section ref={section} className="mcp-settings" aria-label="MCP-серверы">
+    <div className="mcp-heading"><div><Plug size={16} aria-hidden="true" /><h3>MCP-серверы</h3></div>{!editor && <button type="button" className="secondary-button" disabled={!!action || !!removal} onClick={startEditor}><Plus size={13} />Добавить из текста</button>}</div>
     <p className="mcp-caption">Серверы пользовательской конфигурации Codex доступны и в приложении, и в терминале. Настройки проекта могут их переопределять.</p>
     {config && <div className="mcp-config-path"><span>Файл конфигурации</span><code>{config.configPath}</code></div>}
     {action === 'load' && <p className="mcp-inline-status" role="status"><LoaderCircle size={13} className="spin" />Читаем конфигурацию…</p>}
-    {config && <>{config.servers.length ? <ul className="mcp-server-list" aria-label="Настроенные MCP-серверы">{config.servers.map(server => <ServerRow key={server.name} server={server} />)}</ul> : <p className="mcp-empty">MCP-серверы пока не добавлены.</p>}</>}
+    {config && <>{config.servers.length ? <ul className="mcp-server-list" aria-label="Настроенные MCP-серверы">{config.servers.map(server => <ServerRow key={server.name} server={server} disabled={!!action || editor || !!removal} onRemove={button => inspectRemoval(server.name, button)} />)}</ul> : <p className="mcp-empty">MCP-серверы пока не добавлены.</p>}</>}
+    {action === 'preview-removal' && <p className="mcp-inline-status" role="status"><LoaderCircle size={13} className="spin" />Готовим удаление…</p>}
+    {removal && <div className="mcp-removal" role="group" aria-label={`Удаление MCP ${removal.server.name}`}>
+      <strong>Удалить MCP-сервер «{removal.server.name}»?</strong>
+      <p>Подключение будет удалено из пользовательской конфигурации Codex — для приложения и терминала. Перед удалением сохраним резервную копию. Настройки проекта могут отдельно задавать этот сервер.</p>
+      <div className="mcp-import-actions"><button ref={cancelRemoval} type="button" className="secondary-button" disabled={!!action} onClick={() => { setRemoval(null); setError(''); }}>Отмена</button><button type="button" className="secondary-button mcp-remove-button" disabled={!!action} onClick={remove}>{action === 'remove' ? <LoaderCircle size={13} className="spin" /> : <Trash2 size={13} />}{action === 'remove' ? 'Удаляем…' : 'Удалить сервер'}</button></div>
+    </div>}
     {editor && <div className="mcp-import">
       {preview ? <>
         <div className="mcp-preview-heading"><ShieldCheck size={14} /><strong>Будут сохранены</strong><span>Секретные значения скрыты</span></div>
@@ -138,7 +192,7 @@ export default function McpSettings({ bridge, active, onApplied }: { bridge: Cod
     {error && <p className="mcp-error" role="alert">{error}</p>}
     {notice && <div className="mcp-notice" role="status"><CircleCheck size={14} /><span>{notice}</span></div>}
     {backupPath && <div className="mcp-backup"><span>Резервная копия предыдущей конфигурации</span><code>{backupPath}</code></div>}
-    <div className="mcp-connection-actions"><button type="button" className="secondary-button" disabled={!!action || !config} onClick={apply}><RefreshCw size={13} className={action === 'apply' ? 'spin' : ''} />{action === 'apply' ? 'Применяем…' : 'Применить в этой сессии'}</button><button type="button" className="secondary-button" disabled={!!action || !config} onClick={check}>{action === 'check' ? <LoaderCircle size={13} className="spin" /> : <Plug size={13} />}{action === 'check' ? 'Проверяем…' : 'Проверить подключение'}</button></div>
+    <div className="mcp-connection-actions"><button type="button" className="secondary-button" disabled={!!action || !config || !!removal} onClick={apply}><RefreshCw size={13} className={action === 'apply' ? 'spin' : ''} />{action === 'apply' ? 'Применяем…' : 'Применить в этой сессии'}</button><button type="button" className="secondary-button" disabled={!!action || !config || !!removal} onClick={check}>{action === 'check' ? <LoaderCircle size={13} className="spin" /> : <Plug size={13} />}{action === 'check' ? 'Проверяем…' : 'Проверить подключение'}</button></div>
     <p className="mcp-caption">Новые сессии прочитают сохранённые настройки автоматически. Для текущей сессии примените их после завершения задачи.</p>
     {checked && <div className="mcp-check-result" role="status">{checked.message && <p>{checked.message}</p>}{checked.servers.length ? <ul aria-label="Подключения MCP текущей сессии">{checked.servers.map(server => <li key={server.name}><strong>{server.name}</strong><span>{statusLabels[server.status] || 'Нет данных'} · инструментов: {server.toolCount}</span><small>{authLabels[server.authStatus] || 'Нет данных об авторизации'}</small></li>)}</ul> : <p>В текущей сессии нет подключённых MCP-серверов.</p>}</div>}
   </section>;

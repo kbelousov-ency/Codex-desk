@@ -254,3 +254,28 @@ test('hostile getters and errors with unserializable extra fields do not interru
   assert.equal(readEntries(directory).at(-1).data.error.category, 'timeout');
   assert.equal(diagnostics.status().writeErrors, 0);
 });
+
+test('a React invariant number survives redaction and names the render loop', async t => {
+  const { directory, diagnostics } = fixture(t);
+  const secret = 'PRIVATE_COMPONENT_NAME_3b71';
+  const minified = new Error(`Minified React error #185; visit https://react.dev/errors/185?args[]=${secret} for the full message`);
+  // A fixed app source keeps this test independent of the current Vite bundle hash.
+  minified.stack = `Error: ${secret}\n    at handler (https://${secret}/src/App.tsx:25:28479)`;
+  diagnostics.error('renderer.error', minified, { kind: 'react' });
+  diagnostics.error('renderer.error', new Error('Maximum update depth exceeded. This can happen when a component calls setState inside useEffect'), { kind: 'error' });
+  diagnostics.error('renderer.error', new Error('Minified React error #310; visit https://react.dev/errors/310'), { kind: 'react' });
+  diagnostics.error('rpc.failed', new Error('request timed out'));
+  await diagnostics.flush();
+  const entries = readEntries(directory);
+  assert.equal(entries.some(entry => JSON.stringify(entry).includes(secret)), false);
+  const [first, second, third, unrelated] = entries.filter(entry => entry.event === 'renderer.error' || entry.event === 'rpc.failed');
+  assert.equal(first.data.error.reactError, 185);
+  assert.equal(first.data.error.category, 'render_loop');
+  assert.deepEqual(first.data.error.frames, [{ file: 'App.tsx', line: 25, column: 28479 }]);
+  assert.equal(second.data.error.reactError, undefined);
+  assert.equal(second.data.error.category, 'render_loop');
+  assert.equal(third.data.error.reactError, 310);
+  assert.equal(third.data.error.category, 'unknown');
+  assert.equal(unrelated.data.error.reactError, undefined);
+  assert.equal(unrelated.data.error.category, 'timeout');
+});

@@ -29,6 +29,8 @@ function forSession(sessionId) {
     getMcpConfig: () => ipcRenderer.invoke('host:getMcpConfig', sessionId),
     previewMcpImport: (text) => ipcRenderer.invoke('host:previewMcpImport', text, sessionId),
     saveMcpImport: (options) => ipcRenderer.invoke('host:saveMcpImport', options, sessionId),
+    previewMcpRemoval: (name) => ipcRenderer.invoke('host:previewMcpRemoval', name, sessionId),
+    removeMcpServer: (options) => ipcRenderer.invoke('host:removeMcpServer', options, sessionId),
     reloadMcp: () => ipcRenderer.invoke('host:reloadMcp', sessionId),
     checkMcp: () => ipcRenderer.invoke('host:checkMcp', sessionId),
     openPath: (path) => ipcRenderer.invoke('host:openPath', path, sessionId),
@@ -59,6 +61,9 @@ contextBridge.exposeInMainWorld('codex', {
   memoryRules: {
     preview: provider => ipcRenderer.invoke('memoryRules:preview', provider),
     apply: options => ipcRenderer.invoke('memoryRules:apply', options),
+  },
+  skills: {
+    list: options => ipcRenderer.invoke('skills:list', options),
   },
   setup: {
     state: () => ipcRenderer.invoke('setup:state'),

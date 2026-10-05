@@ -31,7 +31,7 @@ try {
     const configPath = 'C:/Fixtures/CODEX_HOME/config.toml';
     const calls = [];
     const listeners = new Set();
-    const state = window.__mcp = { calls, failSave: false, failPreview: false, holdSave: false, busy: false, previewSequence: 0, pendingPreview: '', turns: 0, threadId: 'mcp-thread' };
+    const state = window.__mcp = { calls, failSave: false, failPreview: false, holdSave: false, failRemovalPreview: false, failRemoval: false, holdRemovalPreview: false, holdRemoval: false, busy: false, previewSequence: 0, pendingPreview: '', turns: 0, threadId: 'mcp-thread' };
     const existing = { name: 'existing', transport: 'stdio', address: 'fixture-tool', enabled: true, headerNames: [], envNames: ['FIXTURE_TOKEN'] };
     const servers = [existing];
     const emit = (type, data) => { for (const listener of listeners) listener({ type, data }); };
@@ -76,6 +76,25 @@ try {
         if (state.previewServers.some(server => server.exists) && !params.replaceExisting) throw new Error('Подтвердите обновление существующих серверов.');
         for (const server of state.previewServers) { const index = servers.findIndex(current => current.name === server.name); if (index >= 0) servers.splice(index, 1); servers.push(server); }
         return { configPath, backupPath: 'C:/Fixtures/CODEX_HOME/config.toml.backup-fixture', servers: state.previewServers.map(server => server.name) };
+      },
+      async previewMcpRemoval(name) {
+        calls.push({ method: 'previewMcpRemoval', name });
+        if (state.holdRemovalPreview) await new Promise(resolve => { state.resolveRemovalPreview = resolve; });
+        if (state.failRemovalPreview) throw new Error('Не удалось прочитать конфигурацию MCP.');
+        const server = servers.find(server => server.name === name);
+        if (!server) throw new Error('Сервер больше не настроен. Обновите список.');
+        state.pendingRemoval = { previewId: `removal-${++state.previewSequence}`, configPath, server: structuredClone(server) };
+        return structuredClone(state.pendingRemoval);
+      },
+      async removeMcpServer(params) {
+        calls.push({ method: 'removeMcpServer', params });
+        if (state.holdRemoval) await new Promise(resolve => { state.resolveRemoval = resolve; });
+        if (state.failRemoval) throw new Error('Конфигурация изменилась после проверки. Подтвердите удаление повторно.');
+        if (params.previewId !== state.pendingRemoval?.previewId) throw new Error('Предварительная проверка устарела.');
+        const name = state.pendingRemoval.server.name;
+        servers.splice(servers.findIndex(server => server.name === name), 1);
+        state.pendingRemoval = null;
+        return { configPath, backupPath: 'C:/Fixtures/CODEX_HOME/config.toml.backup-removal', servers: [name] };
       },
       async reloadMcp() { calls.push({ method: 'reloadMcp' }); return state.busy ? { status: 'deferred', message: 'Применение отложено до завершения текущей задачи.' } : { status: 'applied', message: 'MCP применены к текущим сессиям.' }; },
       async checkMcp() { calls.push({ method: 'checkMcp' }); return { servers: servers.map(server => ({ name: server.name, authStatus: 'bearerToken', status: 'ready', toolCount: server.name === 'company' ? 4 : 2 })) }; },
@@ -252,8 +271,84 @@ try {
   await settings().getByText('MCP применены к текущим сессиям.', { exact: true }).waitFor();
   assert.equal(await count('thread/start'), 1, 'MCP reload keeps the current conversation');
   assert.equal(await count('start'), 1, 'MCP reload keeps the existing server');
+
+  // Deletion is a separate, explicit confirmation; its pending operations cannot
+  // be duplicated or lose their result when switching settings topics.
+  await button('Закрыть настройки').click();
+  await input().fill('Черновик сохраняется при удалении MCP');
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  await tab('MCP').click();
+  const configured = () => settings().getByRole('list', { name: 'Настроенные MCP-серверы', exact: true });
+  const removal = () => settings().getByRole('group', { name: 'Удаление MCP company', exact: true });
+  const turnsBeforeRemoval = await count('turn/start');
+  const reloadsBeforeRemoval = await count('reloadMcp');
+  await button('Удалить MCP company').click();
+  await removal().waitFor();
+  await noSecret();
+  assert.equal(await count('removeMcpServer'), 0, 'Preparing deletion does not remove the configured server');
+  assert.match(await configured().innerText(), /company/);
+  const cancelRemoval = removal().getByRole('button', { name: 'Отмена', exact: true });
+  assert.equal(await cancelRemoval.evaluate(element => element === document.activeElement), true, 'Confirmation initially focuses Cancel');
+  await cancelRemoval.press('Enter');
+  assert.equal(await removal().count(), 0);
+  assert.equal(await button('Удалить MCP company').evaluate(element => element === document.activeElement), true, 'Cancelling restores focus to the selected server');
+  assert.equal(await count('removeMcpServer'), 0, 'Cancelling deletion performs no write');
+  assert.match(await configured().innerText(), /company/);
+
+  await page.evaluate(() => { window.__mcp.failRemovalPreview = true; });
+  await button('Удалить MCP company').click();
+  await settings().getByRole('alert').filter({ hasText: /Не удалось прочитать конфигурацию MCP/ }).waitFor();
+  assert.equal(await removal().count(), 0, 'Failed preview cannot expose an unverified delete action');
+  assert.equal(await count('removeMcpServer'), 0);
+  await page.evaluate(() => { window.__mcp.failRemovalPreview = false; window.__mcp.failRemoval = true; });
+  await button('Удалить MCP company').click();
+  await removal().getByRole('button', { name: 'Удалить сервер', exact: true }).click();
+  await settings().getByRole('alert').filter({ hasText: /Конфигурация изменилась после проверки/ }).waitFor();
+  assert.match(await configured().innerText(), /company/, 'Failed removal leaves the configured row visible');
+  assert.match(await configured().innerText(), /existing/);
+  await noSecret();
+
+  await page.evaluate(() => { window.__mcp.failRemoval = false; window.__mcp.holdRemovalPreview = true; });
+  const previewsBeforeRemoval = await count('previewMcpRemoval');
+  await button('Удалить MCP company').evaluate(element => { element.click(); element.click(); });
+  assert.equal(await count('previewMcpRemoval'), previewsBeforeRemoval + 1, 'Double click prepares deletion only once');
+  assert.equal(await button('Добавить из текста').isDisabled(), true, 'Import cannot replace a pending removal preview');
+  await page.evaluate(() => { window.__mcp.holdRemovalPreview = false; window.__mcp.resolveRemovalPreview(); });
+  await removal().waitFor();
+  const pendingRemovalId = await page.evaluate(() => window.__mcp.pendingRemoval.previewId);
+  await tab('Агент').click();
+  await tab('MCP').click();
+  await removal().waitFor();
+  assert.equal(await count('previewMcpRemoval'), previewsBeforeRemoval + 1, 'Changing topics retains removal confirmation');
+  await page.screenshot({ path: 'artifacts/mcp-removal-confirmation.png' });
+  await page.evaluate(() => { window.__mcp.holdRemoval = true; });
+  const removalsBeforeConfirm = await count('removeMcpServer');
+  await removal().getByRole('button', { name: 'Удалить сервер', exact: true }).evaluate(element => { element.click(); element.click(); });
+  assert.equal(await count('removeMcpServer'), removalsBeforeConfirm + 1, 'Double click submits deletion only once');
+  assert.equal(await removal().getByRole('button', { name: 'Отмена', exact: true }).isDisabled(), true);
+  assert.equal(await button('Удалить MCP existing').isDisabled(), true, 'A second server cannot be removed while a write is pending');
+  assert.equal(await button('Применить в этой сессии').isDisabled(), true);
+  await tab('Память').click();
+  await tab('MCP').click();
+  assert.equal(await removal().getByRole('button', { name: 'Отмена', exact: true }).isDisabled(), true, 'Changing topics preserves pending removal');
+  await tab('Агент').click();
+  await page.evaluate(() => { window.__mcp.holdRemoval = false; window.__mcp.resolveRemoval(); });
+  await tab('MCP').click();
+  await settings().getByText(/config.toml.backup-removal/).waitFor();
+  assert.equal(await configured().getByText('company', { exact: true }).count(), 0, 'Successful removal refreshes the configured list');
+  assert.equal(await configured().getByText('existing', { exact: true }).count(), 1, 'Unselected server remains configured');
+  assert.equal(await removal().count(), 0);
+  assert.equal(await count('removeMcpServer'), removalsBeforeConfirm + 1);
+  assert.deepEqual((await calls()).filter(call => call.method === 'removeMcpServer').at(-1).params, { previewId: pendingRemovalId });
+  assert.equal(await count('reloadMcp'), reloadsBeforeRemoval, 'Removal does not implicitly reconnect the current session');
+  assert.equal(await count('turn/start'), turnsBeforeRemoval, 'Removing MCP sends no model request');
+  assert.equal(await count('thread/start'), 1, 'Removing MCP preserves the existing thread');
+  assert.equal(await count('start'), 1, 'Removing MCP preserves the running App Server');
+  assert.equal(await input().inputValue(), 'Черновик сохраняется при удалении MCP');
+  assert.match(await view().getByRole('combobox', { name: 'Модель', exact: true }).innerText(), /fixture-model/);
+  await noSecret();
   assert.deepEqual(errors, []);
-  console.log('PASS: thematic settings tabs with keyboard focus, compact viewport navigation/footer, MCP draft/preview/confirmation/pending-write preservation between topics, safe preview, explicit save, backup, stale-preview error and preserved chat draft. All bridges are fixtures; no real config or model requests.');
+  console.log('PASS: thematic settings tabs with keyboard focus, compact viewport navigation/footer, MCP draft/preview/confirmation/pending-write preservation between topics, import and removal confirmation/cancel/errors, duplicate-click prevention, backup, refreshed server list and preserved chat draft/thread/model. All bridges are fixtures; no real config or model requests.');
 } catch (error) {
   if (page && !page.isClosed()) await page.screenshot({ path: 'artifacts/mcp-settings-failure.png' }).catch(() => {});
   throw error;
