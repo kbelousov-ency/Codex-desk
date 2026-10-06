@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rename, symlink, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import asar from '@electron/asar';
-import { checkedPath, fileChecksums, inside, promoteRelease, publishNightly, recoverRelease, removeChecked, rollbackRelease, verifyRelease, withReleaseLock } from '../scripts/release-utils.mjs';
+import { checkedPath, fileChecksums, inside, promoteRelease, publishNightly, recoverRelease, removeChecked, rollbackRelease, verifyRelease, withReleaseLock, writeJournal } from '../scripts/release-utils.mjs';
 import { queueNightlyUpdate } from '../scripts/nightly-update.mjs';
 
 const guard = async () => {};
@@ -167,6 +167,84 @@ test('transient Windows directory locks retry then publish the verified candidat
   assert.equal((await verifyRelease(root, path.join(root, 'release', 'nightly'))).buildId, 'b'.repeat(64));
   assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable'))).buildId, 'a'.repeat(64));
   assert.deepEqual(await readdir(path.join(root, 'release')), ['nightly', 'stable']);
+});
+
+test('journal replacement retries transient Windows locks atomically without removing the committed journal', async t => {
+  const root = await fixture(t);
+  const release = path.join(root, 'release');
+  await mkdir(release);
+  const destination = path.join(release, '.transaction.json');
+  const previous = JSON.stringify({ phase: 'forward', completed: 0 });
+  await writeFile(destination, previous);
+  const next = { phase: 'forward', completed: 1 };
+  const failures = ['EPERM', 'EACCES', 'EBUSY'];
+  const waits = [];
+  let time = 0, calls = 0;
+  await writeJournal(root, next, { journalRetry: {
+    platform: 'win32', now: () => time,
+    sleep: async ms => { waits.push(ms); time += ms; },
+    rename: async (from, to) => {
+      calls++;
+      assert.equal(from, `${destination}.tmp`); assert.equal(to, destination);
+      assert.equal(await readFile(destination, 'utf8'), previous, 'last committed journal remains available throughout retry');
+      assert.deepEqual(JSON.parse(await readFile(from, 'utf8')), next, 'retry reuses the same staged journal');
+      if (failures.length) throw Object.assign(new Error('fixture lock'), { code: failures.shift() });
+      // Native replacement itself is exercised by the transaction tests. This
+      // dependency stub makes retry counts independent of external Windows locks.
+    },
+  } });
+  assert.equal(calls, 4);
+  assert.deepEqual(waits, [50, 50, 50]);
+});
+
+test('journal lock retry is bounded and leaves the last journal intact on exhaustion', async t => {
+  for (const frozenClock of [false, true]) {
+    const root = await fixture(t);
+    await mkdir(path.join(root, 'release'));
+    const destination = path.join(root, 'release', '.transaction.json');
+    await writeFile(destination, 'previous committed journal');
+    const failure = Object.assign(new Error('persistent fixture lock'), { code: 'EPERM' });
+    let time = 0, calls = 0, waits = 0;
+    await assert.rejects(writeJournal(root, { phase: 'committed' }, { journalRetry: {
+      platform: 'win32', now: () => time,
+      sleep: async ms => { waits++; if (!frozenClock) time += ms; },
+      rename: async () => { calls++; throw failure; },
+    } }), error => error === failure);
+    assert.equal(calls, frozenClock ? 41 : 40);
+    assert.equal(waits, 40);
+    assert.equal(time, frozenClock ? 0 : 2000);
+    assert.equal(await readFile(destination, 'utf8'), 'previous committed journal');
+  }
+});
+
+test('journal replacement immediately rejects real errors and non-Windows locks', async t => {
+  for (const [platform, code] of [['win32', 'EIO'], ['linux', 'EPERM']]) {
+    const root = await fixture(t);
+    await mkdir(path.join(root, 'release'));
+    let calls = 0;
+    const failure = Object.assign(new Error('fixture failure'), { code });
+    await assert.rejects(writeJournal(root, { phase: 'forward' }, { journalRetry: {
+      platform, sleep: async () => assert.fail('unexpected retry'),
+      rename: async () => { calls++; throw failure; },
+    } }), error => error === failure);
+    assert.equal(calls, 1);
+  }
+});
+
+test('journal paths are revalidated before retrying a locked replacement', async t => {
+  const root = await fixture(t);
+  const outside = await fixture(t);
+  await mkdir(path.join(root, 'release'));
+  const temp = path.join(root, 'release', '.transaction.json.tmp');
+  let calls = 0;
+  try {
+    await assert.rejects(writeJournal(root, { phase: 'forward' }, { journalRetry: {
+      platform: 'win32', now: () => 0,
+      sleep: async () => { await unlink(temp); await symlink(outside, temp, 'junction'); },
+      rename: async () => { calls++; throw Object.assign(new Error('fixture lock'), { code: 'EPERM' }); },
+    } }), /Ссылки|junction/);
+    assert.equal(calls, 1, 'a changed path blocks the second attempt');
+  } finally { await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
 });
 
 test('persistent Windows lock has bounded retries and rolls back the previous Nightly', async t => {

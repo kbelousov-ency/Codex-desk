@@ -1,6 +1,6 @@
 import type { SetupBridge } from './setup-types';
 import type { MemoryRulesBridge } from './memory-rules-types';
-export type Access = 'inherited' | 'auto' | 'read-only' | 'workspace-write' | 'danger-full-access';
+export type Access = 'inherited' | 'auto' | 'rules' | 'read-only' | 'workspace-write' | 'danger-full-access';
 export type AgentProvider = 'codex' | 'claude';
 export type AgentCapabilities = { compact: boolean; steer: boolean; terminal: boolean; mcp: boolean; archive: boolean; usage?: boolean };
 export type AgentDetails = { commands: { name: string; description: string; builtin: boolean }[]; agents: { name: string; description: string }[]; mcpServers: { name: string; status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'; error?: string; scope?: string }[] | null; mcpError?: string };
@@ -14,7 +14,10 @@ export type RouterLimit = { key: string | null; available: boolean | null; tier:
 export type RouterUsageSnapshot = { available: boolean; fetchedAt?: string; overview?: Record<string, unknown>; limits?: RouterLimit[]; status?: number; reason?: string; limitReason?: string; overviewReason?: string };
 export type ClaudeAuthStatus = { loggedIn: boolean; authMethod?: string; email?: string; subscriptionType?: string; apiProvider?: string; configDirectory?: string; loginInProgress: boolean };
 export type ClaudeTokenInfo = { configured: boolean; savedAt?: string; encryptionAvailable: boolean; error?: string; restarted?: number; busy?: number };
-export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string; provider?: AgentProvider };
+export type ConnectionSource = 'inherited' | 'account' | 'router';
+export type Settings = { cwd?: string; model?: string; effort?: string; access?: Access; executable?: string; provider?: AgentProvider; connectionSource?: ConnectionSource };
+export type RouterConnectionInfo = { configured: boolean; encryptionAvailable: boolean; savedAt?: string; baseUrl?: string; providerName?: string; model?: string; error?: string };
+export type RouterConnectionPreview = { previewId: string; agent: 'claude'; providerName?: string; baseUrl: string; model?: string; expiresAt: string };
 /** Where a tab's effective value came from: restored tab snapshot, saved agent defaults, CLI configuration, a built-in default, or the user's choice in this tab. */
 export type SettingSource = 'tab' | 'saved' | 'cli' | 'default' | 'selected';
 export type SettingSources = { model: SettingSource; effort: SettingSource; access: SettingSource };
@@ -36,8 +39,13 @@ export type TurnWork = { id: string; status: string; startedAt?: number; complet
 export type Thread = { id: string; name?: string; preview?: string; cwd?: string; updatedAt?: number; turns?: any[]; provider?: AgentProvider; [key: string]: any };
 export type ThreadAction = 'rename' | 'archive' | 'delete' | 'restore' | 'fork';
 export type ArchivedThreadPage = { thread: Thread; items: Item[]; turns: any[]; nextCursor: string | null };
-export type Request = { id: number | string; method: string; params: any };
-export type Model = { id: string; model: string; displayName: string; hidden?: boolean; isDefault?: boolean; defaultReasoningEffort: string; supportedReasoningEfforts: { reasoningEffort: string; description: string }[]; inputModalities?: string[] };
+export type ApprovalRuleKind = 'commands' | 'paths' | 'hosts';
+/** What «Разрешить и запомнить» would save for a pending request, as [kind, value] pairs. */
+export type DerivedRule = [ApprovalRuleKind, string];
+export type ApprovalRule = { kind: ApprovalRuleKind; value: string };
+export type ApprovalRules = { cwd: string; rules: ApprovalRule[] };
+export type Request = { id: number | string; method: string; params: any; rules?: DerivedRule[] };
+export type Model = { id: string; model: string; displayName: string; hidden?: boolean; unavailable?: boolean; isDefault?: boolean; defaultReasoningEffort: string; supportedReasoningEfforts: { reasoningEffort: string; description: string }[]; inputModalities?: string[] };
 
 export type SessionInfo = { id: string; cwd: string; provider?: AgentProvider };
 export type WorktreeInfo = { path: string; branch: string; created: boolean; root: string };
@@ -97,7 +105,9 @@ export type McpConnectionReport = { servers: { name: string; authStatus: string;
 export interface CodexBridge {
   start(options?: { cwd?: string; refreshModels?: boolean }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities; cliVersion?: string }>;
   request(method: string, params?: any): Promise<any>;
-  respond(id: number | string, result: any): Promise<void>;
+  respond(id: number | string, result: any, options?: { remember?: boolean }): Promise<void>;
+  listApprovalRules(): Promise<ApprovalRules>;
+  dropApprovalRule(number: number): Promise<ApprovalRules>;
   chooseDirectory(): Promise<string | null>;
   saveImages(images: Attachment[]): Promise<Attachment[]>;
   chooseComposerFiles(options?: { imageSlots?: number; imagesSupported?: boolean }): Promise<ComposerFiles | null>;
@@ -127,6 +137,12 @@ export interface CodexBridge {
   setClaudeToken(token: string): Promise<ClaudeTokenInfo>;
   clearClaudeToken(): Promise<ClaudeTokenInfo>;
   setupClaudeToken(): Promise<{ started: true }>;
+  getRouterConnection?(): Promise<RouterConnectionInfo>;
+  connectRouterPortal?(): Promise<RouterConnectionPreview | null>;
+  cancelRouterConnection?(): Promise<void>;
+  openRouterPortal?(): Promise<void>;
+  previewRouterInstaller?(): Promise<RouterConnectionPreview | null>;
+  applyRouterConnection?(options: { previewId: string }): Promise<RouterConnectionInfo>;
   getMcpConfig(): Promise<McpConfigInfo>;
   previewMcpImport(text: string): Promise<McpImportPreview>;
   saveMcpImport(options: { previewId: string; replaceExisting: boolean }): Promise<McpSaveResult>;
@@ -173,6 +189,7 @@ export interface WorkspaceBridge extends CodexBridge {
   onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
   getUpdateStatus(): Promise<UpdateStatus | null>;
   decideUpdate(decision: 'close' | 'later'): Promise<UpdateStatus>;
+  forceUpdate(): Promise<UpdateStatus>;
   completeUpdatePrepare(result: { requestId: string; snapshot?: UpdateSnapshot; defer?: boolean }): Promise<void>;
   completeUpdateRestore(): Promise<void>;
   listProjectThreads(cwd: string, cursor?: string): Promise<{ data: Thread[]; nextCursor: string | null }>;

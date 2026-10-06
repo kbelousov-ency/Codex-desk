@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { createClaudeSettingsFile } from './connection-source.mjs';
 
 const accessModes = new Set(['inherited', 'auto', 'read-only', 'workspace-write', 'danger-full-access']);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -22,6 +23,16 @@ function literal(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
+function windowsArgument(value) {
+  // Windows CommandLineToArgvW/CRT quoting for ProcessStartInfo.Arguments.
+  return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
+}
+
+function claudeSettingsArguments(options) {
+  if (options.settingsOverrides && !options.settingsFile) throw new Error('Подготовьте файл настроек подключения Claude.');
+  return options.settingsFile ? ['--settings', absolutePath(options.settingsFile, 'путь к настройкам Claude')] : [];
+}
+
 /** Build a native interactive resume invocation without adding a prompt or modifying config. */
 export function buildTerminalLaunch(options, systemRoot = process.env.SystemRoot || 'C:\\Windows') {
   if (!options || typeof options !== 'object') throw new Error('Нет параметров терминала.');
@@ -33,7 +44,15 @@ export function buildTerminalLaunch(options, systemRoot = process.env.SystemRoot
   if (!uuid.test(threadId)) throw new Error('Некорректный идентификатор диалога.');
   const access = options.access ?? 'inherited';
   if (!accessModes.has(access)) throw new Error('Неизвестный режим доступа.');
-  const codexArgs = claude ? ['--resume', threadId] : ['resume', threadId, '--cd', cwd];
+  const codexArgs = claude ? [...claudeSettingsArguments(options), '--resume', threadId] : ['resume', threadId, '--cd', cwd];
+  if (!claude && options.configOverrides !== undefined) {
+    if (!Array.isArray(options.configOverrides) || options.configOverrides.length > 32) throw new Error('Некорректные настройки подключения Codex.');
+    for (const value of options.configOverrides) {
+      text(value, 'параметр подключения Codex', 8192);
+      if (!/^[A-Za-z0-9_.-]+=/.test(value)) throw new Error('Некорректный параметр подключения Codex.');
+      codexArgs.push('-c', value);
+    }
+  }
   if (options.model) {
     const model = text(options.model, 'идентификатор модели', 256);
     if (!(claude ? /^[a-zA-Z0-9][a-zA-Z0-9._/:+\[\]\-]*$/ : /^[a-zA-Z0-9][a-zA-Z0-9._/:+\-]*$/).test(model)) throw new Error('Некорректный идентификатор модели.');
@@ -52,7 +71,9 @@ export function buildTerminalLaunch(options, systemRoot = process.env.SystemRoot
       codexArgs.push('--permission-mode', access === 'danger-full-access' ? 'bypassPermissions' : access === 'auto' ? 'acceptEdits' : access === 'read-only' ? 'plan' : 'manual');
       if (access === 'danger-full-access') codexArgs.push('--allow-dangerously-skip-permissions');
     } else {
-      codexArgs.push('--sandbox', access === 'auto' ? 'workspace-write' : access);
+      // `rules` is this shell's own answering mode; the plain CLI has no rules engine, so a terminal
+      // opened from it asks the user exactly as `workspace-write` does.
+      codexArgs.push('--sandbox', ['auto', 'rules'].includes(access) ? 'workspace-write' : access);
       codexArgs.push('--ask-for-approval', access === 'danger-full-access' ? 'never' : 'on-request');
       codexArgs.push('-c', `approvals_reviewer=${access === 'auto' ? 'auto_review' : 'user'}`);
     }
@@ -66,7 +87,7 @@ export function buildClaudeSetupTokenLaunch(options, systemRoot = process.env.Sy
   const executable = absolutePath(options?.executable, 'путь к Claude Code');
   if (path.win32.extname(executable).toLowerCase() !== '.exe') throw new Error('Нужен исполняемый файл Claude Code .exe.');
   const cwd = absolutePath(options?.cwd, 'путь к папке');
-  return buildInteractiveLaunch({ executable, cwd, codexArgs: ['setup-token'], provider: 'claude', env: options.env }, systemRoot);
+  return buildInteractiveLaunch({ executable, cwd, codexArgs: [...claudeSettingsArguments(options), 'setup-token'], provider: 'claude', env: options.env }, systemRoot);
 }
 
 /** Use the installed CLI's own browser login, with inherited environment and no prompts. */
@@ -74,7 +95,7 @@ export function buildClaudeAuthLaunch(options, systemRoot = process.env.SystemRo
   const executable = absolutePath(options?.executable, 'путь к Claude Code');
   if (path.win32.extname(executable).toLowerCase() !== '.exe') throw new Error('Нужен исполняемый файл Claude Code .exe.');
   const cwd = absolutePath(options?.cwd, 'путь к папке');
-  return buildInteractiveLaunch({ executable, cwd, codexArgs: ['auth', 'login', '--claudeai'], provider: 'claude', env: options.env }, systemRoot);
+  return buildInteractiveLaunch({ executable, cwd, codexArgs: [...claudeSettingsArguments(options), 'auth', 'login', '--claudeai'], provider: 'claude', env: options.env }, systemRoot);
 }
 
 export function buildCodexAuthLaunch(options, systemRoot = process.env.SystemRoot || 'C:\\Windows') {
@@ -85,15 +106,30 @@ export function buildCodexAuthLaunch(options, systemRoot = process.env.SystemRoo
 }
 
 function buildInteractiveLaunch({ executable, cwd, codexArgs, provider, env }, systemRoot) {
+  if (env !== undefined && (!env || typeof env !== 'object' || Array.isArray(env))) throw new Error('Некорректное окружение терминала.');
   const cliName = provider === 'claude' ? 'Claude Code' : 'Codex';
+  // PowerShell 5.1's native binder removes embedded quotes and splits quoted TOML
+  // values with spaces. ProcessStartInfo preserves the exact Windows argv while
+  // inheriting this interactive console's stdin/stdout handles.
+  const invocation = codexArgs.some(value => value.includes('"')) ? `
+  $codexStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $codexStartInfo.FileName = $codexExecutable
+  $codexStartInfo.WorkingDirectory = ${literal(cwd)}
+  $codexStartInfo.UseShellExecute = $false
+  $codexStartInfo.Arguments = ${literal(codexArgs.map(windowsArgument).join(' '))}
+  $codexProcess = [System.Diagnostics.Process]::Start($codexStartInfo)
+  $codexProcess.WaitForExit()
+  $codexExitCode = $codexProcess.ExitCode
+  $codexProcess.Dispose()` : `
+  & $codexExecutable @codexArguments
+  $codexExitCode = $LASTEXITCODE`;
   const script = `$ErrorActionPreference = 'Stop'
 $codexExitCode = 1
 try {
   $codexExecutable = ${literal(executable)}
   $codexArguments = @(${codexArgs.map(literal).join(', ')})
   Set-Location -LiteralPath ${literal(cwd)}
-  & $codexExecutable @codexArguments
-  $codexExitCode = $LASTEXITCODE
+${invocation}
   if ($null -eq $codexExitCode) { $codexExitCode = 1 }
   if ($codexExitCode -ne 0) {
     [Console]::WriteLine('${cliName} завершился с кодом ' + $codexExitCode + '.')
@@ -101,7 +137,7 @@ try {
     [void][Console]::ReadLine()
   }
 } catch {
-  [Console]::WriteLine('Не удалось запустить ${cliName}: ' + $_.Exception.Message)
+  [Console]::WriteLine('Не удалось запустить ${cliName}. Проверьте установленный CLI и повторите.')
   [Console]::WriteLine('Нажмите Enter, чтобы закрыть терминал.')
   [void][Console]::ReadLine()
 }
@@ -125,13 +161,11 @@ try {
 
 /** Caller tracks spawn/error/close and owns unref; the child lives until the TUI exits. */
 export function launchSessionTerminal(options, spawnImpl = spawn) {
-  const launch = buildTerminalLaunch(options);
-  return spawnImpl(launch.executable, launch.args, launch.options);
+  return launchWithSettings(options, buildTerminalLaunch, spawnImpl);
 }
 
 export function launchClaudeAuthTerminal(options, spawnImpl = spawn) {
-  const launch = buildClaudeAuthLaunch(options);
-  return spawnImpl(launch.executable, launch.args, launch.options);
+  return launchWithSettings(options, buildClaudeAuthLaunch, spawnImpl);
 }
 
 export function launchCodexAuthTerminal(options, spawnImpl = spawn) {
@@ -140,6 +174,26 @@ export function launchCodexAuthTerminal(options, spawnImpl = spawn) {
 }
 
 export function launchClaudeSetupTokenTerminal(options, spawnImpl = spawn) {
-  const launch = buildClaudeSetupTokenLaunch(options);
-  return spawnImpl(launch.executable, launch.args, launch.options);
+  return launchWithSettings(options, buildClaudeSetupTokenLaunch, spawnImpl);
+}
+
+function launchWithSettings(options, build, spawnImpl) {
+  if (!options?.settingsOverrides) {
+    const launch = build(options);
+    return spawnImpl(launch.executable, launch.args, launch.options);
+  }
+  return (async () => {
+    const file = await createClaudeSettingsFile(options.settingsOverrides);
+    try {
+      const launch = build({ ...options, settingsFile: file.path });
+      const child = spawnImpl(launch.executable, launch.args, launch.options);
+      const cleanup = () => { void file.cleanup().catch(() => {}); };
+      child.once('close', cleanup);
+      child.once('error', cleanup);
+      return child;
+    } catch {
+      await file.cleanup().catch(() => {});
+      throw new Error('Не удалось открыть терминал Claude Code.');
+    }
+  })();
 }

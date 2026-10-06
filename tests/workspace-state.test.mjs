@@ -8,9 +8,9 @@ import { captureUpdateCheckpoint, createUpdateCheckpoint } from '../electron/upd
 
 const png = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aE1sAAAAASUVORK5CYII=';
 const image = () => ({ name: 'draft.png', dataUrl: png, path: 'untrusted-path' });
-const session = () => ({
+const session = (access = 'danger-full-access') => ({
   currentCwd: path.resolve('fixture-project'), terminal: { active: true }, activeThreadTurns: new Map([['thread', 'turn']]),
-  requests: new Map([[1, {}]]), getSettings: () => ({ executable: 'trusted.exe', access: 'danger-full-access', model: 'configured-model', token: 'secret' }),
+  requests: new Map([[1, {}]]), getSettings: () => ({ executable: 'trusted.exe', access, model: 'configured-model', token: 'secret' }),
 });
 const snapshot = () => ({ version: 1, activeIndex: 0, tabs: [{
   sessionId: 'session', draft: 'Несохранённый черновик', attachments: [image()], scrollTop: 812.5, scrollAnchor: { itemId: 'old-message', offset: -15 },
@@ -46,6 +46,19 @@ test('ordinary capture retains drafts, queued work, scroll and images while busy
   const encoded = JSON.stringify(stored);
   for (const secret of ['transcript-secret', 'untrusted', '"token"', '"secret"', '"activeThreadTurns"']) assert.ok(!encoded.includes(secret));
   assert.equal(captureUpdateCheckpoint(snapshot(), new Map([['session', session()]])).tabs[0].settings.access, 'danger-full-access', 'Explicit Nightly handoff retains its original access semantics');
+});
+
+test('rules access mode survives workspace and Nightly checkpoint capture', async t => {
+  const { store } = await fixture(t);
+  const value = snapshot();
+  value.tabs[0].settings.access = 'rules';
+  const sessions = new Map([['session', session('rules')]]);
+  const nightly = captureUpdateCheckpoint(value, sessions);
+  const stored = captureWorkspaceState(value, sessions);
+  assert.equal(nightly.tabs[0].settings.access, 'rules');
+  assert.equal(stored.tabs[0].settings.access, 'rules');
+  await store.save(stored);
+  assert.equal((await store.read()).tabs[0].settings.access, 'rules');
 });
 
 test('persistent state round trips and remains separate from Nightly checkpoint', async t => {

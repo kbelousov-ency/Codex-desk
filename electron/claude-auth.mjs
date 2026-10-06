@@ -3,36 +3,48 @@ import { promisify } from 'node:util';
 import path from 'node:path';
 import os from 'node:os';
 import { launchClaudeAuthTerminal, launchClaudeSetupTokenTerminal } from './terminal-launcher.mjs';
+import { claudeConnectionProfile, createClaudeSettingsFile } from './connection-source.mjs';
 
 const execFileAsync = promisify(execFile);
 const loginBusy = 'Дождитесь завершения входа в Claude Code в открытом терминале.';
 const statusFailed = 'Не удалось проверить авторизацию через Claude Code CLI. Проверьте установленный claude.exe и повторите.';
 
 /** Only documented public account fields may leave the auth command. Never forward stderr/errors. */
-export function publicClaudeAuthStatus(stdout) {
+export function publicClaudeAuthStatus(stdout, secrets = []) {
   let value;
   try { value = JSON.parse(stdout); } catch { throw new Error(statusFailed); }
   if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.loggedIn !== 'boolean') throw new Error(statusFailed);
   const result = { loggedIn: value.loggedIn };
   for (const key of ['authMethod', 'email', 'subscriptionType', 'apiProvider']) {
-    if (typeof value[key] === 'string' && value[key].length <= 320 && !/[\x00-\x1f\x7f]/.test(value[key])) result[key] = value[key];
+    if (typeof value[key] === 'string' && value[key].length <= 320 && !/[\x00-\x1f\x7f]/.test(value[key])
+      && !secrets.some(secret => secret && value[key].includes(secret))) result[key] = value[key];
   }
   return result;
 }
 
-export async function readClaudeAuthStatus({ executable, cwd, env = process.env }, run = execFileAsync) {
-  let stdout;
+export async function readClaudeAuthStatus({ executable, cwd, env = process.env, settingsOverrides, settingsFile }, run = execFileAsync) {
+  let ownedFile;
+  const secrets = Object.entries(env).filter(([key]) => /(?:API_KEY|AUTH_TOKEN|OAUTH_TOKEN|REFRESH_TOKEN)$/i.test(key)).map(([, value]) => value).filter(value => typeof value === 'string' && value);
   try {
-    ({ stdout } = await run(executable, ['auth', 'status'], { cwd, env, shell: false, windowsHide: true, encoding: 'utf8', timeout: 15_000, maxBuffer: 64 * 1024 }));
-  } catch (error) {
-    // CLI returns code 1 for a valid signed-out status. Every other failure stays generic:
-    // execFile errors embed stdout/stderr and may contain credentials or arbitrary CLI output.
-    if (error.code !== 1 || error.killed || error.signal) throw new Error(statusFailed);
-    const signedOut = publicClaudeAuthStatus(error.stdout);
-    if (signedOut.loggedIn) throw new Error(statusFailed);
-    return signedOut;
+    if (settingsOverrides) ownedFile = await createClaudeSettingsFile(settingsOverrides);
+    const filename = ownedFile?.path || settingsFile;
+    if (filename !== undefined && (typeof filename !== 'string' || !path.isAbsolute(filename) || /[\r\n\0]/.test(filename))) throw new Error(statusFailed);
+    const args = [...(filename ? ['--settings', filename] : []), 'auth', 'status'];
+    let stdout;
+    try {
+      ({ stdout } = await run(executable, args, { cwd, env, shell: false, windowsHide: true, encoding: 'utf8', timeout: 15_000, maxBuffer: 64 * 1024 }));
+    } catch (error) {
+      // Exit 1 can mean a valid signed-out status. Raw errors may contain credentials.
+      if (error.code !== 1 || error.killed || error.signal) throw new Error(statusFailed);
+      const signedOut = publicClaudeAuthStatus(error.stdout, secrets);
+      if (signedOut.loggedIn) throw new Error(statusFailed);
+      return signedOut;
+    }
+    return publicClaudeAuthStatus(stdout, secrets);
+  } catch { throw new Error(statusFailed); }
+  finally {
+    if (ownedFile) await ownedFile.cleanup().catch(() => {});
   }
-  return publicClaudeAuthStatus(stdout);
 }
 
 /** App-wide reservation: no owned Claude process may refresh old credentials during login. */
@@ -55,7 +67,7 @@ export class ClaudeAuthService {
   }
 
   assertLocalControl(session) {
-    if (!this.active || session.settings.provider !== 'claude') return;
+    if (!this.active || session.settings.provider !== 'claude' || session.settings.connectionSource === 'router') return;
     this.active.sessions.add(session);
     // A tab created while login is already open may have missed the original event.
     // Re-deliver before rejecting its bootstrap, so its renderer can wait for closed.
@@ -69,19 +81,29 @@ export class ClaudeAuthService {
     const cwd = await session.resolveDirectory(session.currentCwd || settings.cwd || session.fallbackCwd);
     const executable = await session.resolveClaudeExecutable(settings.executable);
     this.assertClaude(session);
-    const env = await (login ? this.getLoginEnvironment() : this.getEnvironment());
+    const profile = claudeConnectionProfile(await (login ? this.getLoginEnvironment(settings) : this.getEnvironment(settings)));
+    const env = profile.env || { ...process.env };
+    // A native sign-in must use its own flow, not a saved application or shell OAuth token.
+    if (login) {
+      for (const key of Object.keys(env)) if (key.toUpperCase() === 'CLAUDE_CODE_OAUTH_TOKEN') delete env[key];
+      if (profile.settingsOverrides) {
+        profile.settingsOverrides = { ...profile.settingsOverrides, env: { ...profile.settingsOverrides.env, CLAUDE_CODE_OAUTH_TOKEN: '' } };
+        env.CLAUDE_CODE_OAUTH_TOKEN = '';
+      }
+    }
     const configDirectory = path.resolve(cwd, env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'));
-    return { executable, cwd, env, configDirectory };
+    return { executable, cwd, env, configDirectory, ...(profile.settingsOverrides ? { settingsOverrides: profile.settingsOverrides } : {}), ...(profile.settingsFile ? { settingsFile: profile.settingsFile } : {}) };
   }
 
   /** Visible `claude setup-token` console. Nothing is stopped: the command only prints a token for the user to copy. */
   async setupToken(session) {
     this.assertClaude(session);
+    if (session.settings.connectionSource === 'router') throw new Error('Для входа в личный Claude выберите источник «Аккаунт» в диалоге.');
     this.assertAvailable();
     if (this.active) throw new Error(loginBusy);
     const context = await this.context(session, { login: true });
     let child;
-    try { child = this.launchSetupToken(context); }
+    try { const launched = this.launchSetupToken(context); child = launched?.then ? await launched : launched; }
     catch { throw new Error('Не удалось открыть терминал Claude Code.'); }
     return await new Promise((resolve, reject) => {
       let settled = false;
@@ -95,15 +117,16 @@ export class ClaudeAuthService {
     const context = await this.context(session);
     const result = await this.readStatus(context);
     this.assertClaude(session);
-    return { ...result, configDirectory: context.configDirectory, loginInProgress: Boolean(this.active) };
+    return { ...result, configDirectory: context.configDirectory, loginInProgress: Boolean(this.active) && session.settings.connectionSource !== 'router' };
   }
 
   sessions() {
-    return [...this.getSessions()].filter(session => !session.disposed && session.settings.provider === 'claude');
+    return [...this.getSessions()].filter(session => !session.disposed && session.settings.provider === 'claude' && session.settings.connectionSource !== 'router');
   }
 
   async login(session) {
     this.assertClaude(session);
+    if (session.settings.connectionSource === 'router') throw new Error('Для входа в личный Claude выберите источник «Аккаунт» в диалоге.');
     this.assertAvailable();
     if (this.active) throw new Error(loginBusy);
     const sessions = new Set([...this.sessions(), session]);
@@ -136,7 +159,7 @@ export class ClaudeAuthService {
       if (this.disposed || this.active !== reservation) throw new Error('Приложение закрывается.');
       this.assertClaude(session);
       let child;
-      try { child = this.launchTerminal(context); }
+      try { const launched = this.launchTerminal(context); child = launched?.then ? await launched : launched; }
       catch { throw new Error('Не удалось открыть терминал авторизации Claude Code.'); }
       reservation.child = child;
       return await new Promise((resolve, reject) => {
@@ -179,7 +202,7 @@ export class ClaudeAuthService {
     this.active = null;
     if (this.disposed) return;
     for (const session of new Set([...reservation.sessions, ...this.sessions()])) {
-      if (!session.disposed) session.send('auth', { state: 'closed', ...(loggedIn === undefined ? {} : { loggedIn }), ...(error ? { error } : {}) });
+      if (!session.disposed && session.settings.connectionSource !== 'router') session.send('auth', { state: 'closed', ...(loggedIn === undefined ? {} : { loggedIn }), ...(error ? { error } : {}) });
     }
   }
 

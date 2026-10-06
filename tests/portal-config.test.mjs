@@ -10,7 +10,8 @@ import { PortalConfigManager } from '../electron/portal-config.mjs';
 const secret = 'portal-config-fixture-private-key';
 const oldSecret = 'old-config-private-key';
 const input = () => ({ apiKey: secret,
-  provider: { name: 'Fixture router', base_url: 'https://router.example.test/v1', wire_api: 'responses', requires_openai_auth: false },
+  provider: { name: 'Fixture router', base_url: 'https://router.example.test/v1', wire_api: 'responses', requires_openai_auth: false,
+    http_headers: { 'X-Image-Mode': 'vision', 'X-Feature-Flag': 'enabled' } },
   defaults: { model: 'gpt-5.6-terra', model_provider: 'router', model_context_window: 1000000,
     model_auto_compact_token_limit: 900000, model_reasoning_summary: 'detailed', hide_agent_reasoning: false },
 });
@@ -100,7 +101,7 @@ test('portal config save uses native CAS, exact protected backup and preserves u
   assert.equal(provider.env_key, undefined);
   assert.equal(provider.env_key_instructions, undefined);
   assert.equal(provider.stream_idle_timeout_ms, 12345);
-  assert.deepEqual(provider.http_headers, { 'X-Keep': oldSecret });
+  assert.deepEqual(provider.http_headers, input().provider.http_headers);
   assert.deepEqual(provider.env_http_headers, { 'X-Keep-Env': 'KEEP_HEADER_KEY' });
   const write = calls.find(call => call.method === 'config/batchWrite');
   assert.deepEqual(write.params.edits.slice(0, 6).map(edit => edit.keyPath), Object.keys(input().defaults));

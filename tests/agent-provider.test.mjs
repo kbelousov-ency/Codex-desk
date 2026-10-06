@@ -41,6 +41,24 @@ test('workspace snapshot keeps trusted provider and Claude history namespace thr
   assert.equal(restored.tabs[0].thread.provider, 'claude');
 });
 
+test('provider defaults keep connection sources independent and workspace captures only the committed host source', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'desk-source-settings-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new SettingsStore(path.join(directory, 'settings.json'));
+  await store.updateProvider('codex', { connectionSource: 'router' });
+  await store.updateProvider('claude', { connectionSource: 'account' });
+  assert.equal((await store.snapshotProvider('codex')).connectionSource, 'router');
+  assert.equal((await store.snapshotProvider('claude')).connectionSource, 'account');
+  const session = new WindowSession({ settings: { cwd: directory, provider: 'claude', connectionSource: 'account' } });
+  const capture = () => captureUpdateCheckpoint({ version: 1, activeIndex: 0, tabs: [{ sessionId: 'a', draft: '', attachments: [], settings: { connectionSource: 'router', env: { TOKEN: 'do-not-save' } } }] }, new Map([['a', session]]));
+  const saved = capture();
+  assert.equal(saved.tabs[0].settings.connectionSource, 'account');
+  assert.equal(validateStoredCheckpoint(saved).tabs[0].settings.connectionSource, 'account');
+  assert.ok(!JSON.stringify(saved).includes('do-not-save'));
+  delete session.settings.connectionSource;
+  assert.equal(capture().tabs[0].settings.connectionSource, undefined, 'legacy inherited source cannot be replaced by renderer data');
+});
+
 test('Claude terminal uses native UUID and Claude flags without Codex configuration overrides', () => {
   const launch = buildTerminalLaunch({ provider: 'claude', executable: 'C:\\Claude\\claude.exe', cwd: 'C:\\Project', threadId: 'claude:12345678-1234-4234-9234-123456789abc', model: 'sonnet[1m]', effort: 'high', access: 'auto' });
   assert.deepEqual(launch.codexArgs, ['--resume', '12345678-1234-4234-9234-123456789abc', '--model', 'sonnet[1m]', '--effort', 'high', '--permission-mode', 'acceptEdits']);

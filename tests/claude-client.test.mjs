@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { PassThrough, Writable } from 'node:stream';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { ClaudeClient, normalizeUsage } from '../electron/claude-client.mjs';
@@ -12,7 +12,7 @@ const nativeId = 'aaaaaaaa-1111-2222-3333-444444444444';
 const model = { value: 'sonnet', resolvedModel: 'claude-sonnet-test', displayName: 'Sonnet', supportedEffortLevels: ['low', 'medium', 'high'] };
 const usageSample = { session: { total_cost_usd: 0 }, subscription_type: 'max', rate_limits_available: true, rate_limits: { five_hour: { utilization: 37.4, resets_at: '2030-01-01T10:00:00Z' }, seven_day: { utilization: 12, resets_at: '2030-01-05T00:00:00Z' }, seven_day_opus: null, model_scoped: [{ display_name: 'Fable', utilization: 5, resets_at: null }] } };
 const mcpSample = { mcpServers: [{ name: 'plane', status: 'connected', scope: 'user' }, { name: 'atlassian', status: 'failed', error: 'Version negotiation probe timed out; token sk-abcdefghijklmnop123' }], error_count: 1 };
-function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit = false, usageAnswer = usageSample, mcpAnswer = mcpSample, ...options } = {}) {
+function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit = false, usageAnswer = usageSample, mcpAnswer = mcpSample, models = [model], selectedModel = model.resolvedModel, ...options } = {}) {
   const children = [], spawns = [], frames = [], events = [], requests = [];
   const client = new ClaudeClient({ executable: 'claude.exe', cwd: process.cwd(), requestTimeoutMs, ...options,
     spawnImpl(executable, args, spawnOptions) {
@@ -20,7 +20,7 @@ function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit 
       const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
       child.killed = false; child.kill = () => { if (!child.killed) { child.killed = true; if (slowExit) setTimeout(() => child.emit('exit', null, 'SIGTERM'), 30); else child.emit('exit', null, 'SIGTERM'); } return true; };
       child.send = frame => child.stdout.write(`${JSON.stringify(frame)}\n`);
-      let selected = model.resolvedModel, effort = 'medium';
+      let selected = selectedModel, effort = 'medium';
       child.stdin = new Writable({ write(chunk, encoding, callback) {
         const frame = JSON.parse(chunk.toString()); frames.push(frame);
         if (onFrame?.(frame, child) === false) { callback(); return; }
@@ -29,7 +29,7 @@ function harness({ onFrame, initialize = true, requestTimeoutMs = 300, slowExit 
           let response = {};
           if (request.subtype === 'initialize') {
             if (!initialize) { callback(); return; }
-            response = { models: [model], account: { email: 'user@example.test', subscriptionType: 'Test', tokenSource: 'secret' }, current_permission_mode: 'default',
+            response = { models, account: { email: 'user@example.test', subscriptionType: 'Test', tokenSource: 'secret' }, current_permission_mode: 'default',
               commands: [{ name: 'compact', description: 'Compact', argumentHint: '', builtin: true }, { name: 'ency-extension', description: 'Build ENCY extensions', argumentHint: '', builtin: false }], agents: [{ name: 'Explore', description: 'Read-only search' }] };
           }
           if (request.subtype === 'set_model') selected = request.model;
@@ -72,6 +72,116 @@ test('Claude boot is shared, uses local streaming CLI, preserves native prompt/s
   assert.deepEqual((await h.client.request('config/read')).config, { model: model.resolvedModel, model_reasoning_effort: 'medium' });
   assert.ok(!JSON.stringify(await h.client.request('config/read')).includes('DO NOT EXPORT'));
   assert.ok(!JSON.stringify(await h.client.request('account/read')).includes('secret'));
+});
+
+test('explicit source uses the complete environment and a temporary settings file until native process exit', async t => {
+  const secret = 'source-fixture-key';
+  const settingsOverrides = { env: { ANTHROPIC_AUTH_TOKEN: secret, CLAUDE_CODE_OAUTH_TOKEN: '' }, apiKeyHelper: '' };
+  const h = harness({ env: { SOURCE_ONLY: 'yes' }, inheritEnv: false, settingsOverrides, slowExit: true });
+  t.after(() => h.client.stopAndWait());
+  await h.client.start();
+  assert.deepEqual(h.spawns[0].options.env, { SOURCE_ONLY: 'yes' });
+  assert.ok(!JSON.stringify(h.spawns[0].args).includes(secret));
+  const filename = h.spawns[0].args[h.spawns[0].args.indexOf('--settings') + 1];
+  assert.deepEqual(JSON.parse(await readFile(filename, 'utf8')), settingsOverrides);
+  h.client.stop();
+  assert.deepEqual(JSON.parse(await readFile(filename, 'utf8')), settingsOverrides, 'settings remain while the old native process is exiting');
+  await h.client.stopAndWait();
+  await assert.rejects(readFile(filename), { code: 'ENOENT' });
+  assert.ok(!h.frames.some(frame => frame.type === 'user'));
+});
+
+test('a higher priority routing override rejects explicit source without publishing credentials', async t => {
+  const h = harness({ settingsOverrides: { env: { ANTHROPIC_BASE_URL: 'https://requested.example' } },
+    onFrame(frame, child) {
+      if (frame.request?.subtype !== 'get_settings') return;
+      child.send({ type: 'control_response', response: { subtype: 'success', request_id: frame.request_id, response: { effective: { env: { ANTHROPIC_BASE_URL: 'https://managed.example', ANTHROPIC_AUTH_TOKEN: 'hidden-credential' } } } } });
+      return false;
+    } });
+  t.after(() => h.client.stopAndWait());
+  await assert.rejects(h.client.start(), error => /переопределяют/.test(error.message) && !error.message.includes('hidden-credential'));
+  assert.ok(!h.frames.some(frame => frame.type === 'user'));
+});
+
+test('temporary source settings are removed after spawn failure', async () => {
+  let filename;
+  const client = new ClaudeClient({ settingsOverrides: { env: { ANTHROPIC_AUTH_TOKEN: 'private-fixture-key' } }, spawnImpl(_executable, args) {
+    filename = args[args.indexOf('--settings') + 1]; throw new Error('fixture spawn failed');
+  } });
+  await assert.rejects(client.start(), /fixture spawn failed/);
+  assert.ok(filename);
+  await assert.rejects(readFile(filename), { code: 'ENOENT' });
+});
+
+test('explicit source marks only an unsupported current model unavailable and preserves resolved model IDs', async t => {
+  const routed = { value: 'fable', resolvedModel: 'cc/claude-fable-5-1[1m]', displayName: 'Router Fable', supportedEffortLevels: ['medium', 'high'] };
+  for (const selectedModel of ['claude-fable-5-1', routed.resolvedModel, routed.value]) {
+    const h = harness({ settings: { connectionSource: 'router' }, settingsOverrides: { env: { ANTHROPIC_DEFAULT_FABLE_MODEL: routed.resolvedModel } }, models: [routed], selectedModel });
+    t.after(() => h.client.stop()); await h.client.start();
+    const rows = (await h.client.request('model/list')).data;
+    const current = rows.find(row => row.model === selectedModel);
+    assert.ok(current);
+    assert.equal(current.unavailable === true, selectedModel === 'claude-fable-5-1');
+    assert.equal(rows.find(row => row.model === 'fable').unavailable, undefined);
+    assert.equal((await h.client.request('config/read')).config.model, selectedModel, 'never maps a saved model silently');
+  }
+});
+
+test('unsupported explicit source model blocks user and compact frames until an available model is chosen', async t => {
+  const h = harness({ settings: { connectionSource: 'router' }, settingsOverrides: { env: { ANTHROPIC_DEFAULT_SONNET_MODEL: 'cc/sonnet' } }, models: [{ ...model, resolvedModel: 'cc/sonnet' }], selectedModel: 'old-personal-model' });
+  t.after(() => h.client.stop()); await h.client.start();
+  const { thread } = await h.client.request('thread/start');
+  const before = h.frames.length;
+  await assert.rejects(h.client.request('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Do not send with an unavailable model' }] }), /модель недоступна/);
+  await assert.rejects(h.client.request('thread/compact/start', { threadId: thread.id }), /модель недоступна/);
+  await assert.rejects(h.client.request('turn/start', { threadId: thread.id, model: 'unknown-model', input: [{ type: 'text', text: 'Still blocked' }] }), /модель недоступна/);
+  assert.equal(h.frames.length, before, 'unavailable models send neither user frames nor hidden model changes');
+  await h.client.request('turn/start', { threadId: thread.id, model: 'sonnet', input: [{ type: 'text', text: 'Explicitly chosen model' }] });
+  assert.equal(h.frames.filter(frame => frame.type === 'user').length, 1);
+  assert.equal((await h.client.request('config/read')).config.model, 'sonnet');
+  assert.equal((await h.client.request('config/read')).config.model_reasoning_effort, 'medium');
+});
+
+test('account source rejects cc models even if native initialization injects the selected model into its catalog', async t => {
+  const h = harness({ settings: { connectionSource: 'account' }, selectedModel: 'cc/old-router-model', models: [model, { value: 'cc/old-router-model', resolvedModel: 'cc/old-router-model' }, { value: 'routed-alias', resolvedModel: 'cc/other-router-model' }] });
+  t.after(() => h.client.stop()); await h.client.start();
+  const rows = (await h.client.request('model/list')).data;
+  assert.equal(rows.find(row => row.model === 'cc/old-router-model').unavailable, true);
+  assert.equal(rows.find(row => row.model === 'routed-alias').unavailable, true);
+  assert.equal(rows.find(row => row.model === 'sonnet').unavailable, undefined);
+  const { thread } = await h.client.request('thread/start');
+  await assert.rejects(h.client.request('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'blocked' }] }), /модель недоступна/);
+  await assert.rejects(h.client.request('turn/start', { threadId: thread.id, model: 'routed-alias', input: [{ type: 'text', text: 'blocked' }] }), /модель недоступна/);
+  assert.equal(h.frames.some(frame => frame.type === 'user'), false);
+});
+
+test('router does not trust a native current-model injection and restores only explicitly mapped missing choices', async t => {
+  const h = harness({ settings: { connectionSource: 'router' }, settingsOverrides: { env: { ANTHROPIC_DEFAULT_FABLE_MODEL: 'cc/claude-fable-5-1[1m]', ANTHROPIC_DEFAULT_FABLE_MODEL_NAME: 'Router Fable', ANTHROPIC_DEFAULT_SONNET_MODEL: 'cc/sonnet' } },
+    selectedModel: 'claude-fable-5-1', models: [{ value: 'claude-fable-5-1', resolvedModel: 'claude-fable-5-1', displayName: 'Fable' }, { value: 'sonnet', resolvedModel: 'cc/sonnet' }] });
+  t.after(() => h.client.stopAndWait()); await h.client.start();
+  const rows = (await h.client.request('model/list')).data;
+  assert.equal(rows.find(row => row.model === 'claude-fable-5-1').unavailable, true);
+  const mapped = rows.find(row => row.model === 'cc/claude-fable-5-1[1m]');
+  assert.equal(mapped.unavailable, undefined);
+  assert.equal(mapped.displayName, 'Router Fable');
+  assert.deepEqual(mapped.supportedReasoningEfforts, []);
+  assert.equal(rows.find(row => row.model === 'sonnet').unavailable, undefined);
+  const { thread } = await h.client.request('thread/start');
+  await assert.rejects(h.client.request('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'blocked' }] }), /модель недоступна/);
+  assert.equal(h.frames.some(frame => frame.type === 'user'), false);
+  await h.client.request('turn/start', { threadId: thread.id, model: 'cc/claude-fable-5-1[1m]', input: [{ type: 'text', text: 'explicit mapped choice' }] });
+  assert.equal(h.frames.filter(frame => frame.type === 'user').length, 1);
+});
+
+test('inherited source retains custom exact models without the explicit-source catalog restriction', async t => {
+  for (const connectionSource of [undefined, 'inherited']) {
+    const h = harness({ settings: { connectionSource }, selectedModel: 'custom-configured-model' });
+    t.after(() => h.client.stop()); await h.client.start();
+    assert.equal((await h.client.request('model/list')).data[0].unavailable, undefined);
+    const { thread } = await h.client.request('thread/start');
+    await h.client.request('turn/start', { threadId: thread.id, input: [{ type: 'text', text: 'Existing CLI configuration' }] });
+    assert.equal(h.frames.filter(frame => frame.type === 'user').length, 1);
+  }
 });
 
 test('model and effort are applied only to session via control requests before user send', async t => {

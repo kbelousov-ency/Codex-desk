@@ -110,7 +110,11 @@ try {
   await notice().getByRole('button', { name: 'Закрыть', exact: true }).click();
   await notice().getByRole('button', { name: 'Отмена', exact: true }).waitFor();
   assert.deepEqual(await page.evaluate(() => window.__update.decisions), ['later', 'close']);
-  assert.equal(await input().isEnabled(), true, 'Waiting for tasks after explicit consent keeps the composer usable');
+  assert.equal(await input().isEditable(), false, 'Explicit close freezes new work while the helper waits');
+  await notice().getByRole('button', { name: 'Отмена', exact: true }).click();
+  await notice().getByText('Обновление будет применено, когда вы сами закроете приложение.', { exact: true }).waitFor();
+  await notice().getByRole('button', { name: 'Скрыть сообщение об обновлении', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => window.__update.decisions), ['later', 'close', 'later']);
   assert.equal(await view().getByRole('combobox', { name: 'Глубина размышлений', exact: true }).getAttribute('data-value'), '');
   await activate('new-a');
   await view().getByText('Ответ из истории.', { exact: true }).waitFor();
@@ -120,7 +124,6 @@ try {
   assert.equal(await view().getByRole('combobox', { name: 'Глубина размышлений', exact: true }).getAttribute('data-value'), 'high');
   assert.equal(await view().getByRole('combobox', { name: 'Режим доступа', exact: true }).getAttribute('data-value'), 'danger-full-access');
   await input().fill('Изменённый черновик A');
-  await status('waiting');
   assert.equal(await input().isEnabled(), true);
   await page.evaluate(() => { window.__update.holdImages = true; });
   await view().locator('input[type="file"]').setInputFiles({ name: 'second.png', mimeType: 'image/png', buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aLuoAAAAASUVORK5CYII=', 'base64') });
@@ -140,7 +143,7 @@ try {
   assert.equal(saved.tabs[0].draft, 'Изменённый черновик A');
   assert.equal(saved.tabs[0].thread.id, 'dialogue-a');
   assert.equal(saved.tabs[0].thread.turns, undefined, 'Checkpoint must not contain loaded messages');
-  assert.deepEqual(saved.tabs[0].settings, { model: 'fixture-b', effort: 'high', access: 'danger-full-access' });
+  assert.deepEqual(saved.tabs[0].settings, { connectionSource: 'inherited', model: 'fixture-b', effort: 'high', access: 'danger-full-access' });
   assert.deepEqual(saved.tabs[0].attachments.map(image => image.name), ['draft.png', 'second.png']);
   assert.equal(saved.tabs[1].archivedThread.id, 'archived');
   assert.equal(saved.tabs[1].sessionId, undefined);

@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
+import { createClaudeSettingsFile } from './connection-source.mjs';
 import { StringDecoder } from 'node:string_decoder';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -60,7 +61,9 @@ function textContent(content) {
   return typeof content === 'string' ? content : Array.isArray(content) ? content.filter(b => b?.type === 'text').map(b => b.text || '').join('\n') : '';
 }
 function permissionMode(params, fallback) {
-  if (params.access && params.access !== 'inherited') return ({ auto: 'acceptEdits', 'workspace-write': 'default', 'read-only': 'plan', 'danger-full-access': 'bypassPermissions' })[params.access] || fallback;
+  // `rules` is the Codex tab's own answering mode and has no Claude equivalent: Claude Code decides with
+  // its own permission system, so the tab asks exactly as the manual mode does.
+  if (params.access && params.access !== 'inherited') return ({ auto: 'acceptEdits', rules: 'default', 'workspace-write': 'default', 'read-only': 'plan', 'danger-full-access': 'bypassPermissions' })[params.access] || fallback;
   const sandbox = params.sandbox || params.sandboxPolicy?.type;
   if (['danger-full-access', 'dangerFullAccess'].includes(sandbox)) return 'bypassPermissions';
   if (['read-only', 'readOnly'].includes(sandbox)) return 'plan';
@@ -72,12 +75,19 @@ function permissionMode(params, fallback) {
  * No SDK prompt replacement, credential reads, global config writes or model calls at startup.
  */
 export class ClaudeClient extends EventEmitter {
-  constructor({ executable = 'claude', cwd, settings = {}, history, attachmentsDirectory, spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics, diagnosticContext = {}, env } = {}) {
+  constructor({ executable = 'claude', cwd, settings = {}, history, attachmentsDirectory, spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics, diagnosticContext = {}, env, inheritEnv = true, settingsOverrides, settingsFile } = {}) {
     super();
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) throw new TypeError('requestTimeoutMs must be positive.');
     if (env !== undefined && (!env || typeof env !== 'object' || Array.isArray(env))) throw new TypeError('env must be an object.');
+    if (typeof inheritEnv !== 'boolean' || (!inheritEnv && !env)) throw new TypeError('A complete environment is required when inheritEnv is false.');
+    if (settingsOverrides !== undefined && (!settingsOverrides || typeof settingsOverrides !== 'object' || Array.isArray(settingsOverrides))) throw new TypeError('settingsOverrides must be an object.');
+    if (settingsFile !== undefined && (typeof settingsFile !== 'string' || !settingsFile || /[\r\n\0]/.test(settingsFile))) throw new TypeError('settingsFile must be a path.');
     // Extra variables (a host-managed CLAUDE_CODE_OAUTH_TOKEN) are merged over the inherited environment only when given.
     this.env = env;
+    this.inheritEnv = inheritEnv;
+    this.settingsOverrides = settingsOverrides;
+    this.settingsFile = settingsFile;
+    this._settingsCleanups = new Set();
     this.executable = executable; this.cwd = cwd; this.settings = { ...settings };
     this.history = history; this.attachmentsDirectory = attachmentsDirectory;
     this._spawn = spawnImpl; this._timeout = requestTimeoutMs; this._diagnostics = diagnostics; this._diagnosticContext = diagnosticContext;
@@ -100,6 +110,7 @@ export class ClaudeClient extends EventEmitter {
   }
 
   async _launch({ id, resume = false, mode, model, effort }) {
+    const generation = this._generation;
     const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
       '--include-partial-messages', '--replay-user-messages', '--permission-prompt-tool', 'stdio', '--permission-prompts', 'host',
       resume ? '--resume' : '--session-id', id];
@@ -112,10 +123,14 @@ export class ClaudeClient extends EventEmitter {
       mode, bypassEnabled: mode === 'bypassPermissions', resumed: resume, sent: false, blocks: new Map(), messageId: null };
     this._session = session; this._status('starting');
     try {
-      const child = this._spawn(this.executable, args, { cwd: this.cwd, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'], ...(this.env ? { env: { ...process.env, ...this.env } } : {}) });
+      if (this.settingsOverrides) session.settingsFile = await createClaudeSettingsFile(this.settingsOverrides);
+      if (session.ended || generation !== this._generation || session !== this._session) throw new Error('Запуск Claude остановлен.');
+      const settingsPath = session.settingsFile?.path || this.settingsFile;
+      if (settingsPath) args.push('--settings', settingsPath);
+      const child = this._spawn(this.executable, args, { cwd: this.cwd, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'], ...(this.env ? { env: this.inheritEnv ? { ...process.env, ...this.env } : { ...this.env } } : {}) });
       session.child = child;
       this._processes.add(child);
-      const release = () => { this._processes.delete(child); child.off('exit', release); child.off('close', release); };
+      const release = () => { this._processes.delete(child); child.off('exit', release); child.off('close', release); void this._cleanupSettingsFile(session).catch(() => {}); };
       child.once('exit', release); child.once('close', release);
       child.on('error', error => this._end(session, new Error(safeText(error.message)), 'error'));
       child.on('exit', (code, signal) => this._end(session, new Error(`Claude CLI завершился (${signal || code || 0}).`), 'stopped'));
@@ -134,6 +149,13 @@ export class ClaudeClient extends EventEmitter {
       session.initialized = await this._control(session, 'initialize');
       session.mode = session.initialized.current_permission_mode || mode;
       const effective = await this._control(session, 'get_settings');
+      // Managed settings can outrank a process-local --settings file. Do not claim
+      // an explicitly selected source when the effective settings route it elsewhere.
+      if (this.settingsOverrides?.env && effective?.effective?.env) {
+        for (const [key, value] of Object.entries(this.settingsOverrides.env)) {
+          if (Object.hasOwn(effective.effective.env, key) && effective.effective.env[key] !== value) throw new Error('Действующие настройки Claude переопределяют выбранный источник подключения. Проверьте настройки организации.');
+        }
+      }
       // Do not retain full settings: env and per-source config may carry credentials.
       session.applied = { model: effective?.applied?.model, effort: effective?.applied?.effort };
       // The version is informational: a CLI that cannot answer this request still boots.
@@ -142,7 +164,16 @@ export class ClaudeClient extends EventEmitter {
       this._version(session, binary?.version);
       this._status('ready');
       return { userAgent: 'claude-code', provider: 'claude', capabilities: this.capabilities, version: session.version };
-    } catch (error) { this._end(session, error, 'error'); throw error; }
+    } catch (error) { this._end(session, error, 'error'); if (!session.child) await this._cleanupSettingsFile(session); throw error; }
+  }
+
+  _cleanupSettingsFile(session) {
+    if (!session.settingsFile) return Promise.resolve();
+    const file = session.settingsFile; session.settingsFile = null;
+    const cleanup = file.cleanup();
+    this._settingsCleanups.add(cleanup);
+    cleanup.finally(() => this._settingsCleanups.delete(cleanup)).catch(() => {});
+    return cleanup;
   }
 
   _validModel(model) { if (typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._/:+\[\]-]{0,255}$/.test(model)) throw new Error('Некорректная модель Claude.'); }
@@ -152,6 +183,31 @@ export class ClaudeClient extends EventEmitter {
   _config() {
     const s = this._ensureSession();
     return { model: s.applied.model || s.model || '', model_reasoning_effort: s.applied.effort || s.effort || null };
+  }
+  _routerModels() {
+    const env = this.settingsOverrides?.env || {};
+    return ['OPUS', 'FABLE', 'SONNET', 'HAIKU'].flatMap(family => {
+      const model = env[`ANTHROPIC_DEFAULT_${family}_MODEL`];
+      return typeof model === 'string' && model ? [{ model, displayName: env[`ANTHROPIC_DEFAULT_${family}_MODEL_NAME`] || model }] : [];
+    });
+  }
+  _modelAvailable(model, session = this._ensureSession()) {
+    const source = this.settings.connectionSource;
+    if (!['account', 'router'].includes(source)) return true;
+    const routed = value => typeof value === 'string' && value.startsWith('cc/');
+    if (source === 'account' && routed(model)) return false;
+    if (source === 'router') {
+      const confirmed = new Set(this._routerModels().flatMap(row => [row.model, row.model.replace(/\[1m\]$/, '')]));
+      // Native initialize may inject the previous selected personal model as a
+      // catalog row. Only the portal mapping proves router availability. The CLI
+      // reports a [1m] choice without its context suffix in get_settings.applied.
+      if (confirmed.has(model)) return true;
+      return (session.initialized.models || []).some(row => (row.value === model || row.resolvedModel === model) && (confirmed.has(row.value) || confirmed.has(row.resolvedModel)));
+    }
+    return (session.initialized.models || []).some(row => !routed(row.value) && !routed(row.resolvedModel) && (row.value === model || row.resolvedModel === model));
+  }
+  _assertModelAvailable(model = this._config().model) {
+    if (!this._modelAvailable(model)) throw new Error('Выбранная модель недоступна у этого источника. Выберите доступную модель перед отправкой.');
   }
 
   async request(method, params = {}) {
@@ -168,12 +224,18 @@ export class ClaudeClient extends EventEmitter {
     const session = this._ensureSession();
     if (method === 'model/list') {
       const rows = [...(session.initialized.models || [])], current = this._config().model;
+      if (this.settings.connectionSource === 'router') {
+        for (const confirmed of this._routerModels()) {
+          if (!rows.some(row => row.value === confirmed.model || row.resolvedModel === confirmed.model)) rows.push({ value: confirmed.model, displayName: confirmed.displayName, supportedEffortLevels: [] });
+        }
+      }
       if (current && !rows.some(m => m.value === current)) {
         const matching = rows.find(m => m.resolvedModel === current);
         rows.unshift({ ...matching, value: current, displayName: matching?.displayName || current });
       }
       return { data: rows.map(m => ({
       id: m.value, model: m.value, displayName: m.displayName || m.value, description: m.description,
+      ...(!this._modelAvailable(m.value, session) ? { unavailable: true } : {}),
       isDefault: m.value === this._config().model, defaultReasoningEffort: this._config().model_reasoning_effort || '',
       supportedReasoningEfforts: (m.supportedEffortLevels || []).map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort })),
       inputModalities: ['text', 'image'],
@@ -233,6 +295,7 @@ export class ClaudeClient extends EventEmitter {
     if (method === 'thread/compact/start') {
       this._ensureThread(params.threadId);
       if (this._mutation || this._active) throw new Error('Дождитесь завершения текущей задачи Claude.');
+      this._assertModelAvailable();
       if (!session.sent && !session.resumed) throw new Error('Диалог Claude ещё пуст: сжимать нечего.');
       this._mutation = true;
       try {
@@ -296,9 +359,11 @@ export class ClaudeClient extends EventEmitter {
         return { ...this._threadResponse(), ...(restored ? { tokenUsage: { last: restored.last, total: restored.total || undefined, modelContextWindow: this._usage.contextWindow || undefined } } : {}) };
       }
       this._ensureThread(params.threadId);
+      this._assertModelAvailable(params.model || this._config().model);
       // Resolve every input before changing or starting a turn. The host owns these image files.
       const content = await this._input(params.input);
       await this._configure(params);
+      this._assertModelAvailable();
       const owned = this._ensureSession();
       const turn = this._beginTurn({ ...(UUID.test(params.clientUserMessageId || '') ? { id: params.clientUserMessageId } : {}), sourceInput: structuredClone(params.input) });
       try {
@@ -734,7 +799,7 @@ export class ClaudeClient extends EventEmitter {
   async stopAndWait(timeoutMs = 5_000) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError('timeoutMs must be positive.');
     const children = [...this._processes].filter(child => child.exitCode == null && child.signalCode == null);
-    if (!children.length) { this.stop(); return; }
+    if (!children.length) { this.stop(); await Promise.all([...this._settingsCleanups]); return; }
     await new Promise((resolve, reject) => {
       const waiting = new Map();
       const cleanup = () => {
@@ -753,5 +818,6 @@ export class ClaudeClient extends EventEmitter {
       // Register before stop(): test doubles and already-exiting children can emit synchronously.
       try { this.stop(); } catch (error) { cleanup(); reject(error); }
     });
+    await Promise.all([...this._settingsCleanups]);
   }
 }

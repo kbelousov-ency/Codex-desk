@@ -19,15 +19,15 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 await mkdir('artifacts', { recursive: true });
 let browser, page;
 const errors = [];
-const choices = ['workspace-write', 'auto', 'danger-full-access'];
-const labels = ['Спрашивать разрешение', 'Одобрять за меня', 'Полный доступ'];
+const choices = ['workspace-write', 'rules', 'auto', 'danger-full-access'];
+const labels = ['Спрашивать разрешение', 'По моим правилам', 'Одобрять за меня', 'Полный доступ'];
 const cwd = 'C:/Fixtures/Access Project';
 const accessKeys = ['approvalPolicy', 'approvalsReviewer', 'sandbox', 'sandboxPolicy'];
 const accessFields = params => Object.fromEntries(accessKeys.filter(key => key in params).map(key => [key, params[key]]));
 const expected = (mode, turn = false, path = cwd) => {
   if (mode === 'inherited') return {};
   const common = { approvalPolicy: mode === 'danger-full-access' ? 'never' : 'on-request', approvalsReviewer: mode === 'auto' ? 'auto_review' : 'user' };
-  if (!turn) return { ...common, sandbox: mode === 'auto' ? 'workspace-write' : mode };
+  if (!turn) return { ...common, sandbox: ['auto', 'rules'].includes(mode) ? 'workspace-write' : mode };
   return { ...common, sandboxPolicy: mode === 'danger-full-access' ? { type: 'dangerFullAccess' }
     : mode === 'read-only' ? { type: 'readOnly', networkAccess: false }
       : { type: 'workspaceWrite', writableRoots: [path], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false } };
@@ -111,6 +111,7 @@ try {
     { name: 'default', saved: undefined, mode: 'workspace-write' },
     { name: 'saved-manual', saved: 'workspace-write', mode: 'workspace-write' },
     { name: 'saved-auto', saved: 'auto', mode: 'auto' },
+    { name: 'saved-rules', saved: 'rules', mode: 'rules' },
     { name: 'saved-full', saved: 'danger-full-access', mode: 'workspace-write' },
     { name: 'confirmed-full', saved: undefined, mode: 'danger-full-access', confirm: true },
     { name: 'legacy-read', saved: 'read-only', mode: 'read-only', legacy: true },
@@ -163,11 +164,11 @@ try {
     await page.evaluate(id => { window.__access.active = id; }, id); await ready();
   };
   await access().click(); await page.keyboard.press('Home'); await page.keyboard.press('ArrowDown'); await page.keyboard.press('Enter');
-  assert.equal(await access().getAttribute('data-value'), 'auto');
+  assert.equal(await access().getAttribute('data-value'), 'rules', 'Keyboard navigation selects the next choice');
   await access().click(); await activate('session-2');
   assert.equal(await menu().count(), 0, 'Switching tabs closes the previous session menu');
   assert.equal(await access().getAttribute('data-value'), 'workspace-write', 'A separate tab keeps its manual policy');
-  await activate('session-1'); assert.equal(await access().getAttribute('data-value'), 'auto');
+  await activate('session-1'); assert.equal(await access().getAttribute('data-value'), 'rules');
   await access().click();
   await page.evaluate(() => { const state = window.__access.sessions['session-1']; state.activeTurn = { id: 'external-turn', status: 'inProgress', items: [] }; state.emit('turn/started', { turn: state.activeTurn }); });
   await page.waitForFunction(() => document.querySelector('.session-view:not([hidden]) [aria-label="Режим доступа"]').disabled);
@@ -180,12 +181,13 @@ try {
     await page.screenshot({ path: `artifacts/access-menu-${size.width}.png` });
     await page.keyboard.press('Escape');
   }
-  await send('Автоматический режим вкладки A');
-  assert.deepEqual(accessFields(await lastCall('turn/start')), expected('auto', true));
+  await send('Режим по правилам во вкладке A');
+  // `rules` keeps the user as reviewer: the shell answers what it can, Codex's auto-review subagent is not involved
+  assert.deepEqual(accessFields(await lastCall('turn/start')), expected('rules', true));
   await activate('session-2'); await send('Ручной режим вкладки B');
   assert.deepEqual(accessFields(await lastCall('turn/start')), expected('workspace-write', true, 'C:/Fixtures/Another Project'));
   assert.deepEqual(errors, []);
-  console.log('PASS: three access choices; keyboard and full confirmation; explicit manual default and saved-full reset; legacy settings preserved; exact thread/start, turn/start and thread/resume policies; busy locks and tab isolation; 1440/940/650px layout. Fixture bridges only, no model or user data.');
+  console.log('PASS: four access choices; keyboard and full confirmation; explicit manual default and saved-full reset; legacy settings preserved; exact thread/start, turn/start and thread/resume policies; busy locks and tab isolation; 1440/940/650px layout. Fixture bridges only, no model or user data.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/access-failure.png' }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '(page unavailable)')); }
   throw error;

@@ -28,6 +28,7 @@ import { McpConfigService } from './mcp-service.mjs';
 import { AgentSkillsService } from './agent-skills.mjs';
 import { readAttachment, hydrateAttachmentPreviews } from './attachments.mjs';
 import { SettingsStore, WorkspaceStore, WindowSession, cleanSettings, sessionForEvent, windowForEvent } from './window-session.mjs';
+import { ApprovalCatalog } from './approval-catalog.mjs';
 import { createDiagnostics } from './diagnostics.mjs';
 import { resolveReleaseChannel, resolveChannelPaths, initializeChannelProfile } from './release-channel.mjs';
 import { createNightlyUpdate } from './nightly-update.mjs';
@@ -42,6 +43,12 @@ import { AppUpdateService, AppUpdateStore } from './app-updates.mjs';
 import { RouterUsageClient } from './router-usage.mjs';
 import { RouterPortalClient } from './router-portal.mjs';
 import { PortalSetupService } from './portal-setup.mjs';
+import { RouterConnectionStore } from './router-connections.mjs';
+import { buildClaudeConnectionProfile } from './connection-source.mjs';
+import { buildCodexConnectionProfile, readCodexRouterConnection } from './codex-connections.mjs';
+import { ClaudePortalSetupService } from './claude-portal-setup.mjs';
+import { ClaudePortalBrowser } from './claude-portal-browser.mjs';
+import { downloadClaudeInstallerConfig } from './claude-portal-import.mjs';
 import { ReleaseNotesService, ReleaseNotesStore, parseReleaseNotes } from './release-notes.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -112,10 +119,26 @@ const claudeToken = new ClaudeTokenStore({
   onChange: kind => diagnostics.record('info', `claude.token.${kind}`),
 });
 const claudeGate = new ClaudeLaunchGate();
+const routerConnections = new RouterConnectionStore({
+  filename: path.join(app.getPath('userData'), 'router-connections.json'),
+  encrypt: value => safeStorage.encryptString(value), decrypt: bytes => safeStorage.decryptString(bytes),
+  available: () => safeStorage.isEncryptionAvailable(),
+});
+async function claudeConnectionFor(settings = {}) {
+  const source = settings.connectionSource || 'inherited';
+  return buildClaudeConnectionProfile({ source, accountEnv: source === 'router' ? {} : await claudeToken.environment(),
+    ...(source === 'router' ? { router: await routerConnections.get('claude') } : {}) });
+}
+async function codexRouterConnection() { return readCodexRouterConnection(); }
+async function codexConnectionFor(settings = {}) {
+  const source = settings.connectionSource || 'inherited';
+  const router = source === 'router' ? await codexRouterConnection() : null;
+  return buildCodexConnectionProfile({ source, ...(router ? { router } : {}) });
+}
 const claudeAuth = new ClaudeAuthService({
   getSessions: () => [...windows.values()].flatMap(record => [...record.sessions.values()]),
-  getEnvironment: async () => ({ ...process.env, ...(await claudeToken.environment()) }),
-  getLoginEnvironment: () => ({ ...process.env }),
+  getEnvironment: claudeConnectionFor,
+  getLoginEnvironment: () => buildClaudeConnectionProfile({ source: 'account', processEnv: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: '' } }),
   assertAvailable: () => {
     if (quitting) throw new Error('Приложение закрывается.');
     if (setupService?.busy || setupAuth.activeProvider || setupAuth.checking.size) throw new Error('Дождитесь завершения настройки агента.');
@@ -123,6 +146,11 @@ const claudeAuth = new ClaudeAuthService({
   },
 });
 const settingsStore = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'));
+// Standing approvals the user granted, scoped per project. App-owned, like every other store here:
+// Codex Desk opens arbitrary folders and never writes a file into one.
+const approvalCatalog = new ApprovalCatalog(path.join(app.getPath('userData'), 'approvals.json'));
+// An unreadable rules file keeps the last good rules in force; record that it happened, never its content.
+approvalCatalog.onWarning = () => diagnostics?.record('info', 'approval.auto', { unreadableCatalog: true });
 const workspaceStore = new WorkspaceStore(path.join(app.getPath('userData'), 'workspace.json'));
 const notificationSettings = new NotificationSettingsStore(path.join(app.getPath('userData'), 'notifications.json'));
 const claudeHistory = new ClaudeHistory();
@@ -157,7 +185,7 @@ const setupAuth = new SetupAuth({
   loginClaude: async record => {
     if (setupService?.busy || setupAuth.activeProvider) throw new Error('Дождитесь завершения настройки.');
     record.setupClaudeSession ??= new WindowSession({ settings: { provider: 'claude', cwd: os.homedir() }, claudeAuth });
-    record.setupClaudeSession.settings = { ...await settingsStore.snapshotProvider('claude'), provider: 'claude', cwd: os.homedir() };
+    record.setupClaudeSession.settings = { ...await settingsStore.snapshotProvider('claude'), provider: 'claude', connectionSource: 'account', cwd: os.homedir() };
     return claudeAuth.login(record.setupClaudeSession);
   },
   onCodexState: data => {
@@ -206,6 +234,27 @@ function portalSetupFor(record) {
   });
   return record.portalSetup;
 }
+
+function claudeRouterSetup(session) {
+  if (session.settings.provider !== 'claude') throw new Error('Это подключение предназначено для Claude Code.');
+  session.assertActive();
+  session.routerSetup ??= new ClaudePortalSetupService({
+    saveConnection: config => routerConnections.set('claude', config),
+    assertActive: () => { session.assertActive(); if (quitting || updateFrozen) throw new Error('Приложение закрывается.'); },
+  });
+  return session.routerSetup;
+}
+
+function cancelClaudeRouter(session) {
+  session.routerImportGeneration = (session.routerImportGeneration || 0) + 1;
+  session.routerBrowser?.cancel();
+  session.routerSetup?.cancel();
+}
+
+function disposeSessionConnections(session) {
+  session.routerImportGeneration = (session.routerImportGeneration || 0) + 1;
+  session.routerBrowser?.cancel(); session.routerSetup?.dispose();
+}
 const notifications = new NotificationService({
   // Automated IPC fixtures use isolated profiles and must never toast on the user's desktop.
   Notification: process.env.CODEX_DESK_TEST === '1' || isolatedProfile ? null : Notification,
@@ -221,7 +270,7 @@ const workspaceSave = createWorkspaceSaveHandshake({
   },
   save: (record, snapshot) => workspaceState.save(captureWorkspaceState(snapshot, record.sessions)),
 });
-const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate', 'host:getBuildInfo', 'host:getReleaseNotes', 'host:acknowledgeReleaseNotes', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
+const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate', 'host:forceUpdate', 'host:getBuildInfo', 'host:getReleaseNotes', 'host:acknowledgeReleaseNotes', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
 const projectKey = cwd => process.platform === 'win32' ? path.resolve(cwd).toLowerCase() : path.resolve(cwd);
 
 function updateBusy() {
@@ -330,8 +379,9 @@ function addSession(record, settings) {
   const id = randomUUID();
   const session = new WindowSession({
     settings,
+    approvalCatalog,
     attachmentsDirectory: channelPaths.attachmentsDirectory, claudeHistory, claudeAuth,
-    claudeEnvironment: () => claudeToken.environment(), claudeGate,
+    claudeEnvironment: claudeConnectionFor, codexEnvironment: codexConnectionFor, claudeGate,
     diagnostics,
     diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(id) },
     threadActions,
@@ -350,7 +400,20 @@ function addSession(record, settings) {
 }
 
 function installHandlers() {
-  workspaceHandle('host:getRouterUsage', () => routerUsage.overview());
+  handle('host:getRouterUsage', 0, async ({ session }) => {
+    if (session.settings.connectionSource !== 'router') return session.settings.provider === 'claude' || session.settings.connectionSource === 'account'
+      ? { available: false, reason: 'В этой вкладке выбран личный источник.' } : routerUsage.overview();
+    // Other tabs keep their running profile after a credential replacement. Read
+    // usage for that exact process rather than the newer default in the store.
+    const profile = session.connectionProfile;
+    const claude = session.settings.provider === 'claude';
+    const baseUrl = claude ? profile?.env?.ANTHROPIC_BASE_URL : profile?.expectedConnection?.baseUrl;
+    const apiKey = claude ? profile?.env?.ANTHROPIC_AUTH_TOKEN || profile?.env?.ANTHROPIC_API_KEY : profile?.expectedConnection?.apiKey;
+    if (!baseUrl || !apiKey || new URL(baseUrl).origin !== 'https://router.encycam.com') return { available: false, reason: 'Статистика этого подключения недоступна. Переподключите вкладку.' };
+    const client = new RouterUsageClient({ env: {}, fetchImpl: (...args) => net.fetch(...args) });
+    client.token = async () => apiKey;
+    return client.overview();
+  });
   workspaceHandle('skills:list', (_record, _event, options) => agentSkills.list(options || {}));
   workspaceHandle('memoryRules:preview', (_record, _event, provider) => setupService.previewMemoryRules(provider));
   workspaceHandle('memoryRules:apply', async (_record, _event, options) => {
@@ -453,6 +516,12 @@ function installHandlers() {
     updater.decide(decision);
     return latestUpdateStatus;
   });
+  workspaceHandle('host:forceUpdate', (_record, _event) => {
+    if (!updater || latestUpdateStatus?.state !== 'waiting') throw new Error('Update is not waiting for processes.');
+    for (const record of windows.values()) for (const session of record.sessions.values()) session.forceStop?.();
+    updater.decide('close');
+    return latestUpdateStatus;
+  });
   workspaceHandle('host:completeUpdatePrepare', (record, _event, response) => {
     const current = updatePreparation;
     if (!updateFrozen || !current || current.record !== record || response?.requestId !== current.requestId) throw new Error('Сохранение окна уже завершено.');
@@ -526,11 +595,52 @@ function installHandlers() {
   handle('host:getClaudeAuthStatus', 0, ({ session }) => claudeAuth.status(session));
   handle('host:loginClaude', 0, ({ session }) => claudeAuth.login(session));
   handle('host:setupClaudeToken', 0, ({ session }) => claudeAuth.setupToken(session));
+  handle('host:getRouterConnection', 0, ({ session }) => routerConnections.info(session.settings.provider || 'codex'));
+  handle('host:cancelRouterConnection', 0, ({ session }) => cancelClaudeRouter(session));
+  handle('host:openRouterPortal', 0, () => shell.openExternal('https://coder-portal.encycam.com/#claude'));
+  handle('host:connectRouterPortal', 0, async ({ session, window }) => {
+    const setup = claudeRouterSetup(session);
+    if (session.routerImportPending) throw new Error('Завершите открытое подключение к порталу.');
+    cancelClaudeRouter(session);
+    const generation = session.routerImportGeneration;
+    session.routerImportPending = true;
+    session.routerBrowser ??= new ClaudePortalBrowser({
+      createWindow: options => new BrowserWindow(options),
+      readDownload: ({ url }) => downloadClaudeInstallerConfig(url, { fetchImpl: (...args) => net.fetch(...args) }),
+    });
+    try {
+      const config = await session.routerBrowser.open(window);
+      session.assertActive();
+      if (!config || session.routerImportGeneration !== generation) return null;
+      return setup.prepare(config).preview;
+    } finally { session.routerImportPending = false; }
+  });
+  handle('host:previewRouterInstaller', 0, async ({ session, window }) => {
+    const setup = claudeRouterSetup(session);
+    if (session.routerImportPending) throw new Error('Завершите открытое подключение к порталу.');
+    cancelClaudeRouter(session);
+    const generation = session.routerImportGeneration;
+    session.routerImportPending = true;
+    try {
+      const selection = await dialog.showOpenDialog(window, { title: 'Установщик подключения Claude с портала', properties: ['openFile'], filters: [{ name: 'Подключение Claude', extensions: ['exe'] }] });
+      session.assertActive();
+      if (selection.canceled || !selection.filePaths[0] || session.routerImportGeneration !== generation) return null;
+      const config = await downloadClaudeInstallerConfig(selection.filePaths[0], { fetchImpl: (...args) => net.fetch(...args) });
+      session.assertActive();
+      if (session.routerImportGeneration !== generation) return null;
+      return setup.prepare(config).preview;
+    } finally { session.routerImportPending = false; }
+  });
+  handle('host:applyRouterConnection', 1, async ({ session }, options) => {
+    await claudeRouterSetup(session).apply(options);
+    return routerConnections.info('claude');
+  });
   handle('host:getClaudeToken', 0, ({ session }) => { claudeAuth.assertClaude(session); return claudeToken.info(); });
   // Idle Claude tabs relaunch with the new environment through the same reconnect path as a browser login.
   const relaunchClaudeTabs = () => {
     let restarted = 0, busy = 0;
     for (const owned of claudeAuth.sessions()) {
+      if (owned.settings.connectionSource === 'router') continue;
       if (!owned.client && !owned.bootstrap) continue;
       if (owned.terminal || owned.pendingBoots || owned.pendingMutations || owned.requests.size || owned.activeThreadTurns.size || owned.compactingThreads.size || owned.mcpRefreshing) { busy++; continue; }
       owned.send('auth', { state: 'opened' });
@@ -567,7 +677,9 @@ function installHandlers() {
   handle('host:checkMcp', 0, ({ session }) => session.mcpRuntime(true));
   handle('codex:start', 1, ({ session }, options) => session.start(options));
   handle('codex:request', 2, ({ session }, method, params) => session.request(method, params));
-  handle('codex:respond', 2, ({ session }, id, result) => session.respond(id, result));
+  handle('codex:respond', 3, ({ session }, id, result, options) => session.respond(id, result, options));
+  handle('host:listApprovalRules', 0, ({ session }) => session.listApprovalRules());
+  handle('host:dropApprovalRule', 1, ({ session }, number) => session.dropApprovalRule(number));
   workspaceHandle('host:getWorkspace', async record => {
     const workspace = await workspaceStore.snapshot();
     return { ...workspace, sessions: [...record.sessions].map(([id, session]) => ({ id, cwd: session.currentCwd, ...(session.settings.provider ? { provider: session.settings.provider } : {}) })), ...(record.restoration ? { restore: record.restoration } : {}) };
@@ -875,7 +987,7 @@ function installHandlers() {
     if (typeof id !== 'string' || !id) throw new Error('Некорректная сессия.');
     const { session } = sessionForEvent(windows, event, id);
     session.assertLocalControl();
-    session.dispose();
+    disposeSessionConnections(session); session.dispose();
     record.sessions.delete(id);
     notifications.closeSession(record, id);
     if (record.defaultSessionId === id) record.defaultSessionId = record.sessions.keys().next().value ?? null;
@@ -896,7 +1008,7 @@ function installHandlers() {
       if (sessions.length && options.force !== true) throw new Error('Подтвердите закрытие открытых вкладок проекта.');
       await workspaceStore.removeProject(cwd);
       windowForEvent(windows, event);
-      for (const [id, session] of sessions) { session.dispose(); record.sessions.delete(id); notifications.closeSession(record, id); }
+      for (const [id, session] of sessions) { disposeSessionConnections(session); session.dispose(); record.sessions.delete(id); notifications.closeSession(record, id); }
       if (!record.sessions.has(record.defaultSessionId)) record.defaultSessionId = record.sessions.keys().next().value ?? null;
       if (record.historySession && projectKey(record.historySession.currentCwd) === key) { record.historySession.dispose(); record.historySession = null; }
       return { ...(await workspaceStore.snapshot()), closedSessionIds: sessions.map(([id]) => id) };
@@ -1113,7 +1225,7 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
     workspaceSave.cancel(record);
     if (updatePreparation?.record === record) updatePreparation.reject(new Error('Окно закрыто во время обновления.'));
     diagnostics.record('error', 'window.rendererGone', { windowId: contentsId, reason: details.reason, exitCode: details.exitCode });
-    for (const session of record.sessions.values()) session.stop();
+    for (const session of record.sessions.values()) { disposeSessionConnections(session); session.stop(); }
     record.historySession?.stop();
     record.management?.dispose();
     record.management = null;
@@ -1141,7 +1253,7 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
     if (updatePreparation?.record === record) updatePreparation.reject(new Error('Окно закрыто во время обновления.'));
     diagnostics.record('info', 'window.closed', { windowId: contentsId });
     windows.delete(contentsId);
-    for (const session of record.sessions.values()) session.dispose();
+    for (const session of record.sessions.values()) { disposeSessionConnections(session); session.dispose(); }
     record.historySession?.dispose();
     record.setupClaudeSession?.dispose();
     record.management?.dispose();
@@ -1165,6 +1277,9 @@ const reportWindowError = error => {
 const gotLock = process.env.CODEX_DESK_TEST === '1' || app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 else {
+  const previousRun = diagnostics.startRun();
+  if (previousRun) diagnostics.record('warn', 'app.previousAbnormal', previousRun);
+  app.on('will-quit', () => diagnostics.markCleanExit());
   app.on('second-instance', () => {
     const win = [...windows.values()].find(record => !record.window.isDestroyed())?.window;
     if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
@@ -1249,6 +1364,8 @@ else {
     event.preventDefault();
     if (quitting) return;
     quitting = true;
+    diagnostics.markClosing();
+    diagnostics.record('info', 'app.quitRequested');
     setupAuth.dispose();
     claudeAuth.dispose();
     stopWatchingShellIcon?.();
@@ -1268,11 +1385,11 @@ else {
       for (const record of records) {
         record.historySearch?.dispose();
         notifications.closeWindow(record);
-        for (const session of record.sessions.values()) session.dispose();
+        for (const session of record.sessions.values()) { disposeSessionConnections(session); session.dispose(); }
         record.historySession?.dispose();
         record.management?.dispose();
       }
-      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), bookmarks.flush(), claudeToken.flush(), releaseNotesStore.flush(), closeUpdater, closeAppUpdates]);
+      await Promise.all([settingsStore.flush(), workspaceStore.flush(), workspaceState.flush(), notificationSettings.flush(), bookmarks.flush(), claudeToken.flush(), routerConnections.flush(), releaseNotesStore.flush(), closeUpdater, closeAppUpdates]);
       diagnostics.record('info', 'app.quit');
       await diagnostics.flush();
       settingsFlushed = true; app.quit();

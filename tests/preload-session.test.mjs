@@ -48,7 +48,7 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
   const b = bridge.forSession('b');
   await a.start({ cwd: 'project-a' });
   await b.request('turn/interrupt', { turnId: 'turn-b' });
-  await a.respond(1, { decision: 'accept' });
+  await a.respond(1, { decision: 'accept' }, { remember: true });
   await b.respond(1, { decision: 'decline' });
   await bridge.getSettings();
   await b.chooseDirectory();
@@ -75,8 +75,8 @@ test('preload scopes RPC and colliding approval IDs to the selected session', as
   assert.deepEqual(calls, [
     ['codex:start', { cwd: 'project-a' }, 'a'],
     ['codex:request', 'turn/interrupt', { turnId: 'turn-b' }, 'b'],
-    ['codex:respond', 1, { decision: 'accept' }, 'a'],
-    ['codex:respond', 1, { decision: 'decline' }, 'b'],
+    ['codex:respond', 1, { decision: 'accept' }, { remember: true }, 'a'],
+    ['codex:respond', 1, { decision: 'decline' }, undefined, 'b'],
     ['host:getSettings', undefined],
     ['host:chooseDirectory', 'b'],
     ['host:openPath', 'src/first.ts:12', 'a'],

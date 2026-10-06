@@ -9,7 +9,7 @@ import os from 'node:os';
 import { CodexClient } from '../electron/codex-client.mjs';
 import { createDiagnostics } from '../electron/diagnostics.mjs';
 
-function harness({ onRequest, requestTimeoutMs = 200, initialize = true, userAgent = 'test-server', diagnostics, diagnosticContext } = {}) {
+function harness({ onRequest, requestTimeoutMs = 200, initialize = true, userAgent = 'test-server', diagnostics, diagnosticContext, ...clientOptions } = {}) {
   const processes = [];
   const frames = [];
   const spawns = [];
@@ -33,7 +33,7 @@ function harness({ onRequest, requestTimeoutMs = 200, initialize = true, userAge
     processes.push(child);
     return child;
   };
-  const client = new CodexClient({ executable: 'codex.exe', cwd: 'C:/project with spaces', spawnImpl, requestTimeoutMs, diagnostics, diagnosticContext });
+  const client = new CodexClient({ executable: 'codex.exe', cwd: 'C:/project with spaces', spawnImpl, requestTimeoutMs, diagnostics, diagnosticContext, ...clientOptions });
   return { client, frames, spawns, processes, get child() { return processes.at(-1); } };
 }
 
@@ -53,6 +53,72 @@ test('startup is shared and initializes before ready using a hidden shell-free p
   assert.deepEqual(h.frames[0].params.clientInfo, { name: 'codex_desk', title: 'Codex Desk', version: '0.1.0' });
   assert.equal(h.frames[0].params.capabilities.experimentalApi, true);
   assert.deepEqual(states, ['starting', 'ready']);
+});
+
+test('source overrides use complete snapshotted env and separate CLI arguments without credentials', async t => {
+  const env = { PRIVATE_ROUTER_TOKEN: 'fixture-token-only', PATH: 'fixture-path' };
+  const configOverrides = ['model_provider="test_profile"', 'model_providers.test_profile={name="Private",wire_api="responses",env_key="PRIVATE_ROUTER_TOKEN"}'];
+  const h = harness({ env, configOverrides });
+  t.after(() => h.client.stop());
+  env.PRIVATE_ROUTER_TOKEN = 'changed-after-construction'; configOverrides.push('untrusted=1');
+  await h.client.start();
+  assert.deepEqual(h.spawns[0][2].env, { PRIVATE_ROUTER_TOKEN: 'fixture-token-only', PATH: 'fixture-path' });
+  assert.deepEqual(h.spawns[0][1].slice(3), ['-c', 'model_provider="test_profile"', '-c', 'model_providers.test_profile={name="Private",wire_api="responses",env_key="PRIVATE_ROUTER_TOKEN"}']);
+  assert.ok(!h.spawns[0][1].join(' ').includes('fixture-token-only'));
+  assert.equal(h.frames.some(frame => frame.method === 'turn/start'), false);
+  for (const bad of [null, [], 'env']) assert.throws(() => new CodexClient({ env: bad }), TypeError);
+  for (const bad of ['not-array', [undefined], ['key=1\nsecret=1'], ['']]) assert.throws(() => new CodexClient({ configOverrides: bad }), TypeError);
+});
+
+test('stopAndWait awaits all live processes even after stop and a later restart', async () => {
+  const h = harness();
+  await h.client.start();
+  const first = h.child;
+  h.client.stop();
+  await h.client.start();
+  const second = h.child;
+  let stopped = false;
+  const waiting = h.client.stopAndWait(300).then(() => { stopped = true; });
+  await Promise.resolve();
+  assert.equal(first.killed, true); assert.equal(second.killed, true);
+  assert.equal(stopped, false);
+  second.emit('exit', 0, null);
+  await Promise.resolve();
+  assert.equal(stopped, false, 'older native process must release its writer too');
+  first.emit('close', 0, null);
+  await waiting;
+  assert.equal(h.client.children.size, 0);
+});
+
+test('stopAndWait cleans timeout listeners, retains a live process and succeeds after actual exit', async () => {
+  const h = harness();
+  await h.client.start();
+  const counts = ['exit', 'close', 'error'].map(event => h.child.listenerCount(event));
+  await assert.rejects(h.client.stopAndWait(15), /завершает/);
+  assert.deepEqual(['exit', 'close', 'error'].map(event => h.child.listenerCount(event)), counts);
+  assert.equal(h.client.children.size, 1);
+  const waiting = h.client.stopAndWait(100);
+  h.child.emit('exit', 0, null);
+  await waiting;
+  assert.equal(h.client.children.size, 0);
+  for (const timeout of [0, -1, Infinity, NaN]) await assert.rejects(h.client.stopAndWait(timeout), TypeError);
+});
+
+test('stopAndWait handles synchronous exit and a spawn error without process ID', async () => {
+  const h = harness();
+  await h.client.start();
+  h.child.kill = () => { if (!h.child.killed) { h.child.killed = true; h.child.emit('exit', 0, null); } return true; };
+  await h.client.stopAndWait(50);
+  assert.equal(h.client.children.size, 0);
+  const failing = harness({ initialize: false });
+  const started = failing.client.start();
+  await Promise.resolve();
+  const rejected = assert.rejects(started, /fixture spawn failure|Codex was stopped/);
+  const waiting = failing.client.stopAndWait(100);
+  failing.child.emit('error', new Error('fixture spawn failure'));
+  await waiting;
+  await rejected;
+  assert.equal(failing.client.children.size, 0);
 });
 
 test('JSONL framing preserves split UTF-8 and multiple notifications per chunk', async (t) => {

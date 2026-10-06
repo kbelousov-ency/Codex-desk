@@ -1,0 +1,22 @@
+.approval-rules-settings{min-width:0;padding:19px 0;color:#b8c8bc}
+.approval-rules-settings h3{display:flex;gap:9px;align-items:center;margin:0 0 13px;font-size:13px;font-weight:550;color:#d3e0d6}
+.approval-rules-description{margin:0 0 12px;font-size:11px;line-height:1.8;color:#94aa9b}
+.approval-rules-project{margin:0 0 16px;font-size:10px;color:#8aa293;overflow-wrap:anywhere}
+.approval-rules-settings code{font-size:10px;overflow-wrap:anywhere;color:#bbd0c1;font-family:'Cascadia Code',Consolas,monospace}
+.approval-rules-loading{display:flex;gap:8px;align-items:center;font-size:11px;margin:14px 0;color:#9db2a4}
+.approval-rules-empty{padding:14px;border:1px dashed #46594c;border-radius:8px;font-size:11px;line-height:1.8;color:#94aa9b;margin:0}
+.approval-rules-groups{display:grid;gap:13px}
+.approval-rules-group{min-width:0;border:1px solid #3a5041;border-radius:9px;padding:14px 16px;background:#19261d}
+.approval-rules-group-title strong{display:block;font-size:12px;color:#d3e2d8;font-weight:550}
+.approval-rules-group-title>span{display:block;font-size:10px;line-height:1.7;color:#8aa293;margin-top:4px}
+.approval-rules-group ul{list-style:none;margin:11px 0 0;padding:0;display:grid;gap:6px}
+.approval-rules-group li{display:flex;align-items:center;gap:10px;min-width:0;padding:8px 10px;border:1px solid #344b3b;border-radius:6px;background:#17221a}
+.approval-rules-group li>code{flex:1;min-width:0;line-height:1.7}
+.approval-rules-error{display:flex;align-items:flex-start;gap:8px;color:#edb99b;font-size:11px;line-height:1.8;margin:12px 0;overflow-wrap:anywhere}
+.approval-rules-error>svg{flex-shrink:0;margin-top:3px}
+.approval-rules-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:15px}
+.approval-rules-actions button:focus-visible,.approval-rules-group button:focus-visible{outline:2px solid #a4c8b0;outline-offset:3px}
+
+/* The rule a card would save, printed on the card itself before the user agrees to it. */
+.approval-rule{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px;font-size:10px;color:#a9ad87}
+.approval-rule>code{background:#1b2018;border:1px solid #434b35;border-radius:5px;padding:5px 8px;font:10px/1.6 Consolas,monospace;color:#c8d4af;overflow-wrap:anywhere}
