@@ -1,5 +1,11 @@
 # Release и Nightly
 
+## Публичный Release 0.10.0 — 2026-10-06
+
+Проверенный Nightly с build ID `70aa4e37d064651a4ad5a58c6dadac81b4a1923a5949dce5fbd2faacb3f82747` перенесён штатным `release:promote` в `release/stable` без перекомпиляции. В выпуск вошли источники аккаунт/роутер, подключение Claude через портал, правила доступа и сохранение вложенных `http_headers` Codex-провайдера в `config.toml`.
+
+Установщик `Codex-Desk-Setup-0.10.0.exe`: 100966085 байт, SHA-256 `c332b95359c363185cbcbde35d5b13113db12a823b729f31ffeafade7ca7efe2`. GitHub Release `v0.10.0` опубликован как Latest; исходники отправлены в `origin/main` коммитом `5f0c302`, тег `v0.10.0` указывает на него. Gerrit remote в текущем checkout не настроен.
+
 ## Роутерная модель GPT-6.1-Sol — Nightly 0.10.0, 2026-10-06
 
 Read-only `GET /v1/models` роутера подтвердил внешний ID `cx/gpt-6.1-sol`. Установленный Codex 0.156.1 пока не включает модель в `model/list`, поэтому для источника «Роутер» добавлен RPC-идентификатор `gpt-6.1-sol` с поддержанными effort `low/medium/high/xhigh/max/ultra`; личный и унаследованный источники не получают эту запись.
