@@ -6,6 +6,37 @@ import { ClaudeClient, CLAUDE_CAPABILITIES } from './claude-client.mjs';
 import { directoryPath, findCodex, findClaude, publicConfig } from './host-utils.mjs';
 import { launchSessionTerminal } from './terminal-launcher.mjs';
 import { findAcceptedMessage, uncertainDelivery } from './message-status.mjs';
+import { claudeConnectionProfile } from './connection-source.mjs';
+import { validateCodexConnectionConfig } from './codex-connections.mjs';
+import { decideApproval, isRuledRequest, ruleSubject } from './approval-rules.mjs';
+
+/** File-change items kept so a rule can see WHICH paths an approval is about: Codex sends the changed
+ * paths on the item and the approval carries only its id. Bounded, because a long thread keeps producing
+ * them and only the newest can still be under review. */
+const MAX_TRACKED_ITEMS = 256;
+
+// The router exposed cx/gpt-6.1-sol before the installed Codex CLI added it to
+// model/list. App Server model IDs omit the cx/ provider prefix (as with
+// gpt-6-sol), so expose this verified router-only alias until the native catalog catches up.
+const ROUTER_SUPPLEMENTAL_MODELS = [{
+  id: 'gpt-6.1-sol', model: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol',
+  description: 'Workhorse model for coding and everyday work.', hidden: false,
+  supportedReasoningEfforts: [
+    ['low', 'Fast responses with lighter reasoning'],
+    ['medium', 'Balances speed and reasoning depth for everyday tasks'],
+    ['high', 'Greater reasoning depth for complex problems'],
+    ['xhigh', 'Extra high reasoning depth for complex problems'],
+    ['max', 'Maximum reasoning for the hardest problems'],
+    ['ultra', 'Maximum reasoning with automatic task delegation'],
+  ].map(([reasoningEffort, description]) => ({ reasoningEffort, description })),
+  defaultReasoningEffort: 'medium', inputModalities: ['text', 'image'], isDefault: false,
+}];
+
+function augmentRouterModels(models, provider, source) {
+  if (provider !== 'codex' || source !== 'router') return models;
+  const known = new Set(models.map(model => model.model));
+  return [...models, ...ROUTER_SUPPLEMENTAL_MODELS.filter(model => !known.has(model.model))];
+}
 
 const allowedMethods = new Set(['thread/start', 'thread/resume', 'thread/fork', 'thread/read', 'thread/list', 'thread/items/list', 'thread/turns/list', 'thread/name/set', 'thread/compact/start', 'turn/start', 'turn/interrupt', 'turn/steer', 'model/list', 'account/read', 'config/read', 'usage/read', 'agent/capabilities']);
 const projectMethods = new Set(['thread/start', 'thread/resume', 'thread/fork', 'thread/list', 'turn/start', 'config/read']);
@@ -20,6 +51,7 @@ export function cleanSettings(patch) {
     if (typeof patch?.[key] === 'string' && patch[key].length < 4096) clean[key] = patch[key];
   }
   if (patch?.provider === 'codex' || patch?.provider === 'claude') clean.provider = patch.provider;
+  if (['inherited', 'account', 'router'].includes(patch?.connectionSource)) clean.connectionSource = patch.connectionSource;
   return clean;
 }
 
@@ -147,10 +179,18 @@ export class WindowSession {
     createClient = options => new CodexClient(options), resolveDirectory = directoryPath,
     resolveExecutable = findCodex, fallbackCwd = process.cwd(), launchTerminal = launchSessionTerminal, threadActions = null,
     diagnostics = null, diagnosticContext = {}, createClaudeClient = options => new ClaudeClient(options), resolveClaudeExecutable = findClaude, attachmentsDirectory, claudeHistory, claudeAuth = null,
-    claudeEnvironment = async () => ({}), claudeGate = null } = {}) {
+    claudeEnvironment = async () => ({}), claudeGate = null, codexEnvironment = async () => ({}),
+    approvalCatalog = null } = {}) {
     this.settings = cleanSettings(settings);
+    // Standing approvals the user already agreed to; null simply means every card still stands.
+    this.approvalCatalog = approvalCatalog;
     // Host-managed variables for Claude CLI processes (long-lived OAuth token) and the shared start gate.
     this.claudeEnvironment = claudeEnvironment;
+    this.codexEnvironment = codexEnvironment;
+    this.connectionProfile = null;
+    this.preparedConnectionProfile = null;
+    this.switchingSource = false;
+    this.sourceStoppingClient = null;
     this.claudeGate = claudeGate;
     this.persistSettings = persistSettings;
     this.send = send;
@@ -183,6 +223,7 @@ export class WindowSession {
     this.bootstrap = null;
     this.executable = null;
     this.requests = new Map();
+    this.trackedItems = new Map();
     this.bootQueue = Promise.resolve();
     this.generation = 0;
     this.disposed = false;
@@ -194,6 +235,7 @@ export class WindowSession {
 
   assertLocalControl() {
     this.claudeAuth?.assertLocalControl(this);
+    if (this.switchingSource) throw new Error('Дождитесь переключения источника подключения.');
     if (this.terminal) throw new Error('Диалог открыт в терминале. Закройте терминал, чтобы продолжить здесь.');
     if (this.mcpRefreshing) throw new Error('Дождитесь обновления MCP-серверов.');
   }
@@ -208,8 +250,51 @@ export class WindowSession {
     this.assertLocalControl();
     const clean = cleanSettings(patch);
     if (clean.provider && clean.provider !== (this.settings.provider || 'codex')) throw new Error('Смена агента открывает отдельный диалог.');
+    if (patch?.connectionSource !== undefined && !['inherited', 'account', 'router'].includes(patch.connectionSource)) throw new Error('Неизвестный источник подключения.');
+    if (clean.connectionSource && clean.connectionSource !== (this.settings.connectionSource || 'inherited')) {
+      if (this.pendingBoots || this.pendingMutations || this.requests.size || this.activeThreadTurns.size || this.compactingThreads.size) throw new Error('Дождитесь завершения работы и подтверждений перед переключением источника.');
+      this.threadActions?.assertAllowed(this.currentThreadId);
+      // Reserve synchronously so a queued send cannot race with environment validation.
+      this.switchingSource = true;
+      return this._switchConnectionSource(clean);
+    }
     this.settings = { ...this.settings, ...clean };
     return this.persistSettings(clean);
+  }
+
+  async _connectionProfile(settings) {
+    if (settings.provider === 'claude') return claudeConnectionProfile(await this.claudeEnvironment({ ...settings }));
+    const profile = await this.codexEnvironment({ ...settings });
+    return profile && typeof profile === 'object' && !Array.isArray(profile) ? profile : {};
+  }
+
+  async _switchConnectionSource(clean) {
+    const generation = this.generation;
+    const next = { ...this.settings, ...clean };
+    let detached = false;
+    try {
+      // Validate credentials before detaching the working process; no model request is made.
+      const profile = await this._connectionProfile(next);
+      this.assertActive(generation);
+      const previous = this.sourceStoppingClient || this.client;
+      if (previous && typeof previous.stopAndWait !== 'function') throw new Error('Текущий агент не поддерживает безопасное переключение источника.');
+      this.sourceStoppingClient = previous;
+      this.client = null; this.bootstrap = null;
+      detached = true;
+      if (previous) await previous.stopAndWait();
+      this.assertActive(generation);
+      this.sourceStoppingClient = null;
+      await this.persistSettings(clean);
+      this.assertActive(generation);
+      this.settings = next;
+      this.connectionProfile = null;
+      this.preparedConnectionProfile = { provider: next.provider || 'codex', source: next.connectionSource, cwd: next.cwd, executable: next.executable, profile };
+    } catch (error) {
+      // Old-client events are intentionally ignored after detaching it. Surface
+      // a failed shutdown/save so the renderer cannot keep a stale ready state.
+      if (detached && !this.disposed && generation === this.generation) this.send('status', { state: 'error', message: 'Не удалось переключить источник подключения. Переподключите диалог и повторите.' });
+      throw error;
+    } finally { this.switchingSource = false; }
   }
 
   start(options = {}) {
@@ -235,17 +320,22 @@ export class WindowSession {
     // A normal start reuses the live bootstrap, but an explicit reconnect may
     // need to reread a model catalog that changed in the provider/router.
     if (this.bootstrap && this.client && this.currentCwd === cwd && this.executable === nextExecutable && !options.refreshModels) return this.bootstrap;
-    let claudeEnv = {};
-    if (provider === 'claude') {
-      claudeEnv = await this.claudeEnvironment();
+    if (this.sourceStoppingClient) {
+      await this.sourceStoppingClient.stopAndWait();
       this.assertActive(generation);
-      if (!claudeEnv || typeof claudeEnv !== 'object') claudeEnv = {};
+      this.sourceStoppingClient = null;
     }
+    const prepared = this.preparedConnectionProfile;
+    const connection = prepared && prepared.provider === provider && prepared.source === this.settings.connectionSource && prepared.cwd === this.settings.cwd && prepared.executable === this.settings.executable
+      ? prepared.profile : await this._connectionProfile(this.settings);
+    this.assertActive(generation);
+    this.preparedConnectionProfile = null;
     const previous = this.client;
     this.mcpConfigService?.dispose(); this.mcpConfigService = null;
     this.client = null;
     previous?.stop();
     this.requests.clear();
+    this.trackedItems.clear();
     this.activeThreadTurns.clear();
     this.compactingThreads.clear();
     this.compactingTurnIds.clear();
@@ -254,7 +344,8 @@ export class WindowSession {
     this.settings = { ...this.settings, cwd };
     this.executable = nextExecutable;
     this.onCwd(cwd);
-    const owned = (provider === 'claude' ? this.createClaudeClient : this.createClient)({ executable: nextExecutable, cwd, ...(provider === 'claude' ? { settings: this.settings, attachmentsDirectory: this.attachmentsDirectory, history: this.claudeHistory, ...(Object.keys(claudeEnv).length ? { env: claudeEnv } : {}) } : {}), ...(this.diagnostics ? {
+    this.connectionProfile = connection;
+    const owned = (provider === 'claude' ? this.createClaudeClient : this.createClient)({ executable: nextExecutable, cwd, ...(provider === 'claude' ? { settings: this.settings, attachmentsDirectory: this.attachmentsDirectory, history: this.claudeHistory, ...connection } : { ...(connection.env ? { env: connection.env } : {}), ...(connection.configOverrides ? { configOverrides: connection.configOverrides } : {}) }), ...(this.diagnostics ? {
       diagnostics: this.diagnostics, diagnosticContext: { ...this.diagnosticContext, projectId: this.diagnostics.id(cwd) },
     } : {}) });
     this.client = owned;
@@ -274,7 +365,15 @@ export class WindowSession {
           const { threadId, clientUserMessageId, ...receipt } = data.params;
           this.rememberMessage(threadId, clientUserMessageId, receipt);
         }
-        if (event === 'serverRequest') this.requests.set(data.id, data);
+        if (event === 'notification' && ['item/started', 'item/completed'].includes(data.method)
+          && data.params?.item?.type === 'fileChange') {
+          this.rememberItem(data.params.threadId, data.params.item);
+        }
+        if (event === 'serverRequest') {
+          if (this.answerFromRules(owned, data)) return;
+          this.annotateRequest(data);
+          this.requests.set(data.id, data);
+        }
         if (event === 'notification' && data.method === 'serverRequest/resolved') this.requests.delete(data.params?.requestId);
         if (event === 'notification' && data.method === 'thread/started' && data.params?.thread?.id) {
           this.currentThreadId = data.params.thread.id;
@@ -298,6 +397,7 @@ export class WindowSession {
           this.client = null;
           this.bootstrap = null;
           this.requests.clear();
+          this.trackedItems.clear();
           this.activeThreadTurns.clear();
           this.compactingThreads.clear();
           this.compactingTurnIds.clear();
@@ -309,6 +409,12 @@ export class WindowSession {
       // Claude processes sharing one credentials file start one at a time, so an expired OAuth token is refreshed once.
       const initialize = provider === 'claude' && this.claudeGate ? await this.claudeGate.run(() => owned.start()) : await owned.start();
       checkCurrent();
+      let validatedConfig;
+      if (provider !== 'claude' && ['account', 'router'].includes(this.settings.connectionSource)) {
+        validatedConfig = await owned.request('config/read', { cwd, includeLayers: false });
+        checkCurrent();
+        validateCodexConnectionConfig(validatedConfig.config, connection);
+      }
       const models = [];
       let cursor;
       do {
@@ -319,13 +425,17 @@ export class WindowSession {
       } while (cursor);
       const [account, configResponse] = await Promise.all([
         owned.request('account/read', { refreshToken: false }),
-        owned.request('config/read', { cwd, includeLayers: false }),
+        validatedConfig || owned.request('config/read', { cwd, includeLayers: false }),
       ]);
       checkCurrent();
+      const routerSource = this.settings.connectionSource === 'router'
+        || connection?.modelProvider === 'router'
+        || configResponse.config?.model_provider === 'router';
+      const visibleModels = augmentRouterModels(models, provider, routerSource ? 'router' : this.settings.connectionSource);
       await this.setSettings({ cwd });
       checkCurrent();
       const cliVersion = provider === 'claude' ? (typeof initialize?.version === 'string' ? initialize.version : undefined) : codexVersionFrom(initialize?.userAgent);
-      this.bootstrap = { initialize, models, account, config: publicConfig(configResponse.config), cwd, executable: nextExecutable, provider, ...(cliVersion ? { cliVersion } : {}),
+      this.bootstrap = { initialize, models: visibleModels, account, config: publicConfig(configResponse.config), cwd, executable: nextExecutable, provider, ...(cliVersion ? { cliVersion } : {}),
         capabilities: provider === 'claude' ? { ...CLAUDE_CAPABILITIES } : { compact: true, steer: true, terminal: true, mcp: true, archive: true, usage: false } };
       return this.bootstrap;
     } catch (error) {
@@ -334,6 +444,7 @@ export class WindowSession {
         this.client = null;
         this.bootstrap = null;
         this.requests.clear();
+        this.trackedItems.clear();
       }
       owned.stop();
       if (failedCurrent && !this.disposed && generation === this.generation) this.send('status', { state: 'error', message: error.message });
@@ -343,6 +454,7 @@ export class WindowSession {
 
   async request(method, params = {}) {
     this.assertActive();
+    if (this.switchingSource) throw new Error('Дождитесь переключения источника подключения.');
     if (!allowedMethods.has(method)) throw new Error('Этот метод недоступен в Codex Desk.');
     if (params.threadId && (this.settings.provider === 'claude') !== String(params.threadId).startsWith('claude:')) throw new Error('Диалог принадлежит другому агенту.');
     const mutation = !readOnlyMethods.has(method);
@@ -368,6 +480,7 @@ export class WindowSession {
     }
     // Project operations and history remain bound to this tab's working folder.
     if (projectMethods.has(method)) params = { ...params, cwd: this.currentCwd };
+    if (this.settings.provider !== 'claude' && this.connectionProfile?.modelProvider && ['thread/start', 'thread/resume', 'thread/fork'].includes(method)) params = { ...params, modelProvider: this.connectionProfile.modelProvider };
     if (mutation) {
       this.pendingMutations++;
       if (params.threadId) this.pendingThreadIds.set(params.threadId, (this.pendingThreadIds.get(params.threadId) || 0) + 1);
@@ -408,13 +521,112 @@ export class WindowSession {
     if (this.messageReceipts.size > 1000) this.messageReceipts.delete(this.messageReceipts.keys().next().value);
   }
 
-  async respond(id, result) {
+  /** Keep a file-change item, because its approval names only an id and a rule has to see the paths. */
+  rememberItem(threadId, item) {
+    if (!threadId || !item?.id) return;
+    this.trackedItems.set(`${threadId}:${item.id}`, { changes: item.changes });
+    if (this.trackedItems.size > MAX_TRACKED_ITEMS) {
+      this.trackedItems.delete(this.trackedItems.keys().next().value);
+    }
+  }
+
+  /**
+   * Answer one approval request from the user's rules, instead of showing it. Returns true when it was
+   * answered, so the caller neither records the request nor lets it reach the window.
+   *
+   * Only the `rules` access mode consults rules at all, and only for Codex: the Claude tab has its own
+   * permission system, and the other three modes mean exactly what their labels say. Everything is decided
+   * synchronously — the catalog is a small file read on the spot — so a request is never held in limbo
+   * between the two paths.
+   *
+   * A failure to write the answer back is NOT swallowed into silence: the request is handed to the window
+   * the ordinary way, so the user still sees a card rather than a turn that waits forever.
+   */
+  answerFromRules(client, request) {
+    if (this.settings.access !== 'rules' || this.settings.provider === 'claude') return false;
+    if (!isRuledRequest(request.method) || !this.currentCwd) return false;
+    const { threadId, itemId } = request.params ?? {};
+    if (threadId && this.currentThreadId && threadId !== this.currentThreadId) return false;
+    const decision = decideApproval({
+      method: request.method,
+      params: request.params ?? {},
+      cwd: this.currentCwd,
+      catalog: this.approvalCatalog,
+      item: itemId ? this.trackedItems.get(`${threadId}:${itemId}`) ?? null : null,
+    });
+    if (!decision) return false;
+    client.respond(request.id, decision.result).catch(() => {
+      if (this.client !== client || this.requests.has(request.id)) return;
+      this.requests.set(request.id, request);
+      this.send('serverRequest', request);
+    });
+    // An automatic answer is never silent: the work log says what was allowed and which rule allowed it.
+    this.send('notification', {
+      method: 'approval/autoDecided',
+      params: { threadId, turnId: request.params?.turnId, itemId, method: request.method, reason: decision.reason },
+    });
+    // content-free: the method only, never the command, the paths or the host the rule matched
+    this.diagnostics?.record('info', 'approval.auto', { ...this.diagnosticContext, method: request.method });
+    return true;
+  }
+
+  /**
+   * Work out what pressing «Разрешить и запомнить» on this card would save, and put it on the request so the
+   * card can PRINT it. A button whose consequence is invisible is how a tool-wide grant silences whole
+   * toolsets unnoticed; the user has to read the rule before agreeing to it.
+   *
+   * Only the rules mode offers it, because only that mode ever consults the catalog — in the other three a
+   * saved rule would be a promise the shell does not keep. A network escalation yields BOTH halves, since
+   * neither alone would let the same call through again.
+   */
+  annotateRequest(request) {
+    if (this.settings.access !== 'rules' || this.settings.provider === 'claude' || !this.approvalCatalog) return;
+    const { threadId, itemId } = request.params ?? {};
+    const subject = ruleSubject({
+      method: request.method,
+      params: request.params ?? {},
+      item: itemId ? this.trackedItems.get(`${threadId}:${itemId}`) ?? null : null,
+    });
+    if (!subject || !this.currentCwd) return;
+    try {
+      const rules = [
+        ...this.approvalCatalog.derive(this.currentCwd, subject.kind, subject),
+        ...(subject.host ? this.approvalCatalog.derive(this.currentCwd, 'host', subject) : []),
+      ];
+      // Both halves of a network escalation or nothing: a lone host rule still would not answer this call.
+      if (rules.length && (!subject.host || rules.some(([kind]) => kind === 'hosts'))) request.rules = rules;
+    } catch { /* a card that cannot offer a rule is still a perfectly good card */ }
+  }
+
+  /** The standing rules in force for this tab's project, in the order a drop-by-number counts in. */
+  listApprovalRules() {
+    this.assertActive();
+    const cwd = this.currentCwd ?? '';
+    if (!this.approvalCatalog || !cwd) return { cwd, rules: [] };
+    return { cwd, rules: this.approvalCatalog.listing(cwd).map(([kind, value]) => ({ kind, value })) };
+  }
+
+  /** Revoke one rule. Revocation is never blocked by a busy tab: taking a permission back must always work. */
+  async dropApprovalRule(number) {
+    this.assertActive();
+    if (!this.approvalCatalog || !this.currentCwd) throw new Error('Правила подтверждения недоступны.');
+    const removed = await this.approvalCatalog.drop(this.currentCwd, number);
+    if (removed === null) throw new Error('Правило уже удалено. Обновите список.');
+    return this.listApprovalRules();
+  }
+
+  async respond(id, result, options = {}) {
     this.assertActive();
     this.assertLocalControl();
     this.threadActions?.assertAllowed(this.currentThreadId);
     if (!this.client || !this.requests.has(id)) throw new Error('Запрос уже завершён.');
+    const request = this.requests.get(id);
     this.requests.delete(id);
     await this.client.respond(id, result);
+    // Saved only after the answer actually reached Codex, and only the rules the card showed.
+    if (options?.remember && request?.rules?.length) {
+      await this.approvalCatalog?.add(this.currentCwd, request.rules);
+    }
   }
 
   async mcpRuntime(check = false) {
@@ -486,18 +698,24 @@ export class WindowSession {
       if (thread?.id !== threadId) throw new Error('Codex вернул другой диалог.');
       if (thread.cwd && path.resolve(thread.cwd).toLowerCase() !== path.resolve(cwd).toLowerCase()) throw new Error('Диалог находится в другой рабочей папке.');
       if (thread.status?.type === 'active' || thread.turns?.some(turn => turn.status === 'inProgress') || this.activeThreadTurns.has(threadId) || this.requests.size || this.pendingMutations) throw new Error('Дождитесь завершения работы и подтверждений Codex.');
-      let terminalEnv;
+      let terminalConnection;
       if (provider === 'claude') {
         // The interactive resume must authenticate the same way as the tab, otherwise it competes for the shared refresh token.
-        const extra = await this.claudeEnvironment();
+        const profile = this.connectionProfile || await this._connectionProfile(this.settings);
         this.assertActive(generation);
         if (this.terminal !== terminal || this.client !== owned) throw new Error('Подключение Codex изменилось.');
-        if (extra && typeof extra === 'object' && Object.keys(extra).length) terminalEnv = { ...process.env, ...extra };
+        terminalConnection = { ...(profile.env ? { env: profile.inheritEnv === false ? profile.env : { ...process.env, ...profile.env } } : {}), ...(profile.settingsOverrides ? { settingsOverrides: profile.settingsOverrides } : {}), ...(profile.settingsFile ? { settingsFile: profile.settingsFile } : {}) };
+      } else {
+        const profile = this.connectionProfile || await this._connectionProfile(this.settings);
+        this.assertActive(generation);
+        if (this.terminal !== terminal || this.client !== owned) throw new Error('Подключение Codex изменилось.');
+        terminalConnection = { ...(profile.env ? { env: profile.env } : {}), ...(profile.configOverrides ? { configOverrides: profile.configOverrides } : {}) };
       }
       terminal.paused = true;
       this.stop();
       const terminalGeneration = this.generation;
-      const child = this.launchTerminal({ executable, cwd, threadId, model, effort, access, ...(provider === 'claude' ? { provider } : {}), ...(terminalEnv ? { env: terminalEnv } : {}) });
+      const launched = this.launchTerminal({ executable, cwd, threadId, model, effort, access, ...(provider === 'claude' ? { provider } : {}), ...terminalConnection });
+      const child = launched && typeof launched.then === 'function' ? await launched : launched;
       terminal.child = child;
       return await new Promise((resolve, reject) => {
         let settled = false;
@@ -540,11 +758,18 @@ export class WindowSession {
     this.client = null;
     this.bootstrap = null;
     this.requests.clear();
+    this.trackedItems.clear();
     this.activeThreadTurns.clear();
     this.compactingThreads.clear();
     this.compactingTurnIds.clear();
     this.bootQueue = Promise.resolve();
     owned?.stop();
+  }
+
+  forceStop() {
+    const terminal = this.terminal;
+    if (terminal?.child && !terminal.child.killed) terminal.child.kill();
+    this.stop();
   }
 
   dispose() {

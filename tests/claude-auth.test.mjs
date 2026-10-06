@@ -1,9 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile, stat } from 'node:fs/promises';
 import { ClaudeAuthService, publicClaudeAuthStatus, readClaudeAuthStatus } from '../electron/claude-auth.mjs';
 import { WindowSession } from '../electron/window-session.mjs';
 import { buildClaudeAuthLaunch, launchClaudeAuthTerminal } from '../electron/terminal-launcher.mjs';
+import { buildClaudeConnectionProfile } from '../electron/connection-source.mjs';
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
@@ -230,4 +232,72 @@ test('disposed tabs get no late events and application dispose never kills login
   session.dispose(); const count = f.events.length;
   f.service.dispose(); f.children[0].emit('close', 0); await tick();
   assert.equal(f.service.active, null); assert.equal(f.events.length, count);
+});
+
+test('auth status applies its source profile through a temporary settings file and always removes it', async () => {
+  const secret = 'router-auth-status-secret';
+  const profile = buildClaudeConnectionProfile({ source: 'router', processEnv: { KEEP: 'yes' }, router: {
+    apiKey: secret, baseUrl: 'https://router.example.test/claude', authScheme: 'bearer',
+  } });
+  for (const fail of [false, true]) {
+    let filename;
+    const operation = readClaudeAuthStatus({ ...context, ...profile }, async (_executable, args, options) => {
+      assert.deepEqual(args.slice(-2), ['auth', 'status']);
+      assert.equal(args[0], '--settings');
+      filename = args[1];
+      assert.equal(args.some(value => value.includes(secret)), false);
+      assert.deepEqual(JSON.parse(await readFile(filename, 'utf8')), profile.settingsOverrides);
+      assert.equal(options.env.ANTHROPIC_AUTH_TOKEN, secret);
+      if (fail) throw { code: 2, stdout: secret, stderr: secret, message: secret };
+      return { stdout: JSON.stringify({ loggedIn: true, authMethod: 'api_key', email: secret }) };
+    });
+    if (fail) await assert.rejects(operation, error => !error.message.includes(secret));
+    else assert.deepEqual(await operation, { loggedIn: true, authMethod: 'api_key' });
+    await assert.rejects(stat(filename), { code: 'ENOENT' });
+  }
+});
+
+test('auth context uses tab settings and native login clears inherited and saved OAuth tokens', async () => {
+  const seen = [];
+  const profile = buildClaudeConnectionProfile({ source: 'account', processEnv: { ...context.env, CLAUDE_CODE_OAUTH_TOKEN: 'inherited-secret' }, accountEnv: { CLAUDE_CODE_OAUTH_TOKEN: 'saved-secret' } });
+  const service = new ClaudeAuthService({
+    getEnvironment: settings => { seen.push(settings.connectionSource); return profile; },
+    getLoginEnvironment: settings => { seen.push(`login:${settings.connectionSource}`); return profile; },
+  });
+  const session = new WindowSession({ settings: { provider: 'claude', connectionSource: 'account', cwd: context.cwd, executable: context.executable },
+    resolveDirectory: async value => value, resolveClaudeExecutable: async value => value });
+  const status = await service.context(session);
+  assert.equal(status.env.CLAUDE_CODE_OAUTH_TOKEN, 'saved-secret');
+  const login = await service.context(session, { login: true });
+  assert.equal(login.env.CLAUDE_CODE_OAUTH_TOKEN, '');
+  assert.equal(login.settingsOverrides.env.CLAUDE_CODE_OAUTH_TOKEN, '');
+  assert.equal(profile.env.CLAUDE_CODE_OAUTH_TOKEN, 'saved-secret', 'login must not alter account profile used by another tab');
+  assert.equal(profile.settingsOverrides.env.CLAUDE_CODE_OAUTH_TOKEN, 'saved-secret');
+  assert.deepEqual(seen, ['account', 'login:account']);
+});
+
+test('personal login ignores busy router tabs and never asks them to reconnect', async () => {
+  const f = fixture(), account = f.add(), router = f.add();
+  account.settings.connectionSource = 'account';
+  router.settings.connectionSource = 'router';
+  router.activeThreadTurns.set('router-thread', 'turn');
+  router.client = { stop: () => assert.fail('Router CLI must keep running during personal login') };
+  await f.service.login(account);
+  assert.doesNotThrow(() => router.assertLocalControl());
+  assert.equal((await f.service.status(router)).loginInProgress, false);
+  await assert.rejects(f.service.login(router), /источник «Аккаунт»/);
+  await assert.rejects(f.service.setupToken(router), /источник «Аккаунт»/);
+  f.children[0].emit('close', 0);
+  await tick();
+  assert.equal(f.events.some(event => event.session === router), false);
+  assert.equal(router.activeThreadTurns.size, 1);
+});
+
+test('auth service supports asynchronous launchers that prepare private settings before spawning', async () => {
+  const child = new EventEmitter(); child.unref = () => {};
+  const f = fixture({ launch: async () => { await tick(); setImmediate(() => child.emit('spawn')); return child; } });
+  const session = f.add();
+  assert.deepEqual(await f.service.login(session), { started: true });
+  child.emit('close', 0); await tick();
+  assert.equal(f.service.active, null);
 });

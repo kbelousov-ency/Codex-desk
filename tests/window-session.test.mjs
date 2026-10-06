@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SettingsStore, WorkspaceStore, WindowSession, sessionForEvent, windowForEvent } from '../electron/window-session.mjs';
+import { cleanSettings, SettingsStore, WorkspaceStore, WindowSession, sessionForEvent, windowForEvent } from '../electron/window-session.mjs';
 
 const deferred = () => {
   let resolve;
@@ -32,7 +32,7 @@ class FakeClient extends EventEmitter {
     this.calls.push({ method, params });
     if (method === 'model/list') return Promise.resolve({ data: [{ model: 'configured-model' }], nextCursor: null });
     if (method === 'account/read') return Promise.resolve({ account: null, requiresOpenaiAuth: false });
-    if (method === 'config/read') return Promise.resolve({ config: { model: 'configured-model', model_reasoning_effort: 'high', secret: 'hidden' }, layers: ['private'], origins: { secret: true } });
+    if (method === 'config/read') return Promise.resolve({ config: { model: 'configured-model', model_reasoning_effort: 'high', ...(this.options.modelProvider ? { model_provider: this.options.modelProvider } : {}), secret: 'hidden' }, layers: ['private'], origins: { secret: true } });
     if (method === 'turn/start') return this.turn.promise;
     if (method === 'turn/interrupt') this.turn.resolve({ interrupted: true });
     return Promise.resolve({ method, cwd: this.options.cwd });
@@ -56,6 +56,165 @@ function fixture(settings = {}, overrides = {}) {
   });
   return { session, clients, events, persisted };
 }
+
+function sourceFixture({ provider = 'claude', resolveProfile, stopWait } = {}) {
+  const clients = [], resolved = [], persisted = [], events = [];
+  const resolver = async settings => {
+    resolved.push({ ...settings });
+    if (resolveProfile) return resolveProfile(settings);
+    return { env: { SELECTED: settings.connectionSource || 'inherited', SECRET: 'host-secret' }, inheritEnv: false,
+      ...(provider === 'claude' ? { settingsOverrides: { env: { SOURCE: settings.connectionSource || 'inherited' } } } : { configOverrides: ['model_provider="codex_desk_router"'], modelProvider: settings.connectionSource === 'account' ? 'openai' : 'codex_desk_router' }) };
+  };
+  const create = options => {
+    const client = new FakeClient(options);
+    const request = client.request.bind(client);
+    client.request = (method, params) => {
+      if (['thread/resume', 'thread/start'].includes(method)) { client.calls.push({ method, params }); return Promise.resolve({ thread: { id: params.threadId || `${provider === 'claude' ? 'claude:' : ''}${terminalThreadId}`, status: { type: 'idle' }, turns: [] } }); }
+      return request(method, params);
+    };
+    client.stopAndWait = async () => { client.stop(); if (stopWait) await stopWait(); };
+    clients.push(client); return client;
+  };
+  const session = new WindowSession({ settings: { provider, cwd: 'project-a', executable: 'agent-cli', model: 'keep-model', effort: 'high', connectionSource: 'account' },
+    resolveDirectory: async value => value, resolveExecutable: async value => value, resolveClaudeExecutable: async value => value,
+    claudeEnvironment: resolver, codexEnvironment: resolver, createClaudeClient: create, createClient: create, persistSettings: async patch => persisted.push(patch), send: (type, data) => events.push({ type, data }) });
+  return { session, clients, resolved, persisted, events };
+}
+
+test('source setting persists only the source enum and complete profiles stay inside the host', async () => {
+  assert.deepEqual(cleanSettings({ connectionSource: 'router', apiKey: 'secret', env: { TOKEN: 'secret' } }), { connectionSource: 'router' });
+  assert.deepEqual(cleanSettings({ connectionSource: 'other' }), {});
+  const f = sourceFixture();
+  const boot = await f.session.start();
+  assert.equal(f.clients[0].options.inheritEnv, false);
+  assert.equal(f.clients[0].options.env.SECRET, 'host-secret');
+  assert.ok(!JSON.stringify(boot).includes('host-secret'));
+  assert.equal(f.resolved[0].connectionSource, 'account');
+  assert.throws(() => f.session.setSettings({ connectionSource: 'other' }), /источник/);
+});
+
+test('switching source reserves the session, waits for process exit and resumes the same Claude UUID without a model turn', async () => {
+  const exiting = deferred();
+  const f = sourceFixture({ stopWait: () => exiting.promise });
+  await f.session.start();
+  const id = `claude:${terminalThreadId}`;
+  await f.session.request('thread/resume', { threadId: id });
+  const switched = f.session.setSettings({ connectionSource: 'router' });
+  assert.throws(() => f.session.start(), /переключения/);
+  assert.throws(() => f.session.setSettings({ model: 'racing-model' }), /переключения/);
+  await assert.rejects(f.session.request('turn/start', { threadId: id }), /переключения/);
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(f.clients.length, 1);
+  assert.equal(f.session.settings.connectionSource, 'account');
+  exiting.resolve();
+  await switched;
+  assert.equal(f.session.currentThreadId, id);
+  assert.equal(f.session.settings.model, 'keep-model');
+  assert.equal(f.session.bootstrap, null);
+  await assert.rejects(f.session.request('turn/start', { threadId: id }), /Нет подключения/);
+  await f.session.start();
+  await f.session.request('thread/resume', { threadId: id });
+  assert.equal(f.clients[1].options.env.SELECTED, 'router');
+  assert.equal(f.clients[1].calls.at(-1).params.threadId, id);
+  assert.deepEqual(f.resolved.map(settings => settings.connectionSource), ['account', 'router'], 'validated profile reused for reconnect');
+  assert.equal(f.clients.flatMap(client => client.calls).some(call => call.method === 'turn/start'), false);
+});
+
+test('missing source credentials preserve the previous live client and source', async () => {
+  const f = sourceFixture({ resolveProfile: settings => { if (settings.connectionSource === 'router') throw new Error('Подключите роутер'); return {}; } });
+  await f.session.start();
+  const previous = f.session.client;
+  await assert.rejects(f.session.setSettings({ connectionSource: 'router' }), /Подключите роутер/);
+  assert.strictEqual(f.session.client, previous);
+  assert.equal(previous.stops, 0);
+  assert.equal(f.session.settings.connectionSource, 'account');
+  assert.equal(f.session.switchingSource, false);
+  assert.equal(f.events.some(event => event.type === 'status' && event.data.state === 'error'), false, 'preflight failure leaves a genuinely ready connection');
+});
+
+test('source changes cannot interrupt native work, approvals, boots, compaction or a terminal', async () => {
+  for (const block of ['pendingBoots', 'pendingMutations', 'requests', 'activeThreadTurns', 'compactingThreads', 'terminal']) {
+    const f = sourceFixture();
+    await f.session.start();
+    if (block === 'requests' || block === 'activeThreadTurns') f.session[block].set('busy', 'request');
+    else if (block === 'compactingThreads') f.session[block].add('busy');
+    else f.session[block] = block === 'terminal' ? {} : 1;
+    assert.throws(() => f.session.setSettings({ connectionSource: 'router' }), /Дождитесь|терминале/);
+    assert.equal(f.clients[0].stops, 0);
+    assert.equal(f.session.settings.connectionSource, 'account');
+  }
+});
+
+test('source process stop timeout remains owned and a reconnect waits before creating another client', async () => {
+  let exited = false;
+  const f = sourceFixture({ stopWait: async () => { if (!exited) throw new Error('still stopping'); } });
+  await f.session.start();
+  await assert.rejects(f.session.setSettings({ connectionSource: 'router' }), /still stopping/);
+  assert.equal(f.events.at(-1).type, 'status');
+  assert.equal(f.events.at(-1).data.state, 'error');
+  assert.match(f.events.at(-1).data.message, /Переподключите/);
+  assert.strictEqual(f.session.sourceStoppingClient, f.clients[0]);
+  await assert.rejects(f.session.start(), /still stopping/);
+  assert.equal(f.clients.length, 1);
+  exited = true;
+  await f.session.start();
+  assert.equal(f.clients.length, 2);
+  assert.equal(f.session.sourceStoppingClient, null);
+  assert.equal(f.session.settings.connectionSource, 'account');
+});
+
+test('failed source persistence reports disconnected state and reconnects with the previous committed source', async () => {
+  const f = sourceFixture();
+  await f.session.start();
+  const threadId = `claude:${terminalThreadId}`;
+  await f.session.request('thread/resume', { threadId });
+  const persist = f.session.persistSettings;
+  f.session.persistSettings = async () => { throw new Error('fixture save failed'); };
+  await assert.rejects(f.session.setSettings({ connectionSource: 'router' }), /fixture save failed/);
+  assert.equal(f.events.at(-1).type, 'status');
+  assert.equal(f.events.at(-1).data.state, 'error');
+  assert.equal(f.session.client, null);
+  assert.equal(f.session.bootstrap, null);
+  assert.equal(f.session.sourceStoppingClient, null);
+  assert.equal(f.session.settings.connectionSource, 'account');
+  assert.equal(f.session.currentThreadId, threadId);
+  f.session.persistSettings = persist;
+  await f.session.start();
+  await f.session.request('thread/resume', { threadId });
+  assert.equal(f.clients[1].options.env.SELECTED, 'account');
+  assert.equal(f.clients[1].calls.at(-1).params.threadId, threadId);
+});
+
+test('Codex source profiles override a resumed thread provider without putting credentials in RPCs', async () => {
+  const f = sourceFixture({ provider: 'codex' });
+  await f.session.start();
+  await f.session.request('thread/resume', { threadId: terminalThreadId, modelProvider: 'from-old-thread' });
+  assert.equal(f.clients[0].calls.at(-1).params.modelProvider, 'openai');
+  await f.session.setSettings({ connectionSource: 'router' });
+  await f.session.start();
+  await f.session.request('thread/resume', { threadId: terminalThreadId, modelProvider: 'from-old-thread' });
+  assert.equal(f.clients[1].calls.at(-1).params.modelProvider, 'codex_desk_router');
+  assert.deepEqual(f.clients[1].options.configOverrides, ['model_provider="codex_desk_router"']);
+  assert.ok(!JSON.stringify(f.clients.flatMap(client => client.calls)).includes('host-secret'));
+});
+
+test('explicit Codex validates configuration before catalog/account reads and reuses that response', async () => {
+  const f = sourceFixture({ provider: 'codex' });
+  await f.session.start();
+  assert.deepEqual(f.clients[0].calls.map(call => call.method), ['config/read', 'model/list', 'account/read']);
+  const inherited = fixture();
+  await inherited.session.start();
+  assert.deepEqual(inherited.clients[0].calls.map(call => call.method), ['model/list', 'account/read', 'config/read']);
+});
+
+test('a conflicting explicit Codex config never reaches model catalog or account lookup', async () => {
+  const f = sourceFixture({ provider: 'codex', resolveProfile: () => ({ env: {}, modelProvider: 'openai', expectedConnection: { source: 'account' }, configOverrides: ['model_provider="openai"'] }) });
+  await assert.rejects(f.session.start(), /переопределяют/);
+  assert.deepEqual(f.clients[0].calls.map(call => call.method), ['config/read']);
+  assert.equal(f.clients[0].stops, 1);
+  assert.equal(f.session.bootstrap, null);
+  assert.equal(f.events.at(-1).data.state, 'error');
+});
 
 test('two sessions run concurrent turns with isolated events, cwd, approvals and interruption', async () => {
   const a = fixture();
@@ -101,6 +260,24 @@ test('explicit model refresh replaces a cached bootstrap without changing the pr
   assert.equal(a.clients[0].stops, 1);
   assert.equal(a.clients[1].options.cwd, 'project-a');
 });
+
+test('router bootstrap exposes the verified Sol 6.1 model before native model/list catches up', async () => {
+  const router = fixture({ connectionSource: 'router' });
+  const boot = await router.session.start();
+  const model = boot.models.find(value => value.model === 'gpt-6.1-sol');
+  assert.equal(model?.displayName, 'GPT-6.1-Sol');
+  assert.equal(model?.defaultReasoningEffort, 'medium');
+  assert.deepEqual(model?.supportedReasoningEfforts.map(value => value.reasoningEffort), ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+
+  const inherited = fixture({ connectionSource: 'inherited' }, { codexEnvironment: async () => ({ modelProvider: 'router' }) });
+  const inheritedBoot = await inherited.session.start();
+  assert.equal(inheritedBoot.models.some(value => value.model === 'gpt-6.1-sol'), true);
+
+  const local = fixture({ connectionSource: 'inherited' });
+  const localBoot = await local.session.start();
+  assert.equal(localBoot.models.some(value => value.model === 'gpt-6.1-sol'), false);
+});
+
 test('changing a project or executable and closing a window leaves the other transport running', async () => {
   const a = fixture();
   const b = fixture({ cwd: 'project-b' });

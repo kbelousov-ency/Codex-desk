@@ -8,6 +8,7 @@ const PROVIDER_FIELDS = ['name', 'base_url', 'wire_api', 'requires_openai_auth']
 const REASONING_SUMMARIES = new Set(['auto', 'concise', 'detailed', 'none']);
 const IDENTIFIER = /^[a-zA-Z0-9_-]{1,128}$/;
 const MODEL = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,256}$/;
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value)
   && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -15,6 +16,8 @@ const text = (value, max) => typeof value === 'string' && value.trim().length > 
 const positiveInteger = value => Number.isSafeInteger(value) && value > 0;
 const digest = bytes => bytes === null ? 'missing' : createHash('sha256').update(bytes).digest('hex');
 const fieldError = () => new Error('Портал вернул неподдерживаемые настройки Codex. Подключитесь через браузер заново.');
+const validHeaders = value => record(value) && Object.entries(value).every(([key, header]) => HEADER_NAME.test(key)
+  && typeof header === 'string' && header.length <= 8192 && !/[\u0000-\u001f\u007f]/.test(header));
 
 function cleanUrl(value) {
   if (!text(value, 2048)) return null;
@@ -29,6 +32,7 @@ function normalize(payload) {
   if (!text(apiKey, 8192) || !record(provider) || !record(defaults)
     || !text(provider.name, 160) || !cleanUrl(provider.base_url)
     || provider.wire_api !== 'responses' || provider.requires_openai_auth !== false
+    || (own(provider, 'http_headers') && !validHeaders(provider.http_headers))
     || typeof defaults.model !== 'string' || !MODEL.test(defaults.model)
     || typeof defaults.model_provider !== 'string' || !IDENTIFIER.test(defaults.model_provider)
     || ['__proto__', 'prototype', 'constructor'].includes(defaults.model_provider)
@@ -40,7 +44,8 @@ function normalize(payload) {
   // A fixed set of fields is copied; API metadata can never become arbitrary config edits.
   return {
     defaults: Object.fromEntries(DEFAULT_FIELDS.map(key => [key, defaults[key]])),
-    provider: { ...Object.fromEntries(PROVIDER_FIELDS.map(key => [key, provider[key]])), experimental_bearer_token: apiKey },
+    provider: { ...Object.fromEntries(PROVIDER_FIELDS.map(key => [key, provider[key]])),
+      ...(own(provider, 'http_headers') ? { http_headers: { ...provider.http_headers } } : {}), experimental_bearer_token: apiKey },
   };
 }
 
@@ -94,7 +99,8 @@ function editsFor(config, input) {
       if (own(old, key)) throw new Error('Заголовки выбранного провайдера Codex имеют неподдерживаемый формат. Проверьте config.toml.');
       continue;
     }
-    const authHeaders = Object.keys(old[key]).filter(name => name.toLowerCase() === 'authorization');
+    const authHeaders = Object.keys(old[key]).filter(name => name.toLowerCase() === 'authorization'
+      && !(key === 'http_headers' && Object.keys(input.provider.http_headers ?? {}).some(name => name.toLowerCase() === 'authorization')));
     if (!authHeaders.length) continue;
     for (const header of authHeaders) edits.push({ keyPath: `model_providers.${id}.${key}.${header}`, value: null, mergeStrategy: 'replace' });
     changes.push({ key: `model_providers.${id}.${key}.Authorization`, before: 'Настроено', after: 'Удалено: используется ключ из браузера' });

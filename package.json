@@ -1,6 +1,6 @@
 {
   "name": "codex-desk",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "description": "Local desktop interface for Codex CLI",
   "type": "module",
@@ -68,6 +68,9 @@
     "test:app-identity": "node scripts/ui-app-identity.mjs",
     "test:agent-handoff": "node scripts/ui-agent-handoff.mjs",
     "test:providers": "node scripts/ui-providers.mjs",
+    "test:connection-sources": "node scripts/ui-connection-sources.mjs",
+    "test:connection-sources-host": "node scripts/ui-connection-sources-host.mjs",
+    "test:claude-portal-browser-host": "node scripts/ui-claude-portal-browser-host.mjs",
     "test:router-usage": "node scripts/ui-router-usage.mjs",
     "test:providers-host": "node scripts/ui-providers-host.mjs",
     "test:claude-auth-host": "node scripts/ui-claude-auth-host.mjs",

@@ -8,7 +8,7 @@ export type ComposerOption = { value: string; label: string };
 
 export default function ComposerSelect({ label, value, options, icon, disabled, active = true, kind, onChange, openSignal = 0 }: {
   label: string; value: string; options: ComposerOption[]; icon: ReactNode;
-  disabled: boolean; active?: boolean; kind: 'provider' | 'model' | 'effort'; onChange(value: string): void; openSignal?: number;
+  disabled: boolean; active?: boolean; kind: 'provider' | 'model' | 'effort' | 'source'; onChange(value: string): void; openSignal?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);

@@ -20,14 +20,48 @@ public class ClaudeAuthFixture {
     static void Log(object entry) { File.AppendAllText(Path.Combine(Config, "fixture-" + Pid + ".jsonl"), Json.Serialize(entry) + "\n", Utf8); }
     static void Send(object frame) { Console.WriteLine(Json.Serialize(frame)); }
     static readonly bool TokenSet = !String.IsNullOrEmpty(Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN"));
+    static readonly string[] RoutingCredentials = new[] { "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_AUTH_TOKEN" };
+    static bool Nonempty(object value) { return value is string && !String.IsNullOrEmpty((string)value); }
+    static bool HasRoutingCredentials(Dictionary<string, object> values) {
+        foreach (var key in RoutingCredentials) { object value; if (values.TryGetValue(key, out value) && Nonempty(value)) return true; }
+        foreach (var key in new[] { "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY" }) {
+            object value; if (values.TryGetValue(key, out value) && Nonempty(value) && (string)value != "0") return true;
+        }
+        object baseUrl;
+        return values.TryGetValue("ANTHROPIC_BASE_URL", out baseUrl) && Nonempty(baseUrl) && (string)baseUrl != "https://api.anthropic.com";
+    }
+    static bool EnvironmentHasRoutingCredentials() {
+        var values = new Dictionary<string, object>();
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables()) values[(string)entry.Key] = entry.Value;
+        return HasRoutingCredentials(values);
+    }
     // Like the installed CLI, a host-provided CLAUDE_CODE_OAUTH_TOKEN counts as signed in without touching the shared file.
     static bool LoggedIn() { return TokenSet || File.Exists(Path.Combine(Config, "signed-in.fixture")); }
     public static int Main(string[] args) {
         if (String.IsNullOrEmpty(Config) || !File.Exists(Path.Combine(Config, "isolated.fixture"))) return 2;
         Console.InputEncoding = Utf8; Console.OutputEncoding = Utf8;
-        Log(new { type = "spawn", pid = Pid, args = args, cwd = Cwd, configDirectory = Config, tokenSet = TokenSet });
+        var rawArgs = args;
+        var logicalArgs = new List<string>();
+        string settingsFile = null;
+        var settingsEnvironment = new Dictionary<string, object>();
+        for (int index = 0; index < rawArgs.Length; index++) {
+            if (rawArgs[index] != "--settings") { logicalArgs.Add(rawArgs[index]); continue; }
+            if (settingsFile != null || ++index >= rawArgs.Length || !Path.IsPathRooted(rawArgs[index]) || !File.Exists(rawArgs[index])) return 2;
+            settingsFile = rawArgs[index];
+            var settings = Json.Deserialize<Dictionary<string, object>>(File.ReadAllText(settingsFile, Utf8));
+            object settingsEnv;
+            if (settings.TryGetValue("env", out settingsEnv)) settingsEnvironment = settingsEnv as Dictionary<string, object>;
+            if (settingsEnvironment == null) return 2;
+        }
+        args = logicalArgs.ToArray();
+        object oauth;
+        var settingsInfo = new { path = settingsFile, existedAtLaunch = settingsFile != null && File.Exists(settingsFile),
+            routingCredentials = HasRoutingCredentials(settingsEnvironment), oauthToken = settingsEnvironment.TryGetValue("CLAUDE_CODE_OAUTH_TOKEN", out oauth) && Nonempty(oauth),
+            environmentKeys = new List<string>(settingsEnvironment.Keys).ToArray() };
+        bool environmentRoutingCredentials = EnvironmentHasRoutingCredentials();
+        Log(new { type = "spawn", pid = Pid, args = args, rawArgs = rawArgs, settings = settingsInfo, cwd = Cwd, configDirectory = Config, tokenSet = TokenSet, environmentRoutingCredentials = environmentRoutingCredentials });
         if (args.Length == 1 && args[0] == "setup-token") {
-            File.WriteAllText(Path.Combine(Config, "setup-console.json"), Json.Serialize(new { args = args, pid = Pid, cwd = Cwd, tokenSet = TokenSet, stdin = IsConsole(-10), stdout = IsConsole(-11), stderr = IsConsole(-12) }), Utf8);
+            File.WriteAllText(Path.Combine(Config, "setup-console.json"), Json.Serialize(new { args = args, rawArgs = rawArgs, settings = settingsInfo, pid = Pid, cwd = Cwd, tokenSet = TokenSet, environmentRoutingCredentials = environmentRoutingCredentials, stdin = IsConsole(-10), stdout = IsConsole(-11), stderr = IsConsole(-12) }), Utf8);
             Console.WriteLine("Claude setup-token console test fixture. No browser, credentials or model.");
             return 0;
         }
@@ -36,7 +70,7 @@ public class ClaudeAuthFixture {
             return LoggedIn() ? 0 : 1;
         }
         if (args.Length == 3 && args[0] == "auth" && args[1] == "login" && args[2] == "--claudeai") {
-            File.WriteAllText(Path.Combine(Config, "console.json"), Json.Serialize(new { args = args, pid = Pid, cwd = Cwd, configDirectory = Config, stdin = IsConsole(-10), stdout = IsConsole(-11), stderr = IsConsole(-12) }), Utf8);
+            File.WriteAllText(Path.Combine(Config, "console.json"), Json.Serialize(new { args = args, rawArgs = rawArgs, settings = settingsInfo, pid = Pid, cwd = Cwd, configDirectory = Config, tokenSet = TokenSet, environmentRoutingCredentials = environmentRoutingCredentials, stdin = IsConsole(-10), stdout = IsConsole(-11), stderr = IsConsole(-12) }), Utf8);
             Console.WriteLine("Claude authorization console test fixture. No browser, credentials or model.");
             var deadline = DateTime.UtcNow.AddSeconds(30);
             while (!File.Exists(Path.Combine(Config, "release.fixture")) && DateTime.UtcNow < deadline) Thread.Sleep(50);

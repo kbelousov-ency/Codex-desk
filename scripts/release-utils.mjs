@@ -12,6 +12,9 @@ const TRANSIENT_MOVE_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const MOVE_RETRY_WINDOW_MS = 45000;
 const MOVE_RETRY_DELAY_MS = 250;
 const MOVE_RETRY_MAX_ATTEMPTS = Math.ceil(MOVE_RETRY_WINDOW_MS / MOVE_RETRY_DELAY_MS);
+const JOURNAL_RETRY_WINDOW_MS = 2000;
+const JOURNAL_RETRY_DELAY_MS = 50;
+const JOURNAL_RETRY_MAX_ATTEMPTS = Math.ceil(JOURNAL_RETRY_WINDOW_MS / JOURNAL_RETRY_DELAY_MS);
 const TRANSACTION_NAMES = new Set(['nightly', 'stable', 'stable-previous', '.nightly-incoming', '.stable-incoming', '.nightly-old', '.previous-old', '.stable-swap']);
 const TRANSACTION_PLANS = new Set([
   ...[false, true].map(replace => JSON.stringify({ steps: [...(replace ? [['nightly', '.nightly-old']] : []), ['.nightly-incoming', 'nightly']], cleanup: ['.nightly-incoming', '.nightly-old'] })),
@@ -162,13 +165,33 @@ function transactionPath(root, name) {
   return path.join(root, 'release', name);
 }
 
-async function writeJournal(root, journal) {
+export async function writeJournal(root, journal, options = {}) {
   const file = path.join(root, 'release', '.transaction.json');
   const temp = `${file}.tmp`;
   await checkedPath(root, file);
   await checkedPath(root, temp);
   await writeFile(temp, JSON.stringify(journal));
-  await rename(temp, file);
+  const dependencies = options.journalRetry ?? {};
+  const replace = dependencies.rename ?? rename;
+  const now = dependencies.now ?? Date.now;
+  const sleep = dependencies.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  const windows = (dependencies.platform ?? process.platform) === 'win32';
+  const deadline = now() + JOURNAL_RETRY_WINDOW_MS;
+  let lastError;
+  for (let attempt = 0; ; attempt++) {
+    if (lastError && now() >= deadline) throw lastError;
+    // Even awaited write/close can be followed by a brief Windows rename lock.
+    // Retry the atomic replacement; never unlink the last committed journal.
+    await checkedPath(root, file);
+    await checkedPath(root, temp);
+    if (lastError && now() >= deadline) throw lastError;
+    try { await replace(temp, file); return; }
+    catch (error) {
+      if (!windows || !TRANSIENT_MOVE_ERRORS.has(error.code) || attempt >= JOURNAL_RETRY_MAX_ATTEMPTS || now() >= deadline) throw error;
+      lastError = error;
+      await sleep(Math.min(JOURNAL_RETRY_DELAY_MS, Math.max(0, deadline - now())));
+    }
+  }
 }
 
 export async function recoverRelease(root, options = {}) {
@@ -192,7 +215,7 @@ export async function recoverRelease(root, options = {}) {
         if (!(await statOrNull(from)) && await statOrNull(to)) journal.completed++;
       }
       journal.phase = 'rollback';
-      await writeJournal(root, journal);
+      await writeJournal(root, journal, options);
     }
     while (journal.completed > 0) {
       const [from, to] = journal.steps[journal.completed - 1].map(name => transactionPath(root, name));
@@ -201,7 +224,7 @@ export async function recoverRelease(root, options = {}) {
         await moveChecked(root, to, from, { ...options, guard });
       } else if (!(await statOrNull(from))) throw new Error('Не найдены файлы для восстановления выпуска.');
       journal.completed--;
-      await writeJournal(root, journal);
+      await writeJournal(root, journal, options);
     }
   }
   for (const name of journal.cleanup) { const target = transactionPath(root, name); await guard(target); await removeChecked(root, target); }
@@ -210,17 +233,17 @@ export async function recoverRelease(root, options = {}) {
 
 async function transaction(root, steps, cleanup, options) {
   const journal = { format: 1, steps, cleanup, completed: 0, phase: 'forward' };
-  await writeJournal(root, journal);
+  await writeJournal(root, journal, options);
   try {
     for (let index = 0; index < steps.length; index++) {
       const [from, to] = steps[index].map(name => transactionPath(root, name));
       await moveChecked(root, from, to, options);
       journal.completed = index + 1;
-      await writeJournal(root, journal);
+      await writeJournal(root, journal, options);
       await options.afterMove?.(index + 1);
     }
     journal.phase = 'committed';
-    await writeJournal(root, journal);
+    await writeJournal(root, journal, options);
     await recoverRelease(root, options);
   } catch (error) {
     try { await recoverRelease(root, options); } catch (recovery) { throw new Error(`${error.message} Восстановление отложено: ${recovery.message}`, { cause: error }); }

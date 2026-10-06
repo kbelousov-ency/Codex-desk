@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Access, AgentCapabilities, AgentDetails, AgentProvider, Attachment, CodexBridge, BridgeEvent, Item, Model, PendingMessage, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources, UsageLimits } from './types';
+import type { Access, AgentCapabilities, AgentDetails, AgentProvider, Attachment, CodexBridge, BridgeEvent, ConnectionSource, Item, Model, PendingMessage, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources, UsageLimits } from './types';
 import { agentName } from './AgentContext';
 import { mergeHistoricalTurnWork, observeTurnWork } from './turn-work';
 import { historicalCacheActivity, responseTime } from './cache-history';
@@ -27,10 +27,14 @@ const providerCapabilities = (provider: AgentProvider): AgentCapabilities => pro
   ? { compact: false, steer: false, terminal: false, mcp: false, archive: false, usage: false }
   : { compact: true, steer: true, terminal: true, mcp: true, archive: true, usage: false };
 
+/** `auto` and `rules` both run the workspace-write sandbox; they differ only in WHO answers an escape —
+ * Codex's auto-review subagent, or this shell's rules. */
+const sandboxedLikeWorkspace = (access: Access) => access === 'auto' || access === 'rules';
+
 export function accessParams(access: Access, cwd: string, turn = false) {
   if (access === 'inherited') return {};
   const common = { approvalPolicy: access === 'danger-full-access' ? 'never' : 'on-request', approvalsReviewer: access === 'auto' ? 'auto_review' : 'user' };
-  if (!turn) return { ...common, sandbox: access === 'auto' ? 'workspace-write' : access };
+  if (!turn) return { ...common, sandbox: sandboxedLikeWorkspace(access) ? 'workspace-write' : access };
   const sandboxPolicy = access === 'danger-full-access' ? { type: 'dangerFullAccess' }
     : access === 'read-only' ? { type: 'readOnly', networkAccess: false }
       : { type: 'workspaceWrite', writableRoots: [cwd], networkAccess: false, excludeTmpdirEnvVar: false, excludeSlashTmp: false };
@@ -54,10 +58,14 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [connection, setConnection] = useState<'connecting' | 'ready' | 'error'>('connecting');
   const [provider, setProvider] = useState<AgentProvider>(options?.restoreSettings?.provider || 'codex');
   const providerRef = useRef<AgentProvider>(options?.restoreSettings?.provider || 'codex');
+  const [connectionSource, setConnectionSource] = useState<ConnectionSource>(options?.restoreSettings?.connectionSource || 'inherited');
+  const [sourceChanging, setSourceChanging] = useState(false);
+  const sourceChangingRef = useRef(false);
   const [capabilities, setCapabilities] = useState(() => providerCapabilities(options?.restoreSettings?.provider || 'codex'));
   const [cwd, setCwd] = useState('');
   const [models, setModels] = useState<Model[]>([]);
   const [model, setModel] = useState('');
+  const modelUnavailable = connectionSource !== 'inherited' && Boolean(model) && !models.some(candidate => candidate.model === model && !candidate.unavailable);
   const [effort, setEffort] = useState('');
   const [access, setAccess] = useState<Access>('workspace-write');
   const [account, setAccount] = useState<any>(null);
@@ -265,7 +273,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   }, [bridge]);
 
   const refreshUsage = useCallback(async () => {
-    if (providerRef.current !== 'claude' || connectionRef.current !== 'ready' || terminalRef.current) return;
+    if (providerRef.current !== 'claude' || settingsRef.current.connectionSource === 'router' || connectionRef.current !== 'ready' || terminalRef.current) return;
     const sequence = ++usageRequestRef.current;
     setUsageLoading(true);
     try {
@@ -340,6 +348,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       if (!bridge) throw new Error('Откройте Codex Desk как приложение: npm start. Подключение к Codex доступно в окне Electron.');
       const saved = await bridge.getSettings();
       settingsRef.current = saved;
+      setConnectionSource(saved.connectionSource || 'inherited');
       providerRef.current = saved.provider || 'codex'; setProvider(providerRef.current);
       setCapabilities(providerCapabilities(providerRef.current));
       const startOptions = directory ? { cwd: directory } : saved.cwd ? { cwd: saved.cwd } : {};
@@ -611,6 +620,15 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
           return { available: true, subscription: previous?.subscription ?? null, windows, updatedAt: new Date().toISOString() };
         });
       }
+      else if (method === 'approval/autoDecided') {
+        // The shell answered an approval from the user's rules. It is recorded on the item the approval was
+        // about, so the work log shows WHAT was allowed and WHICH rule allowed it — an automatic answer the
+        // user cannot see is indistinguishable from no question having been asked.
+        // The item may not have been announced yet, so a placeholder of the right type is created and the
+        // later `item/started` merges over it, keeping the annotation.
+        const kind = p.method === 'item/fileChange/requestApproval' ? 'fileChange' : 'commandExecution';
+        if (p.itemId) upsert(p.itemId, item => ({ ...item, autoApproval: p.reason, turnId: item.turnId ?? p.turnId }), kind);
+      }
       else if (method === 'serverRequest/resolved') {
         pendingRequestIdsRef.current.delete(p.requestId ?? p.id);
         setRequests(previous => previous.filter(r => r.id !== (p.requestId ?? p.id)));
@@ -662,6 +680,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const selectModel = (value: string) => {
     if (terminalRef.current || authRef.current) return;
     const selected = models.find(m => m.model === value);
+    if (selected?.unavailable) { setError('Выберите доступную модель этого источника.'); return; }
     const nextEffort = selected?.supportedReasoningEfforts.some(e => e.reasoningEffort === effort) ? effort : selected?.defaultReasoningEffort || '';
     if (value !== model || nextEffort !== effort) invalidateCache();
     setModel(value); setEffort(nextEffort); setSources(previous => ({ ...previous, model: 'selected', effort: 'selected' })); void saveSettings({ model: value, effort: nextEffort });
@@ -829,6 +848,27 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     return resume(previous, true);
   };
 
+  const selectConnectionSource = async (value: string) => {
+    if (!['inherited', 'account', 'router'].includes(value) || sourceChangingRef.current || value === connectionSource) return;
+    if (activeRef.current || connectingRef.current || loadingRef.current || terminalRef.current || authRef.current || pendingRequestIdsRef.current.size || pendingMessageRef.current) {
+      setError('Завершите текущую операцию перед сменой источника.'); return;
+    }
+    sourceChangingRef.current = true; setSourceChanging(true); setError('');
+    pauseQueue('Источник подключения изменён. Проверьте диалог перед продолжением очереди.');
+    try {
+      const next = value as ConnectionSource;
+      await bridge.setSettings({ connectionSource: next, model, effort, access });
+      settingsRef.current = { ...settingsRef.current, connectionSource: next, model, effort, access };
+      setConnectionSource(next);
+      restoreSettingsRef.current = { provider: providerRef.current, connectionSource: next, model, effort, access };
+      const restored = await reconnect();
+      // The old source's prompt cache says nothing about this connection.
+      invalidateCache();
+      if (restored) setNotice(`Источник: ${next === 'router' ? 'Роутер' : next === 'account' ? 'Личный аккаунт' : 'Настройки CLI'}. Следующее сообщение использует это подключение.`);
+    } catch (cause) { setError(errorText(cause)); }
+    finally { sourceChangingRef.current = false; setSourceChanging(false); }
+  };
+
   restoreAuthRef.current = async data => {
     // A tab created during login may still be finishing its rejected bootstrap.
     // Reconnect only after that attempt releases the connection guard.
@@ -949,6 +989,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   };
 
   const send = async (text: string, attachments: Attachment[], silentCompletion = false, messageId?: string) => {
+    if (sourceChangingRef.current || modelUnavailable) return false;
     if (pendingMessageRef.current) { setNotice('Проверьте неподтверждённую отправку перед новым сообщением.'); return false; }
     if (terminalRef.current || activeRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size || (!text.trim() && !attachments.length)) return false;
     const selected = threadRef.current;
@@ -1066,7 +1107,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     } finally { steerPendingRef.current = false; setSteering(false); }
   };
 
-  const canSendQueued = (pauseRevision = queuePause.revision) => !pendingMessageRef.current && pauseRevision === queuePauseRevisionRef.current && !terminalRef.current && !activeRef.current && !loadingRef.current && !steerPendingRef.current && connectionRef.current === 'ready' && !pendingRequestIdsRef.current.size && (!threadRef.current || resumedThreadRef.current === threadRef.current.id);
+  const canSendQueued = (pauseRevision = queuePause.revision) => !modelUnavailable && !sourceChangingRef.current && !pendingMessageRef.current && pauseRevision === queuePauseRevisionRef.current && !terminalRef.current && !activeRef.current && !loadingRef.current && !steerPendingRef.current && connectionRef.current === 'ready' && !pendingRequestIdsRef.current.size && (!threadRef.current || resumedThreadRef.current === threadRef.current.id);
 
   const continueTurn = async () => {
     const stopped = interruptedRef.current;
@@ -1179,8 +1220,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     } catch (e) { if (isCurrent()) setError(errorText(e)); }
   };
 
-  const respond = async (request: Request, result: any) => {
-    await bridge.respond(request.id, result);
+  const respond = async (request: Request, result: any, options?: { remember?: boolean }) => {
+    await bridge.respond(request.id, result, options);
     pendingRequestIdsRef.current.delete(request.id);
     setRequests(previous => previous.filter(r => r.id !== request.id));
   };
@@ -1190,7 +1231,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, authInProgress, loading, error, retry, dismissRetry: () => setRetry(null), notice,
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
     cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage, agentDetails, agentDetailsLoading, refreshAgentDetails,
-    connect, reconnect, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
+    connect, reconnect, connectionSource, sourceChanging, modelUnavailable, selectConnectionSource, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
     resume, loadEarlier, readFullHistory, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice, pendingMessage, reconcileMessage, reconcileQueuedMessage,
   };
 }

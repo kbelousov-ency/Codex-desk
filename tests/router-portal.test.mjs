@@ -60,6 +60,15 @@ test('device flow waits for the interval and returns secrets only in host config
   await assert.rejects(f.client.poll(start.flowId), { code: 'cancelled' });
 });
 
+test('provider response preserves validated nested http_headers', async () => {
+  const headers = { 'X-Image-Mode': 'vision', 'X-Feature-Flag': 'enabled' };
+  const f = fixture(url => url.endsWith('/provider') ? json({ ...provider, http_headers: headers }) : undefined);
+  const flow = await f.client.start('PC');
+  f.advance(5000);
+  const result = await f.client.poll(flow.flowId);
+  assert.deepEqual(result.config.provider.http_headers, headers);
+});
+
 test('pending and slow_down enforce progressively longer intervals', async () => {
   let tokenCalls = 0;
   const f = fixture(url => url.endsWith('/token') ? json({ error: ++tokenCalls === 1 ? 'authorization_pending' : 'slow_down' }, 400) : undefined);

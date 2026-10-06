@@ -6,7 +6,7 @@ import { cleanSettings } from './window-session.mjs';
 import { decodeImage } from './host-utils.mjs';
 
 const MAX_BYTES = 256 * 1024 * 1024;
-const modes = new Set(['inherited', 'read-only', 'workspace-write', 'auto', 'danger-full-access']);
+const modes = new Set(['inherited', 'read-only', 'workspace-write', 'auto', 'rules', 'danger-full-access']);
 const text = (value, limit, optional = false) => {
   if (optional && value == null) return undefined;
   if (typeof value !== 'string' || value.length > limit) throw new Error("Некорректный снимок окна.");
@@ -107,6 +107,10 @@ export function captureUpdateCheckpoint(snapshot, sessions) {
     settings.executable = session.getSettings().executable;
     if (session.getSettings().provider) settings.provider = session.getSettings().provider;
     else delete settings.provider;
+    // Source changes are committed by the host after credential validation and
+    // process shutdown; a stale/pending renderer selection is not authoritative.
+    if (session.getSettings().connectionSource) settings.connectionSource = session.getSettings().connectionSource;
+    else delete settings.connectionSource;
     if (settings.access && !modes.has(settings.access)) throw new Error("Некорректный режим снимка.");
     const selected = thread(tab.thread);
     if (selected) selected.cwd = session.currentCwd;

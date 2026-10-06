@@ -320,6 +320,13 @@ function TabbedWorkspace() {
     catch (error) { setUpdateStatus({ state: 'error', message: errorText(error) }); }
     finally { setDecidingUpdate(false); }
   };
+  const forceUpdate = async () => {
+    if (decidingUpdate) return;
+    setDecidingUpdate(true);
+    try { setUpdateStatus(await window.codex.forceUpdate()); }
+    catch (error) { setUpdateStatus({ state: 'error', message: errorText(error) }); }
+    finally { setDecidingUpdate(false); }
+  };
 
   useEffect(() => {
     document.getElementById(`tab-${activeId}`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -693,10 +700,14 @@ function TabbedWorkspace() {
     const key = (event: KeyboardEvent) => { if (event.key === 'Escape' && !actionPending.current) setActionDialog(null); };
     document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key);
   }, [actionDialog]);
+  // Once the user confirms Close, stop accepting new work while the helper
+  // waits for the already-running task to finish. Otherwise a new send can
+  // race the updater and keep the Nightly in `waiting` indefinitely.
+  const updateWaiting = updateStatus?.state === 'waiting';
   const controls: WorkspaceControls = {
     openLibrary: () => setShowLibrary(true),
-    projects, opening: opening || actionBusy || Boolean(confirmCloseProject) || preparingUpdate || savingBeforeClose, expanded, histories, threadNames, searchRevision,
-    archiveOpen, archiveThreads, archiveLoading, archiveError, archiveCursor, actionBusy: actionBusy || Boolean(confirmCloseProject) || preparingUpdate || savingBeforeClose,
+    projects, opening: opening || actionBusy || Boolean(confirmCloseProject) || preparingUpdate || savingBeforeClose || updateWaiting, expanded, histories, threadNames, searchRevision,
+    archiveOpen, archiveThreads, archiveLoading, archiveError, archiveCursor, actionBusy: actionBusy || Boolean(confirmCloseProject) || preparingUpdate || savingBeforeClose || updateWaiting,
     archiveThreadId: tabs.find(tab => tab.id === activeId)?.archivedThread?.id,
     toggleArchive: () => { setArchiveOpen(previous => !previous); if (!archiveOpen) void loadArchive(); },
     refreshArchive: cursor => void loadArchive(cursor), openArchivedThread: openArchive, threadAction, threadLocked,
@@ -765,7 +776,7 @@ function TabbedWorkspace() {
     return commands;
   };
 
-  return <OpenAppUpdatesContext.Provider value={() => setShowAppUpdates(true)}><div className="workspace-window"><AppUpdateBanner control={appUpdates} onDetails={() => setShowAppUpdates(true)} /><UpdateNoticeContext.Provider value={{ status: updateStatus, deciding: decidingUpdate, decide: decision => void decideUpdate(decision), dismiss: () => setUpdateStatus(null) }}><div className="workspace-shell" ref={shellRef}>
+  return <OpenAppUpdatesContext.Provider value={() => setShowAppUpdates(true)}><div className="workspace-window"><AppUpdateBanner control={appUpdates} onDetails={() => setShowAppUpdates(true)} /><UpdateNoticeContext.Provider value={{ status: updateStatus, deciding: decidingUpdate, decide: decision => void decideUpdate(decision), force: () => void forceUpdate(), dismiss: () => setUpdateStatus(null) }}><div className="workspace-shell" ref={shellRef}>
     <div className="workspace-tabs-bar">
       <div className="session-tabs" role="tablist" aria-label="Открытые диалоги">
         {tabs.map(tab => {

@@ -90,10 +90,11 @@ function ToolRow({ item, allowRunning, searchable }: { item: Item; allowRunning:
   const Icon = item.type === 'commandExecution' ? Terminal : item.type === 'fileChange' ? FileCode2 : item.type === 'webSearch' ? Globe : item.type.includes('Agent') ? GitBranch : ['imageView', 'imageGeneration'].includes(item.type) ? Image : item.type === 'sleep' ? Timer : Layers;
   const label = itemLabel(item);
   return <details className={`work-log-row work-tool ${failed ? 'failed' : ''}`} data-item-id={item.id} onToggle={event => setOpen(event.currentTarget.open)}>
-    <summary><Icon size={14} /><span className="work-tool-label" data-tooltip={label}>{label}</span>{running ? <LoaderCircle size={12} className="spin" /> : failed && <span className="work-tool-status">Ошибка</span>}<ChevronRight size={12} className="disclosure-arrow" /></summary>
+    <summary><Icon size={14} /><span className="work-tool-label" data-tooltip={label}>{label}</span>{running ? <LoaderCircle size={12} className="spin" /> : failed ? <span className="work-tool-status">Ошибка</span> : item.autoApproval && <span className="work-tool-status" data-tooltip={`Разрешено оболочкой по правилам — ${item.autoApproval}`}>По правилам</span>}<ChevronRight size={12} className="disclosure-arrow" /></summary>
     {(open || searchable) && <div className="work-tool-body">
       {item.command && <pre className="work-output work-command" tabIndex={0}>{item.command}</pre>}
       {item.cwd && <div className="work-meta">Папка: {item.cwd}</div>}
+      {item.autoApproval && <div className="work-meta">Разрешено оболочкой по правилам — {item.autoApproval}</div>}
       {item.query && <p>{item.query}</p>}
       {item.path && <WorkFile path={item.path} />}
       {item.savedPath && <WorkFile path={item.savedPath} />}

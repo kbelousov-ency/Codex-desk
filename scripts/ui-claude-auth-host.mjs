@@ -29,9 +29,25 @@ await Promise.all([
 ]);
 const env = { ...process.env, CODEX_DESK_DATA_DIR: profile, CODEX_DESK_TEST: '1', CLAUDE_CONFIG_DIR: config };
 delete env.ELECTRON_RUN_AS_NODE; delete env.CODEX_DESK_DEV_URL;
+// Seed stale, synthetic routing variables so personal login must explicitly clear them.
+delete env.CLAUDE_CODE_OAUTH_TOKEN;
+env.ANTHROPIC_BASE_URL = 'https://fixture-router.invalid';
+env.ANTHROPIC_AUTH_TOKEN = 'fixture-inherited-router-key';
+env.ANTHROPIC_API_KEY = 'fixture-inherited-api-key';
 const until = async (check, label) => { const deadline = Date.now() + 20_000; while (!await check()) { assert.ok(Date.now() < deadline, `Timeout: ${label}`); await delay(50); } };
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
 const logs = async () => (await Promise.all((await readdir(config)).filter(name => /^fixture-\d+\.jsonl$/.test(name)).map(name => readFile(path.join(config, name), 'utf8')))).flatMap(text => text.trim().split('\n').filter(Boolean).map(JSON.parse));
+function assertPersonalConsoleSettings(info) {
+  assert.equal(info.settings.existedAtLaunch, true, 'private settings file existed when the CLI started');
+  assert.equal(info.settings.routingCredentials, false, 'settings contain no router auth or endpoint');
+  assert.equal(info.settings.oauthToken, false, 'settings do not supply a saved OAuth token to native login');
+  assert.equal(info.environmentRoutingCredentials, false, 'native login clears inherited routing credentials');
+  assert.equal(info.tokenSet, false);
+  assert.ok(info.settings.environmentKeys.includes('ANTHROPIC_AUTH_TOKEN'));
+  assert.ok(info.settings.environmentKeys.includes('CLAUDE_CODE_OAUTH_TOKEN'));
+  assert.deepEqual(info.rawArgs, ['--settings', info.settings.path, ...info.args]);
+  assert.doesNotMatch(info.rawArgs.join(' '), /sk-ant-oat|fixture-inherited-router-key|fixture-inherited-api-key/);
+}
 const errors = [];
 let app, page, consoleInfo;
 try {
@@ -71,6 +87,8 @@ try {
   await auth.getByText('Вход выполняется в Claude CLI…', { exact: true }).waitFor();
   await until(async () => { try { consoleInfo = JSON.parse(await readFile(path.join(config, 'console.json'), 'utf8')); return true; } catch { return false; } }, 'visible native login console');
   assert.deepEqual(consoleInfo.args, ['auth', 'login', '--claudeai']);
+  assertPersonalConsoleSettings(consoleInfo);
+  assert.equal(JSON.parse(await readFile(consoleInfo.settings.path, 'utf8')).env.ANTHROPIC_AUTH_TOKEN, '');
   assert.equal(consoleInfo.cwd, project); assert.equal(consoleInfo.configDirectory, config);
   for (const name of ['stdin', 'stdout', 'stderr']) assert.equal(consoleInfo[name], true, `${name} is a native console handle`);
   assert.equal(alive(consoleInfo.pid), true);
@@ -88,6 +106,7 @@ try {
   await auth.getByText('Вход выполнен', { exact: true }).waitFor();
   await until(() => model().isEnabled(), 'fresh Claude bootstrap after login');
   assert.equal(alive(consoleInfo.pid), false);
+  await until(async () => { try { await readFile(consoleInfo.settings.path); return false; } catch (error) { return error.code === 'ENOENT'; } }, 'login settings file cleanup');
   assert.equal(await model().getAttribute('data-value'), 'fixture-claude');
   assert.equal(await view().getByRole('combobox', { name: 'Глубина размышлений', exact: true }).getAttribute('data-value'), 'medium');
   assert.equal(await view().getByRole('combobox', { name: 'Режим доступа', exact: true }).getAttribute('data-value'), 'auto');
@@ -133,15 +152,18 @@ try {
   let setupInfo;
   await until(async () => { try { setupInfo = JSON.parse(await readFile(path.join(config, 'setup-console.json'), 'utf8')); return true; } catch { return false; } }, 'visible native setup-token console');
   assert.deepEqual(setupInfo.args, ['setup-token']); assert.equal(setupInfo.cwd, project);
+  assertPersonalConsoleSettings(setupInfo);
   assert.equal(setupInfo.tokenSet, false, 'setup-token console never inherits the stored token');
   for (const name of ['stdin', 'stdout', 'stderr']) assert.equal(setupInfo[name], true, `${name} is a native console handle`);
   await until(() => !alive(setupInfo.pid), 'setup-token console exits');
+  await until(async () => { try { await readFile(setupInfo.settings.path); return false; } catch (error) { return error.code === 'ENOENT'; } }, 'setup-token settings file cleanup');
   assert.equal((await logs()).filter(entry => entry.type === 'spawn' && entry.args[0] === 'auth' && entry.args[1] === 'login').length, 1, 'setup-token does not trigger a login');
   await tokenRegion.getByRole('button', { name: 'Удалить токен', exact: true }).click();
   await tokenRegion.getByText('Токен не настроен', { exact: true }).waitFor();
   await until(() => model().isEnabled(), 'Claude relaunch without the token');
   await assert.rejects(readFile(path.join(profile, 'claude-token.json')), { code: 'ENOENT' });
   const afterClear = await logs();
+  assert.equal(afterClear.filter(entry => entry.type === 'spawn').some(entry => JSON.stringify(entry.rawArgs).includes(sampleToken)), false, 'saved token never appears in any native argv');
   const streams = afterClear.filter(entry => entry.type === 'spawn' && entry.args[0] === '-p');
   // Per-process log files are read in pid order, so compare counts rather than sequence.
   assert.equal(streams.length, 4, 'Failed start, login relaunch, token relaunch, removal relaunch');
@@ -152,7 +174,7 @@ try {
   assert.deepEqual(errors, []);
   await page.screenshot({ path: path.join(runDir, 'claude-auth-host.png') });
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify({ nativeConsole: consoleInfo, setupConsole: setupInfo, events, tokenEvents, modelCalls: 0, bootstrapCount: streams.length }, null, 2));
-  console.log(`PASS: production Electron/preload/IPC, auth recovery after failed bootstrap, signed-out code1, public status only, session/frame guards, exact native console args/cwd/env/handles/lifetime, one login, Claude-only events and reconnect, draft/settings preserved, encrypted setup-token storage with CLI-only environment, setup-token console, token removal, no model/browser/credentials. Artifacts: ${runDir}`);
+  console.log(`PASS: production Electron/preload/IPC, auth recovery after failed bootstrap, signed-out code1, public status only, session/frame guards, exact native console args/cwd/env/handles/lifetime, temporary personal settings present at launch and removed on close, inherited router credentials cleared for login/setup-token, no tokens in argv, one login, Claude-only events and reconnect, draft/settings preserved, encrypted setup-token storage with CLI-only environment, setup-token console, token removal, no model/browser/credentials. Artifacts: ${runDir}`);
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: path.join(runDir, 'failure.png') }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '(page unavailable)')); }
   console.error(`Claude auth host artifacts: ${runDir}`); throw error;

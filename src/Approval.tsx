@@ -1,11 +1,14 @@
 import { useState } from 'react';
-import { ArrowRight, Check, ShieldCheck, X } from 'lucide-react';
+import { ArrowRight, Check, ListChecks, ShieldCheck, X } from 'lucide-react';
 import type { Item, Request } from './types';
 import { errorText } from './useCodex';
 import { useAgentName } from './AgentContext';
 import ElicitationForm from './ElicitationForm';
+import './approval-rules.css';
 
-export default function Approval({ request, items, respond }: { request: Request; items: Item[]; respond: (request: Request, result: any) => Promise<void> }) {
+const ruleKindLabel: Record<string, string> = { commands: 'команда', paths: 'папка', hosts: 'узел сети' };
+
+export default function Approval({ request, items, respond }: { request: Request; items: Item[]; respond: (request: Request, result: any, options?: { remember?: boolean }) => Promise<void> }) {
   const engineName = useAgentName();
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [pending, setPending] = useState(false);
@@ -18,17 +21,21 @@ export default function Approval({ request, items, respond }: { request: Request
   const approval = legacy || permissions || ['item/commandExecution/requestApproval', 'item/fileChange/requestApproval'].includes(request.method);
   const command = request.method.includes('commandExecution') || request.method === 'execCommandApproval';
   const item = items.find(i => i.id === p.itemId);
-  const submit = async (result: any) => {
+  // What «Разрешить и запомнить» would save. The host derives it, so the card can print the rule BEFORE
+  // the user agrees to it — a button whose consequence is invisible is how a broad grant slips through.
+  const savable = request.rules ?? [];
+  const submit = async (result: any, remember = false) => {
     setPending(true); setError('');
-    try { await respond(request, result); } catch (e) { setError(errorText(e)); } finally { setPending(false); }
+    try { await respond(request, result, remember ? { remember: true } : undefined); }
+    catch (e) { setError(errorText(e)); } finally { setPending(false); }
   };
-  const decide = (allowed: boolean) => {
+  const decide = (allowed: boolean, remember = false) => {
     if (permissions) {
       const granted = Object.fromEntries(Object.entries(p.permissions || {}).filter(([, value]) => value !== null));
       return submit({ permissions: allowed ? granted : {}, scope: 'turn' });
     }
     if (legacy) return submit({ decision: allowed ? 'approved' : 'denied' });
-    return submit({ decision: allowed ? 'accept' : 'decline' });
+    return submit({ decision: allowed ? 'accept' : 'decline' }, allowed && remember);
   };
 
   return <section className="approval-card">
@@ -55,7 +62,11 @@ export default function Approval({ request, items, respond }: { request: Request
       {(p.cwd || p.grantRoot) && <div className="small-path">{p.grantRoot || p.cwd}</div>}
       {item?.changes?.map((change: any) => <div className="small-path" key={change.path}>{change.path}</div>)}
       {permissions && <pre className="approval-code">{JSON.stringify(p.permissions, null, 2)}</pre>}
-      <div className="approval-actions"><button className="secondary-button" disabled={pending} onClick={() => void decide(false)}><X size={15} /> Отклонить</button><button className="primary-button" disabled={pending} onClick={() => void decide(true)}><Check size={15} /> Разрешить один раз</button></div>
+      {savable.length > 0 && <div className="approval-rule">
+        <span>Запомнить как правило:</span>
+        {savable.map(([kind, value]) => <code key={`${kind}-${value}`}>{ruleKindLabel[kind] ?? kind} — {value}</code>)}
+      </div>}
+      <div className="approval-actions"><button className="secondary-button" disabled={pending} onClick={() => void decide(false)}><X size={15} /> Отклонить</button>{savable.length > 0 && <button className="secondary-button" disabled={pending} onClick={() => void decide(true, true)}><ListChecks size={15} /> Разрешить и запомнить</button>}<button className="primary-button" disabled={pending} onClick={() => void decide(true)}><Check size={15} /> Разрешить один раз</button></div>
     </>}
     {error && <p className="inline-error">{error}</p>}
   </section>;

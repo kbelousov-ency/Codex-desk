@@ -6,12 +6,17 @@ const DEFAULT_FILE_BYTES = 2 * 1024 * 1024;
 const DEFAULT_FILES = 5;
 const MAX_LINE_BYTES = 8 * 1024;
 const LOG_NAME = /^desk-(\d{13})-(\d+)-([a-f0-9]{16})\.(\d{6})\.jsonl$/;
+const RUN_STATE_NAME = 'run-state.json';
+const RUN_STATE_BYTES = 8 * 1024;
+const RUN_STATE_SCHEMA = 1;
+const RUN_STATE_PHASES = new Set(['running', 'closing', 'clean']);
 const ID = /^[a-f0-9]{16}$/;
+const BUILD_ID = /^(?:[a-f0-9]{16}|[a-f0-9]{64})$/;
 const VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)(?:\.\d{1,4}){0,4})?$/;
 const DATE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
 const LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 const EVENTS = new Set([
-  'app.start', 'app.ready', 'app.quit', 'app.fatal', 'app.unhandled', 'app.childGone', 'app.profile', 'app.shellIcon',
+  'app.start', 'app.ready', 'app.quit', 'app.quitRequested', 'app.previousAbnormal', 'app.fatal', 'app.unhandled', 'app.childGone', 'app.profile', 'app.shellIcon',
   'window.created', 'window.closed', 'window.loadFailed', 'window.unresponsive',
   'window.rendererGone', 'window.preloadError', 'window.openFailed',
   'session.created', 'session.disposed', 'ipc.start', 'ipc.complete', 'ipc.failed',
@@ -21,10 +26,12 @@ const EVENTS = new Set([
   'rpc.start', 'rpc.complete', 'rpc.failed', 'rpc.respond', 'rpc.serverRequest', 'rpc.notification',
   'codex.notification', 'codex.serverRequest', 'codex.version', 'claude.version',
   'claude.token.saved', 'claude.token.cleared',
+  'approval.auto',
   'terminal.opened', 'terminal.closed', 'terminal.failed', 'unknown',
 ]);
 const CHANNELS = new Set([
   'host:getSettings', 'host:setSettings', 'host:openTerminal', 'host:getMcpConfig',
+  'host:listApprovalRules', 'host:dropApprovalRule',
   'host:previewMcpImport', 'host:saveMcpImport', 'host:reloadMcp', 'host:checkMcp',
   'host:previewMcpRemoval', 'host:removeMcpServer',
   'host:getWorkspace', 'host:listArchivedThreads', 'host:searchThreads',
@@ -92,10 +99,10 @@ const CODEX_ERRORS = new Set([
 ]);
 const NUMBERS = new Set([
   'windowId', 'requestId', 'durationMs', 'generation', 'count', 'exitCode', 'code',
-  'suppressedCount', 'httpStatusCode', 'bytes', 'files', 'entries', 'line', 'column', 'reactError',
+  'suppressedCount', 'httpStatusCode', 'bytes', 'files', 'entries', 'line', 'column', 'reactError', 'previousPid', 'previousAgeMs',
 ]);
 const BOOLEANS = new Set(['success', 'canceled', 'retry', 'packaged', 'available']);
-const IDS = new Set(['sessionId', 'clientId', 'threadId', 'turnId', 'projectId', 'fingerprint']);
+const IDS = new Set(['sessionId', 'clientId', 'threadId', 'turnId', 'projectId', 'fingerprint', 'previousRunId']);
 const VERSION_KEYS = new Set(['appVersion', 'electronVersion', 'chromeVersion', 'nodeVersion', 'codexVersion', 'claudeVersion']);
 const APP_FILES = new Set([
   'main.mjs', 'preload.cjs', 'diagnostics.mjs', 'codex-client.mjs', 'window-session.mjs',
@@ -204,6 +211,8 @@ function safeData(data) {
   }
   for (const key of BOOLEANS) if (typeof field(data, key) === 'boolean') result[key] = field(data, key);
   for (const key of IDS) if (typeof field(data, key) === 'string' && ID.test(field(data, key))) result[key] = field(data, key);
+  const previousBuildId = field(data, 'previousBuildId');
+  if (typeof previousBuildId === 'string' && BUILD_ID.test(previousBuildId)) result.previousBuildId = previousBuildId;
   for (const [key, allowed] of [['method', METHODS], ['channel', CHANNELS], ['state', STATES], ['status', STATES], ['reason', REASONS]]) {
     const value = field(data, key);
     if (typeof value === 'string') result[key] = allowed.has(value) ? value : 'unknown';
@@ -212,6 +221,10 @@ function safeData(data) {
   if (['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGSEGV', 'SIGHUP', 'SIGBREAK', 'SIGQUIT'].includes(signal)) result.signal = signal;
   const kind = field(data, 'kind');
   if (['error', 'unhandledrejection', 'react'].includes(kind)) result.kind = kind;
+  const phase = field(data, 'phase');
+  if (RUN_STATE_PHASES.has(phase)) result.phase = phase;
+  const previousPhase = field(data, 'previousPhase');
+  if (RUN_STATE_PHASES.has(previousPhase)) result.previousPhase = previousPhase;
   const error = field(data, 'error');
   if (error && typeof error === 'object') result.error = safeError(error);
   return result;
@@ -284,6 +297,60 @@ function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
 }
 
+function validRunStateDate(value) {
+  return typeof value === 'string' && DATE.test(value) && Number.isFinite(Date.parse(value));
+}
+
+function readRunState(filename) {
+  try {
+    const stat = fs.lstatSync(filename);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink > 1 || stat.size > RUN_STATE_BYTES) return null;
+    const value = JSON.parse(fs.readFileSync(filename, 'utf8'));
+    const schemaVersion = field(value, 'schemaVersion');
+    const runId = field(value, 'runId');
+    const pid = field(value, 'pid');
+    const phase = field(value, 'phase');
+    const startedAt = field(value, 'startedAt');
+    const heartbeatAt = field(value, 'heartbeatAt');
+    if (schemaVersion !== RUN_STATE_SCHEMA || typeof runId !== 'string' || !ID.test(runId)
+      || !Number.isSafeInteger(pid) || pid < 1 || pid > 0xffffffff || !RUN_STATE_PHASES.has(phase)
+      || !validRunStateDate(startedAt) || !validRunStateDate(heartbeatAt)) return null;
+    const closedAt = field(value, 'closedAt');
+    const buildId = field(value, 'buildId');
+    return {
+      schemaVersion, runId, pid, phase, startedAt, heartbeatAt,
+      ...(validRunStateDate(closedAt) ? { closedAt } : {}),
+      ...(typeof buildId === 'string' && BUILD_ID.test(buildId) ? { buildId } : {}),
+    };
+  } catch { return null; }
+}
+
+function writeRunState(filename, value) {
+  let temporary = null;
+  try {
+    const existing = (() => { try { return fs.lstatSync(filename); } catch { return null; } })();
+    if (existing && (!existing.isFile() || existing.isSymbolicLink() || existing.nlink > 1)) return false;
+    const text = `${JSON.stringify(value)}\n`;
+    if (Buffer.byteLength(text) > RUN_STATE_BYTES) return false;
+    temporary = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try { fs.writeFileSync(fd, text, 'utf8'); } finally { fs.closeSync(fd); }
+    try {
+      fs.renameSync(temporary, filename);
+      temporary = null;
+      return true;
+    } catch {
+      // Windows can reject replacing a file held briefly by a scanner. The
+      // state is tiny and contains no user data, so use a guarded fallback.
+      const target = fs.lstatSync(filename);
+      if (!target.isFile() || target.isSymbolicLink() || target.nlink > 1) return false;
+      fs.writeFileSync(filename, text, { encoding: 'utf8', flag: 'w', mode: 0o600 });
+      return true;
+    }
+  } catch { return false; }
+  finally { if (temporary) { try { fs.unlinkSync(temporary); } catch { /* best effort */ } } }
+}
+
 /** Local, content-free diagnostics. Never pass messages/configs to record().
  * Writes are synchronous and bounded so fatal errors survive without a flush.
  * Only exportReport() may reject; all background logging is best effort.
@@ -298,6 +365,8 @@ export function createDiagnostics({ directory, metadata = {}, limits = {} } = {}
   const environment = safeMetadata(metadata);
   let available = false, writeErrors = 0, sequence = 0, part = 0, filename = null, currentBytes = 0;
   let root;
+  let runState = null;
+  let heartbeatTimer = null;
   const hash = value => createHmac('sha256', salt).update(String(value).slice(0, 65_536)).digest('hex').slice(0, 16);
   const fail = () => { available = false; writeErrors++; };
   function rootSafe() {
@@ -340,6 +409,51 @@ export function createDiagnostics({ directory, metadata = {}, limits = {} } = {}
     filename = next;
     currentBytes = Buffer.byteLength(header);
     trim();
+  }
+  function runStateFile() { return root ? path.join(root, RUN_STATE_NAME) : null; }
+  function updateRunState(patch) {
+    if (!runState || !runStateFile()) return false;
+    runState = { ...runState, ...patch };
+    return writeRunState(runStateFile(), runState);
+  }
+  function startRun() {
+    try {
+      if (!rootSafe()) return null;
+      const previous = readRunState(runStateFile());
+      const previousIsOtherLive = previous && previous.pid !== process.pid && previous.phase !== 'clean' && alive(previous.pid);
+      const now = new Date().toISOString();
+      let abnormal = null;
+      if (previous && previous.pid !== process.pid && previous.phase !== 'clean' && !previousIsOtherLive) {
+        const heartbeat = Date.parse(previous.heartbeatAt);
+        abnormal = {
+          reason: 'abnormal-exit', previousPid: previous.pid, previousRunId: previous.runId, previousPhase: previous.phase,
+          ...(previous.buildId ? { previousBuildId: previous.buildId } : {}),
+          ...(Number.isFinite(heartbeat) ? { previousAgeMs: Math.max(0, Date.now() - heartbeat) } : {}),
+        };
+      }
+      // A second test instance may share a directory, but must not overwrite a
+      // live process's marker. Production single-instance locking makes this
+      // branch rare; keeping the marker is the conservative choice.
+      if (previousIsOtherLive) return null;
+      runState = {
+        schemaVersion: RUN_STATE_SCHEMA, runId, pid: process.pid, phase: 'running', startedAt: now, heartbeatAt: now,
+        ...(environment.buildId ? { buildId: environment.buildId } : {}),
+      };
+      if (!writeRunState(runStateFile(), runState)) { runState = null; return abnormal; }
+      heartbeatTimer = setInterval(() => { updateRunState({ heartbeatAt: new Date().toISOString() }); }, 20_000);
+      heartbeatTimer.unref?.();
+      return abnormal;
+    } catch { runState = null; return null; }
+  }
+  function markClosing() {
+    try { updateRunState({ phase: 'closing', heartbeatAt: new Date().toISOString() }); } catch { /* best effort */ }
+  }
+  function markCleanExit() {
+    try {
+      if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+      const now = new Date().toISOString();
+      updateRunState({ phase: 'clean', heartbeatAt: now, closedAt: now });
+    } catch { /* best effort */ }
   }
   try {
     if (typeof directory !== 'string' || !directory) throw new TypeError('Diagnostics directory is required.');
@@ -448,6 +562,9 @@ export function createDiagnostics({ directory, metadata = {}, limits = {} } = {}
   }
   return Object.freeze({
     record,
+    startRun,
+    markClosing,
+    markCleanExit,
     error(event, error, data = {}, level = 'error') {
       try { record(level, event, { ...safeData(data), error: classify(error, hash) }); } catch { fail(); }
     },

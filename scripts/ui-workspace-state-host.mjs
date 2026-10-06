@@ -50,6 +50,9 @@ async function logs() {
 }
 try {
   await launch(); await ready();
+  await view().getByRole('combobox', { name: 'Режим доступа', exact: true }).click();
+  await view().getByRole('option', { name: /По моим правилам/ }).click();
+  await waitUntil(async () => (await disk().catch(() => null))?.tabs[0]?.settings?.access === 'rules', 'rules access mode persisted');
   await input().fill('Draft from autosave');
   await waitUntil(async () => (await disk().catch(() => null))?.tabs[0]?.draft === 'Draft from autosave', 'debounced native autosave');
   // The close handshake must capture text edited less than one debounce period ago.
@@ -72,6 +75,7 @@ try {
   assert.equal((await disk()).tabs[0].draft, 'Final draft at close');
   await launch(); await ready();
   assert.equal(await input().inputValue(), 'Final draft at close');
+  assert.equal(await view().getByRole('combobox', { name: 'Режим доступа', exact: true }).getAttribute('data-value'), 'rules');
   results.push('normal close captures latest draft and ordinary startup restores it');
 
   await view().locator('input[type="file"]').setInputFiles({ name: image.name, mimeType: 'image/png', buffer: Buffer.from(png.split(',')[1], 'base64') });

@@ -14,6 +14,7 @@ import CommandMenu from './CommandMenu';
 import { matchingCommands, parseSlashCommand, type CommandName } from './slash-commands';
 import AccessSelect from './AccessSelect';
 import ComposerSelect from './ComposerSelect';
+import RouterConnectionSettings from './RouterConnectionSettings';
 import FileBrowser from './FileBrowser';
 import { groupFileChanges, relativeChangePath } from './change-utils';
 import ConversationOutline from './ConversationOutline';
@@ -25,9 +26,10 @@ import ProjectSidebar from './ProjectSidebar';
 import { ActivityPanel, ChangesPanel, reasoningText, activityLabel } from './Panels';
 import './terminal.css';
 import SettingsDialog from './SettingsDialog';
-import { BookOpen, Plug, Sparkles } from 'lucide-react';
+import { BookOpen, ListChecks, Plug, Sparkles } from 'lucide-react';
 import McpSettings from './McpSettings';
 import MemoryRulesSettings from './MemoryRulesSettings';
+import ApprovalRulesSettings from './ApprovalRulesSettings';
 import SkillsSettings from './SkillsSettings';
 import UpdateNotice from './UpdateNotice';
 import MessageQueue from './MessageQueue';
@@ -164,7 +166,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     }
     resultContext.current = { cwd: codex.cwd, threadId: codex.thread?.id };
   }, [codex.cwd, codex.thread?.id]);
-  const locked = Boolean(codex.pendingMessage) || workspace?.actionBusy || codex.terminalOpen || codex.busy || codex.loading || codex.authInProgress || codex.connection === 'connecting';
+  const locked = codex.sourceChanging || Boolean(codex.pendingMessage) || workspace?.actionBusy || codex.terminalOpen || codex.busy || codex.loading || codex.authInProgress || codex.connection === 'connecting';
   const ready = codex.connection === 'ready';
   const queueOwner = useRef<{ threadId?: string; cwd?: string } | null>(initialQueue?.items.length ? { threadId: initialQueue.threadId || initialThread?.id, cwd: initialQueue.cwd || initialThread?.cwd } : null);
   const queueOwnerMismatch = Boolean(queueOwner.current && ((queueOwner.current.threadId && queueOwner.current.threadId !== codex.thread?.id) || (queueOwner.current.cwd && codex.cwd && queueOwner.current.cwd !== codex.cwd)));
@@ -199,7 +201,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     editThread.current = codex.thread.id;
   }, [bridge, codex.cwd, codex.thread?.id]);
   const canOperateThread = !codex.pendingMessage && !selectingFiles && !workspace?.actionBusy && ready && codex.threadReady && Boolean(codex.thread) && !codex.terminalOpen && !codex.busy && !codex.loading && !codex.requests.length;
-  const canCompact = codex.capabilities.compact && canOperateThread;
+  const canCompact = codex.capabilities.compact && canOperateThread && !codex.modelUnavailable;
   useEffect(() => {
     if (codex.busy || codex.loading || codex.authInProgress || codex.terminalOpen || codex.connection !== 'ready') setShowHandoff(false);
   }, [codex.busy, codex.loading, codex.authInProgress, codex.terminalOpen, codex.connection]);
@@ -219,7 +221,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   }, [showHistory]);
   const selectedModel = codex.models.find(model => model.model === codex.model);
   const efforts = selectedModel?.supportedReasoningEfforts || [];
-  const modelOptions = codex.models.map(model => ({ value: model.model, label: model.displayName || model.model }));
+  const modelOptions = codex.models.map(model => ({ value: model.model, label: `${model.displayName || model.model}${model.unavailable ? ' · недоступна' : ''}` }));
   if (!codex.model) modelOptions.unshift({ value: '', label: 'Из конфигурации' });
   else if (!modelOptions.some(option => option.value === codex.model)) modelOptions.unshift({ value: codex.model, label: codex.model });
   const effortOptions = [{ value: '', label: 'По умолчанию' }, ...efforts.map(item => ({ value: item.reasoningEffort, label: effortLabels[item.reasoningEffort] || item.reasoningEffort }))];
@@ -295,9 +297,9 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       initialized: ready && (!initialThread || resumeAttempted.current),
       connection: codex.connection, pending: codex.requests.length, pendingDelivery: Boolean(codex.pendingMessage),
       changedFiles: collectActiveChangedFiles(codex.items, codex.turnWork, codex.busy),
-      settings: { ...(codex.provider === 'claude' ? { provider: codex.provider } : {}), model: codex.model, effort: codex.effort, access: codex.access },
+      settings: { ...(codex.provider === 'claude' ? { provider: codex.provider } : {}), connectionSource: codex.connectionSource, model: codex.model, effort: codex.effort, access: codex.access },
     });
-  }, [workspace?.report, sessionId, codex.cwd, codex.thread?.id, dialogueTitle, initialThread, codex.terminalOpen, codex.busy, codex.loading, codex.connection, codex.requests.length, codex.pendingMessage, codex.provider, codex.model, codex.effort, codex.access, codex.items, codex.turnWork]);
+  }, [workspace?.report, sessionId, codex.cwd, codex.thread?.id, dialogueTitle, initialThread, codex.terminalOpen, codex.busy, codex.loading, codex.connection, codex.requests.length, codex.pendingMessage, codex.provider, codex.connectionSource, codex.model, codex.effort, codex.access, codex.items, codex.turnWork]);
   const captureUpdateRef = useRef<(persistent?: boolean) => UpdateTabSnapshot | null>(() => null);
   captureUpdateRef.current = persistent => {
     if (!persistent && (sending || queue.inFlight || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || codex.loading || codex.busy || codex.terminalOpen || codex.requests.length || codex.connection === 'connecting')) return null;
@@ -309,7 +311,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       scrollTop: pendingScroll.current ?? (active && chatRef.current ? chatRef.current.scrollTop : savedScrollTop.current),
       scrollAnchor: pendingScroll.current !== undefined || !active || !chatRef.current ? savedAnchor.current : readScrollAnchor(chatRef.current),
       ...(savedDraft.current ? { preservedDraft: savedDraft.current } : {}),
-      settings: !codex.cwd && restoreSettings ? restoreSettings : { ...(codex.provider === 'claude' ? { provider: codex.provider } : {}), model: codex.model, effort: codex.effort, access: codex.access },
+      settings: !codex.cwd && restoreSettings ? restoreSettings : { ...(codex.provider === 'claude' ? { provider: codex.provider } : {}), connectionSource: codex.connectionSource, model: codex.model, effort: codex.effort, access: codex.access },
       ...(selected ? { thread: { id: selected.id, ...(codex.provider === 'claude' ? { provider: codex.provider } : {}), cwd: codex.cwd || selected.cwd, name: dialogueTitle, ...(selected.historyMode ? { historyMode: selected.historyMode } : {}) } } : {}),
     };
   };
@@ -674,15 +676,17 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
         {codex.notice && <div className="alert notice-alert"><span>{codex.notice}</span>{codex.canContinue && <button type="button" className="continue-button" aria-label="Продолжить выполнение" data-tooltip="Отправить «Продолжай» в этот диалог" disabled={locked || !ready || !codex.threadReady || sending || readingImages || Boolean(codex.requests.length)} onClick={() => void continueStopped()}><ArrowRight size={14} />Продолжить</button>}<button className="icon-button small" data-tooltip="Скрыть уведомление" aria-label="Скрыть уведомление" onClick={() => codex.setNotice('')}><X size={14} /></button></div>}
         {ready && codex.thread && !codex.threadReady && !codex.loading && <div className="alert notice-alert"><span>Для продолжения нужно подключить диалог.</span><button disabled={locked || sending} onClick={() => void codex.resume(codex.thread!, true)}><RefreshCw size={14} />Повторить подключение</button></div>}
         {(editingMessage || loadingEdit) && <div className="composer-edit-banner" role="status"><span><strong>{loadingEdit ? 'Восстанавливаем сообщение…' : 'Редактирование сообщения'}</strong>{loadingEdit ? 'Загружаем исходные изображения.' : 'Исправленный текст отправится новым сообщением. Ваш черновик сохранён.'}</span><button type="button" className="text-button" aria-label="Отменить редактирование" disabled={sending || readingImages || selectingFiles} onClick={cancelEdit}>Отмена</button></div>}
-        <MessageQueue queue={queue} blocked={queueBlocked} />
+        {ready && codex.modelUnavailable && <div className="alert notice-alert" role="status"><span>Модель «{codex.model}» отсутствует в списке этого источника. Выберите доступную модель для продолжения.</span><button disabled={locked || sending} onClick={() => setModelSignal(value => value + 1)}>Выбрать модель</button></div>}
+        <MessageQueue queue={queue} blocked={queueBlocked || codex.modelUnavailable} />
         <div ref={composerRef} className={`composer ${dragOver ? 'drag-over' : ''} ${queue.state.items.length ? 'with-queue' : ''}`}>
           {commands.length > 0 && <CommandMenu commands={commands} selected={Math.min(commandIndex, commands.length - 1)} onHighlight={setCommandIndex} onSelect={name => void chooseCommand(name)} />}
           {dragOver && <div className="drop-overlay"><ImagePlus size={24} />Изображения — вложениями, остальные файлы — путями</div>}
           {attachments.length > 0 && <div className="attachments">{attachments.map((attachment, i) => <div className="attachment" key={`${attachment.name}-${i}`}><img src={attachment.dataUrl} alt={attachment.name} /><button data-tooltip="Удалить изображение" aria-label={`Удалить ${attachment.name}`} disabled={loadingEdit || sending} onClick={() => setAttachments(previous => previous.filter((_, index) => index !== i))}><X size={12} /></button><span>{attachment.name}</span></div>)}</div>}
-          <textarea ref={inputRef} value={text} readOnly={loadingEdit || (editingMessage && sending)} rows={2} placeholder="Что будем делать? Можно вставить или перенести файлы…" aria-label={`Сообщение ${engineName}`} onChange={e => { setCommandMenuOpen(false); setText(e.target.value); }} onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === 'Escape' && (editingMessage || loadingEdit)) { e.preventDefault(); cancelEdit(); } else if (commands.length && e.key === 'Escape') { e.preventDefault(); setCommandMenuOpen(false); setCommandDismissed(true); } else if (commands.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setCommandKeyboardSelected(true); setCommandIndex(index => (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length); } else if (commands.length && (matchingCommands(text).length > 0 || commandKeyboardSelected) && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { e.preventDefault(); void chooseCommand(commands[Math.min(commandIndex, commands.length - 1)].name); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+          <textarea ref={inputRef} value={text} readOnly={loadingEdit || (editingMessage && sending) || Boolean(workspace?.actionBusy)} rows={2} placeholder="Что будем делать? Можно вставить или перенести файлы…" aria-label={`Сообщение ${engineName}`} onChange={e => { setCommandMenuOpen(false); setText(e.target.value); }} onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === 'Escape' && (editingMessage || loadingEdit)) { e.preventDefault(); cancelEdit(); } else if (commands.length && e.key === 'Escape') { e.preventDefault(); setCommandMenuOpen(false); setCommandDismissed(true); } else if (commands.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setCommandKeyboardSelected(true); setCommandIndex(index => (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length); } else if (commands.length && (matchingCommands(text).length > 0 || commandKeyboardSelected) && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { e.preventDefault(); void chooseCommand(commands[Math.min(commandIndex, commands.length - 1)].name); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
           <div className="composer-toolbar"><div className="composer-tools"><button className="icon-button attach-button" data-tooltip="Добавить файлы: изображения с превью, остальные — путями в сообщение" aria-label="Добавить файлы" disabled={readingImages || selectingFiles || loadingEdit || sending || Boolean(workspace?.actionBusy)} onClick={() => void chooseFiles()}>{readingImages || selectingFiles ? <LoaderCircle size={18} className="spin" /> : <Plus size={20} />}</button><span className="toolbar-divider" />
             <button type="button" className="icon-button" aria-label={`Команды ${engineName}`} data-tooltip={`Команды ${engineName} (/)`} disabled={editingMessage || loadingEdit || sending} onClick={() => { setCommandMenuOpen(value => !value); setCommandDismissed(false); setCommandKeyboardSelected(false); inputRef.current?.focus(); }}><Terminal size={16} /></button>
             <ComposerSelect kind="provider" label="Агент" value={codex.provider} options={[{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude Code" }]} icon={<Terminal size={14} />} disabled={!workspace || Boolean(workspace.opening) || Boolean(workspace.actionBusy) || selectingFiles} active={active} onChange={selectProvider} />
+            <ComposerSelect kind="source" label="Источник" value={codex.connectionSource} options={[{ value: "inherited", label: "Настройки CLI" }, { value: "account", label: "Личный аккаунт" }, { value: "router", label: "Роутер" }]} icon={<Plug size={14} />} disabled={Boolean(locked || selectingFiles || sending || readingImages || codex.requests.length)} active={active} onChange={value => void codex.selectConnectionSource(value)} />
             <ComposerSelect kind="model" label="Модель" value={codex.model} options={modelOptions} icon={<Cpu size={14} />} disabled={locked || selectingFiles || !ready} active={active} openSignal={modelSignal} onChange={codex.selectModel} />
             <ComposerSelect kind="effort" label="Глубина размышлений" value={codex.effort} options={effortOptions} icon={<Brain size={14} />} disabled={locked || selectingFiles || !ready || !efforts.length} active={active} onChange={codex.selectEffort} />
           </div><div className="composer-actions">
@@ -691,10 +695,10 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
               <button type="button" className="composer-action composer-enqueue" aria-label="Отправить после завершения" data-tooltip="В очередь — отправить сообщение после завершения текущей задачи" disabled={(!text.trim() && !attachments.length) || queueOwnerMismatch || selectingFiles || sending || readingImages || loadingEdit || (attachments.length > 0 && !imagesSupported)} onClick={enqueueMessage}><ListPlus size={15} /><span>В очередь</span></button>
               {codex.busy && <span className="composer-action-divider" aria-hidden="true" />}
             </>}
-            {codex.busy ? <button className="stop-button" onClick={() => void codex.stop()} data-tooltip="Остановить выполнение" aria-label="Остановить выполнение"><Square size={14} fill="currentColor" /></button> : <button className="send-button" data-tooltip="Отправить (Enter)" aria-label="Отправить сообщение" disabled={!ready || locked || selectingFiles || sending || readingImages || loadingEdit || (!text.trim() && !attachments.length)} onClick={() => void send()}><ArrowUp size={20} /></button>}
+            {codex.busy ? <button className="stop-button" onClick={() => void codex.stop()} data-tooltip="Остановить выполнение" aria-label="Остановить выполнение"><Square size={14} fill="currentColor" /></button> : <button className="send-button" data-tooltip="Отправить (Enter)" aria-label="Отправить сообщение" disabled={!ready || locked || codex.modelUnavailable || selectingFiles || sending || readingImages || loadingEdit || (!text.trim() && !attachments.length)} onClick={() => void send()}><ArrowUp size={20} /></button>}
           </div></div>
         </div>
-        <div className="composer-footer"><AccessSelect provider={codex.provider} value={codex.access} disabled={locked || selectingFiles || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span>{codex.capabilities.usage && <UsageLimit usage={codex.usage} loading={codex.usageLoading} active={active} disabled={!ready || locked || sending} onRefresh={() => void codex.refreshUsage()} onCommand={command => { if (ready && !locked && !sending) void codex.send(command, []); }} />}<RouterUsage bridge={bridge} enabled={codex.provider === 'codex' && codex.config?.model_provider === 'router'} ready={ready} active={active} /><CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compactSupported={codex.capabilities.compact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
+        <div className="composer-footer"><AccessSelect provider={codex.provider} value={codex.access} disabled={locked || selectingFiles || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span>{codex.capabilities.usage && codex.connectionSource !== 'router' && <UsageLimit usage={codex.usage} loading={codex.usageLoading} active={active} disabled={!ready || locked || sending} onRefresh={() => void codex.refreshUsage()} onCommand={command => { if (ready && !locked && !sending) void codex.send(command, []); }} />}<RouterUsage bridge={bridge} enabled={codex.connectionSource === 'router' || (codex.connectionSource === 'inherited' && codex.provider === 'codex' && codex.config?.model_provider === 'router')} ready={ready} active={active} /><CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compactSupported={codex.capabilities.compact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
       </div>
     </main>
 
@@ -717,7 +721,8 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     {showSettings && <SettingsDialog active={active} busy={memoryRulesBusy} onClose={() => setShowSettings(false)} tabs={[
       { id: 'agent', label: 'Агент', icon: <Cpu size={15} aria-hidden="true" />, content: <>
         <div className="settings-provider-summary"><strong>Агент: {engineName}</strong><p>Выберите агента под сообщением. Другой агент откроется в отдельной вкладке.</p></div>
-        {codex.provider === 'claude' && <ClaudeAuthSettings bridge={bridge} disabled={Boolean(locked || codex.requests.length || sending || readingImages || selectingFiles)} loginInProgress={codex.authInProgress} />}
+        {codex.provider === 'claude' && <RouterConnectionSettings bridge={bridge} disabled={Boolean(locked || codex.requests.length || sending || readingImages || selectingFiles)} onBusyChange={setMemoryRulesBusy} onConnected={() => codex.connectionSource === 'router' ? codex.reconnect() : codex.selectConnectionSource('router')} />}
+        {codex.provider === 'claude' && <ClaudeAuthSettings bridge={bridge} disabled={Boolean(memoryRulesBusy || locked || codex.requests.length || sending || readingImages || selectingFiles)} loginInProgress={codex.authInProgress} />}
         <EffectiveSettings details={codex.agentDetails} detailsLoading={codex.agentDetailsLoading} provider={codex.provider} model={codex.model} effort={codex.effort} access={codex.access} sources={codex.sources} executable={codex.executable} cliVersion={codex.cliVersion} capabilities={codex.capabilities} cwd={codex.cwd} />
         <div className="settings-explanation"><Terminal size={18} /><p>Оболочка использует установленный {engineName} CLI, его аккаунт, конфигурацию, навыки и инструкции проекта. Модель и глубину размышлений можно изменить под сообщением.</p></div>
         <div className="settings-explanation"><Brain size={18} /><p>Пояснения появляются, только когда {engineName} прислал текст. Пустые блоки скрыты. Конкретные команды, читаемые файлы и результаты видны в панели «Действия».</p></div>
@@ -732,6 +737,8 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       </> },
       { id: 'mcp', label: 'MCP', icon: <Plug size={15} aria-hidden="true" />, content: codex.capabilities.mcp ? <McpSettings bridge={bridge} active={active && showSettings} /> : <p className="muted">Подключения Claude Code настраиваются через его CLI. Импорт MCP из этого окна пока доступен для Codex.</p> },
       { id: 'skills', label: 'Навыки', icon: <Sparkles size={15} aria-hidden="true" />, content: <SkillsSettings provider={codex.provider} cwd={codex.cwd} active={active && showSettings} /> },
+      ...(codex.provider === 'codex' ? [{ id: 'approvals', label: 'Правила', icon: <ListChecks size={15} aria-hidden="true" />,
+        content: <ApprovalRulesSettings bridge={bridge} active={active && showSettings} /> }] : []),
       { id: 'memory', label: 'Память', icon: <BookOpen size={15} aria-hidden="true" />, content: <MemoryRulesSettings onBusyChange={setMemoryRulesBusy} /> },
     ]} />}
 

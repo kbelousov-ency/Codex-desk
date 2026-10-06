@@ -51,13 +51,18 @@ export function codexVersionFrom(userAgent) {
 }
 
 export class CodexClient extends EventEmitter {
-  constructor({ executable = 'codex', cwd, spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics, diagnosticContext = {} } = {}) {
+  constructor({ executable = 'codex', cwd, env, configOverrides = [], spawnImpl = spawn, requestTimeoutMs = 120_000, diagnostics, diagnosticContext = {} } = {}) {
     super();
     if (!Number.isFinite(requestTimeoutMs) || requestTimeoutMs <= 0) {
       throw new TypeError('requestTimeoutMs must be a positive finite number.');
     }
+    if (env !== undefined && (!env || typeof env !== 'object' || Array.isArray(env))) throw new TypeError('env must be an object.');
+    if (!Array.isArray(configOverrides) || configOverrides.length > 100 || configOverrides.some(value => typeof value !== 'string' || !value || value.length > 128 * 1024 || /[\r\n\0]/.test(value))) throw new TypeError('configOverrides must contain configuration assignments.');
     this.executable = executable;
     this.cwd = cwd;
+    this.env = env === undefined ? undefined : { ...env };
+    this.configOverrides = [...configOverrides];
+    this.children = new Set();
     this._spawn = spawnImpl;
     this._timeout = requestTimeoutMs;
     this._sequence = 0;
@@ -180,13 +185,18 @@ export class CodexClient extends EventEmitter {
     this._status('starting');
     try {
       if (session.ended) throw new Error('Codex startup was stopped.');
-      const child = this._spawn(this.executable, ['app-server', '--listen', 'stdio://'], {
+      const child = this._spawn(this.executable, ['app-server', '--listen', 'stdio://', ...this.configOverrides.flatMap(value => ['-c', value])], {
         cwd: this.cwd,
+        ...(this.env ? { env: this.env } : {}),
         windowsHide: true,
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       session.child = child;
+      this.children.add(child);
+      child.once('close', () => this.children.delete(child));
+      child.once('exit', () => this.children.delete(child));
+      child.once('error', () => { if (!child.pid) this.children.delete(child); });
       child.on('error', (error) => this._end(session, asError(error), 'error', 'spawn'));
       child.on('exit', (code, signal) => {
         this._record('info', 'transport.exit', { exitCode: Number.isInteger(code) ? code : undefined, signal: SIGNALS.has(signal) ? signal : undefined });
@@ -281,6 +291,21 @@ export class CodexClient extends EventEmitter {
     this._startPromise = null;
     if (session && !session.ended) this._end(session, new Error('Codex was stopped.'), 'stopped', 'stop');
     else if (this.state !== 'stopped') this._status('stopped');
+  }
+
+  async stopAndWait(timeoutMs = 10_000) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError('timeoutMs must be positive.');
+    const children = [...this.children];
+    const waits = children.map(child => new Promise((resolve, reject) => {
+      if (child.exitCode != null || child.signalCode != null) { resolve(); return; }
+      const done = () => { cleanup(); resolve(); };
+      const failed = () => { if (!child.pid) done(); };
+      const cleanup = () => { clearTimeout(timer); child.removeListener('exit', done); child.removeListener('close', done); child.removeListener('error', failed); };
+      const timer = setTimeout(() => { cleanup(); reject(new Error('Codex ещё завершает предыдущий процесс. Повторите переключение.')); }, timeoutMs);
+      child.once('exit', done); child.once('close', done); child.once('error', failed);
+    }));
+    this.stop();
+    await Promise.all(waits);
   }
 
   _write(session, message) {

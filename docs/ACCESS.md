@@ -5,8 +5,11 @@
 | Подпись | Ключ Access | Sandbox | Approval policy | Reviewer |
 | --- | --- | --- | --- | --- |
 | Спрашивать разрешение | `workspace-write` | `workspace-write` | `on-request` | `user` |
+| По моим правилам | `rules` | `workspace-write` | `on-request` | `user` |
 | Одобрять за меня | `auto` | `workspace-write` | `on-request` | `auto_review` |
 | Полный доступ | `danger-full-access` | `danger-full-access` | `never` | `user` |
+
+Четвёртый пункт добавлен 2026-10-06: `rules` шлёт те же параметры, что ручной режим, а на запросы отвечает сама оболочка по правилам пользователя — без модели и без токенов. Подробности, границы и вырезы: [Подтверждения по правилам](APPROVAL_RULES.md).
 
 `accessParams` в `useCodex.ts` и отображение в `terminal-launcher.mjs` уже реализовали эти комбинации; протокол не заменяли. Для start/resume — `sandbox` строка, для turn — `sandboxPolicy`: `workspaceWrite` с текущим cwd, networkAccess:false и разрешёнными временными каталогами, либо `dangerFullAccess`. Обычные изменения внутри проекта не требуют разрешения на каждую правку. Автопроверка работает через Codex и может отказать; это не гарантированное одобрение и не автоматическое нажатие кнопок UI.
 

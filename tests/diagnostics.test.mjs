@@ -18,6 +18,47 @@ function readEntries(directory) {
     fs.readFileSync(path.join(directory, name), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)));
 }
 
+test('run marker records an abnormal previous process without user data', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-desk-run-marker-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'logs');
+  fs.mkdirSync(directory, { recursive: true });
+  const heartbeatAt = new Date(Date.now() - 60_000).toISOString();
+  fs.writeFileSync(path.join(directory, 'run-state.json'), JSON.stringify({
+    schemaVersion: 1, runId: 'aaaaaaaaaaaaaaaa', pid: 2_000_000_000, phase: 'running',
+    startedAt: heartbeatAt, heartbeatAt, buildId: 'bbbbbbbbbbbbbbbb', secret: 'must-not-be-copied',
+  }));
+  const diagnostics = createDiagnostics({ directory });
+  const previous = diagnostics.startRun();
+  assert.equal(previous.reason, 'abnormal-exit');
+  assert.equal(previous.previousPid, 2_000_000_000);
+  assert.equal(previous.previousRunId, 'aaaaaaaaaaaaaaaa');
+  assert.equal(previous.previousPhase, 'running');
+  assert.equal(previous.previousBuildId, 'bbbbbbbbbbbbbbbb');
+  assert.ok(previous.previousAgeMs >= 59_000);
+  diagnostics.record('warn', 'app.previousAbnormal', previous);
+  diagnostics.markCleanExit();
+  const entries = readEntries(directory);
+  assert.equal(JSON.stringify(entries).includes('must-not-be-copied'), false);
+  assert.deepEqual(entries.at(-1).data, {
+    previousPid: 2_000_000_000, previousAgeMs: previous.previousAgeMs,
+    previousRunId: 'aaaaaaaaaaaaaaaa', previousBuildId: 'bbbbbbbbbbbbbbbb', reason: 'abnormal-exit', previousPhase: 'running',
+  });
+});
+
+test('clean marker does not report an abnormal previous process', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-desk-clean-marker-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const directory = path.join(root, 'logs');
+  const first = createDiagnostics({ directory });
+  assert.equal(first.startRun(), null);
+  first.markClosing();
+  first.markCleanExit();
+  const next = createDiagnostics({ directory });
+  assert.equal(next.startRun(), null);
+  next.markCleanExit();
+});
+
 test('records only technical allowlisted data; secrets, paths, dynamic payloads and stacks cannot leak', async t => {
   const marker = 'PRIVATE_PAYLOAD_58_e948';
   const { diagnostics, directory, root } = fixture(t, { metadata: {

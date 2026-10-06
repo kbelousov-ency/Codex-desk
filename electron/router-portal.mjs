@@ -36,15 +36,23 @@ function onlyKeys(value, keys) {
   return object(value) && Object.keys(value).every(key => keys.includes(key));
 }
 
+const headerName = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,256}$/;
+function validHeaders(value) {
+  return object(value) && Object.entries(value).every(([key, header]) => headerName.test(key)
+    && typeof header === 'string' && header.length <= 8192 && !/[\x00-\x1f\x7f]/.test(header));
+}
+
 function validateConfig(apiKey, provider, defaults) {
-  if (!onlyKeys(provider, ['name', 'base_url', 'wire_api', 'requires_openai_auth'])
+  if (!onlyKeys(provider, ['name', 'base_url', 'wire_api', 'requires_openai_auth', 'http_headers'])
     || !text(provider.name, 160) || provider.wire_api !== 'responses' || provider.requires_openai_auth !== false
+    || (Object.hasOwn(provider, 'http_headers') && !validHeaders(provider.http_headers))
     || !onlyKeys(defaults, ['model', 'model_provider', 'model_context_window', 'model_auto_compact_token_limit', 'model_reasoning_summary', 'hide_agent_reasoning'])
     || !['model', 'model_provider', 'model_context_window', 'model_auto_compact_token_limit', 'model_reasoning_summary', 'hide_agent_reasoning'].every(key => Object.hasOwn(defaults, key))
     || !text(defaults.model, 128) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/.test(defaults.model)
     || !text(defaults.model_provider, 128) || !/^[a-zA-Z0-9_-]+$/.test(defaults.model_provider)
     || forbiddenKeys.has(defaults.model_provider)) throw portalError('invalid_response');
-  if ([...Object.values(provider), ...Object.values(defaults)].some(value => typeof value === 'string' && value.includes(apiKey))) throw portalError('invalid_response');
+  if ([...Object.values(provider), ...Object.values(defaults)].some(value => typeof value === 'string' && value.includes(apiKey))
+    || (validHeaders(provider.http_headers) && Object.values(provider.http_headers).some(value => value.includes(apiKey)))) throw portalError('invalid_response');
   try {
     const url = new URL(provider.base_url);
     if (!text(provider.base_url, 2048) || url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error();

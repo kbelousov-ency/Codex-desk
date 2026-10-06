@@ -1,12 +1,13 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Check, ChevronDown, Hand, Shield, ShieldAlert, ShieldCheck, type LucideIcon } from 'lucide-react';
+import { Check, ChevronDown, Hand, ListChecks, Shield, ShieldAlert, ShieldCheck, type LucideIcon } from 'lucide-react';
 import type { Access, AgentProvider } from './types';
 import { agentName } from './AgentContext';
 import './access-select.css';
 
 const codexModes: { value: Access; label: string; description: string; icon: LucideIcon }[] = [
   { value: 'workspace-write', label: 'Спрашивать разрешение', description: 'Запрашивать разрешение на изменения вне проекта и доступ к сети', icon: Hand },
-  { value: 'auto', label: 'Одобрять за меня', description: 'Автоматически проверять запросы на дополнительный доступ', icon: ShieldCheck },
+  { value: 'rules', label: 'По моим правилам', description: 'Оболочка сама одобряет чтение, git внутри проекта и сохранённые правила; остальное спрашивает', icon: ListChecks },
+  { value: 'auto', label: 'Одобрять за меня', description: 'Запросы на дополнительный доступ проверяет отдельная модель Codex; расходует токены', icon: ShieldCheck },
   { value: 'danger-full-access', label: 'Полный доступ', description: 'Доступ к файлам и сети без запросов подтверждения', icon: ShieldAlert },
 ];
 
@@ -15,6 +16,8 @@ export function accessLabel(provider: AgentProvider, value: Access | undefined):
   if (!value || value === 'inherited') return `Как в ${agentName(provider)}`;
   if (value === 'read-only') return provider === 'claude' ? 'Планирование' : 'Только чтение';
   if (value === 'auto') return provider === 'claude' ? 'Разрешать правки' : 'Одобрять за меня';
+  // `rules` belongs to the Codex tab only; a Claude tab carrying it shows its own manual mode instead.
+  if (value === 'rules' && provider === 'claude') return 'Спрашивать разрешение';
   return codexModes.find(mode => mode.value === value)?.label ?? value;
 }
 
@@ -25,14 +28,17 @@ export default function AccessSelect({ value, disabled, active = true, onChange,
   const modes = provider === 'claude' ? [
     { value: 'workspace-write' as Access, label: 'Спрашивать разрешение', description: 'Обычные подтверждения инструментов Claude Code', icon: Hand },
     { value: 'auto' as Access, label: 'Разрешать правки', description: 'Автоматически разрешать редактирование файлов; остальные инструменты проверяет Claude Code', icon: ShieldCheck },
-    codexModes[2],
+    codexModes[3],
   ] : codexModes;
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const id = useId();
-  const selectedIndex = modes.findIndex(mode => mode.value === value);
+  // A Claude tab may carry `rules` from a copied Codex profile; Claude has no rules engine, so the menu
+  // shows its manual mode rather than an empty selection.
+  const effective = provider === 'claude' && value === 'rules' ? 'workspace-write' : value;
+  const selectedIndex = modes.findIndex(mode => mode.value === effective);
   const selected = Math.max(0, selectedIndex);
   const currentMode = modes[selectedIndex];
   const label = currentMode?.label ?? (value === 'read-only' ? (provider === 'claude' ? 'Планирование' : 'Только чтение') : `Как в ${engineName}`);
@@ -71,10 +77,10 @@ export default function AccessSelect({ value, disabled, active = true, onChange,
       <div className="access-menu-header">Как подтверждать действия {engineName}?</div>
       {!currentMode && <p id={`${id}-legacy`} className="access-current-note"><strong>Сейчас: {label}</strong><span>Текущий режим сохраняется до выбора одного из вариантов.</span></p>}
       <div id={id} role="listbox" aria-label="Выберите режим доступа" aria-describedby={!currentMode ? `${id}-legacy` : undefined}>
-        {modes.map((mode, index) => <div role="option" aria-selected={value === mode.value} id={`${id}-${index}`} data-value={mode.value} key={mode.value} className={`access-option ${highlight === index ? 'highlighted' : ''} ${mode.value === 'danger-full-access' ? 'danger-option' : ''}`} onPointerMove={() => setHighlight(index)} onPointerDown={event => event.preventDefault()} onClick={() => choose(index)}>
+        {modes.map((mode, index) => <div role="option" aria-selected={effective === mode.value} id={`${id}-${index}`} data-value={mode.value} key={mode.value} className={`access-option ${highlight === index ? 'highlighted' : ''} ${mode.value === 'danger-full-access' ? 'danger-option' : ''}`} onPointerMove={() => setHighlight(index)} onPointerDown={event => event.preventDefault()} onClick={() => choose(index)}>
           <mode.icon className="access-option-icon" size={18} aria-hidden="true" />
           <div className="access-option-copy"><strong>{mode.label}</strong><small>{mode.description}</small></div>
-          <span className="access-option-check">{value === mode.value && <Check size={16} aria-hidden="true" />}</span>
+          <span className="access-option-check">{effective === mode.value && <Check size={16} aria-hidden="true" />}</span>
         </div>)}
       </div>
     </div>}
