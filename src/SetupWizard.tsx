@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, Check, CheckCheck, CircleAlert, CircleCheck, Download, ExternalLink, FileCheck2, FileText, FolderOpen, GitBranch, KeyRound, LoaderCircle, RefreshCw, Settings2, ShieldCheck, Terminal, X } from 'lucide-react';
+import './product-logo.css';
 import AgentLogo from './AgentLogo';
 import MemoryRulesSettings from './MemoryRulesSettings';
+import { useProductName } from './BuildInfo';
 import type { AgentProvider } from './types';
 import type { PortalConfigFlow, PortalConfigPreview, PortalConfigValue, SetupAuthStatus, SetupComponentId, SetupConfigPreview, SetupProgress, SetupScan } from './setup-types';
 import './setup-wizard.css';
@@ -9,7 +11,7 @@ import './setup-wizard.css';
 const steps = [
   { label: 'Агенты', detail: 'Выбор и установка', icon: Terminal },
   { label: 'Конфигурация', detail: 'Ваши настройки Codex', icon: FileText },
-  { label: 'Вход в аккаунт', detail: 'Подключение агентов', icon: KeyRound },
+  { label: 'Доступ', detail: 'Подключение через Боцмана', icon: KeyRound },
   { label: 'Память', detail: 'Правила для всех проектов', icon: FileCheck2 },
   { label: 'Готово', detail: 'Можно начинать', icon: CheckCheck },
 ];
@@ -33,6 +35,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
   const [preview, setPreview] = useState<SetupConfigPreview | null>(null);
   const [portalFlow, setPortalFlow] = useState<PortalConfigFlow | null>(null);
   const [portalPreview, setPortalPreview] = useState<PortalConfigPreview | null>(null);
+  const productName = useProductName();
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [appliedConfig, setAppliedConfig] = useState<{ configPath: string; backupPath: string | null; message?: string } | null>(null);
   const [auth, setAuth] = useState<Partial<Record<AgentProvider, SetupAuthStatus>>>({});
@@ -72,7 +75,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
   }, []);
 
   const refresh = () => run('scan', async () => {
-    if (!bridge) throw new Error('Мастер настройки доступен в установленном приложении Codex Desk.');
+    if (!bridge) throw new Error('Мастер настройки доступен в установленном приложении Кузьмич.');
     const result = await bridge.scan();
     if (mounted.current) { setScan(result); setInstallErrors({}); setProgress({}); }
   });
@@ -131,7 +134,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
       }).catch(cause => { if (active) setError(errorText(cause)); }).finally(() => {
         if (active) { operationLock.current = false; setOperation(null); }
       });
-    } else { setOperation(null); operationLock.current = false; setError('Мастер настройки доступен в установленном приложении Codex Desk.'); }
+    } else { setOperation(null); operationLock.current = false; setError('Мастер настройки доступен в установленном приложении Кузьмич.'); }
     return () => { active = false; mounted.current = false; unsubscribe?.(); void cancelPortal().catch(() => {}); };
   }, [bridge, cancelPortal]);
 
@@ -284,7 +287,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
   const subtitles = [
     'Выберите агентов, с которыми хотите работать. Уже установленные программы подключатся автоматически.',
     'Подтвердите подключение на портале — настройки появятся здесь автоматически. Этот шаг можно пропустить.',
-    'Войдите один раз, чтобы продолжить работу в Codex Desk. Можно завершить этот шаг позже.',
+    'Войдите один раз, чтобы продолжить работу в Кузьмиче. Можно завершить этот шаг позже.',
     'Просмотрите рекомендуемые правила и включите их отдельно для каждого агента. Можно продолжить без включения и вернуться к этому в настройках.',
     'Ниже — результат настройки. К этому мастеру всегда можно вернуться из настроек приложения.',
   ];
@@ -292,13 +295,13 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
   return <div className="setup-overlay">
     <div className="setup-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="setup-title" aria-describedby="setup-description" aria-busy={busy} data-step={step}>
       <aside className="setup-sidebar" aria-label="Этапы настройки">
-        <div className="setup-brand"><span className="setup-brand-mark"><Terminal size={23} /></span><span>Codex <span>Desk</span></span></div>
+        <div className="setup-brand"><span className="setup-brand-mark kuzmich-setup-brand-mark"><img src={new URL('../electron/kuzmich-logo.svg', import.meta.url).href} width={32} height={32} alt="" aria-hidden="true" /></span><span>{productName}</span></div>
         <div className="setup-sidebar-caption">ВАШЕ РАБОЧЕЕ МЕСТО</div>
         <ol className="setup-steps">{steps.map((item, index) => <li key={item.label} className={index === step ? 'is-current' : index < step ? 'is-complete' : ''} aria-current={index === step ? 'step' : undefined}>
           <span className="setup-step-symbol">{index < step ? <Check size={17} /> : <item.icon size={17} />}</span><span><strong>{item.label}</strong><small>{item.detail}</small></span>
         </li>)}</ol>
         <div className="setup-sidebar-note"><ShieldCheck size={19} /><p>Ваши агенты.<br />Привычные возможности.<br />В одном приложении.</p></div>
-        <span className="setup-sidebar-bottom">НАСТРОЙКА CODEX DESK</span>
+        <span className="setup-sidebar-bottom">НАСТРОЙКА {productName.toUpperCase()}</span>
       </aside>
       <div className="setup-main">
         <header className="setup-header"><span>ШАГ {step + 1} ИЗ {steps.length}</span><button className="setup-icon-button" aria-label={initial ? 'Настроить позже' : 'Закрыть мастер настройки'} disabled={busy} onClick={() => finish(true)}><X size={18} /></button></header>
@@ -338,7 +341,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
 
           {step === 1 && <>
             {!installed('codex') ? <div className="setup-empty-card"><FileText size={29} /><strong>Сначала установите Codex CLI</strong><p>После установки вы сможете выбрать файл конфигурации. Можно вернуться к выбору агентов или продолжить настройку Claude.</p><button className="setup-button" onClick={() => setStep(0)}>К выбору агентов</button></div> : <>
-              <div className="setup-portal-card"><span className="setup-feature-icon"><FileText size={25} /></span><div><strong>Конфигурация через браузер</strong><p>Войдите на портал и подтвердите подключение Codex Desk. Затем проверьте полученные настройки и примените их здесь.</p>
+              <div className="setup-portal-card"><span className="setup-feature-icon"><FileText size={25} /></span><div><strong>Конфигурация через браузер</strong><p>Войдите на портал и подтвердите подключение {productName}. Затем проверьте полученные настройки и примените их здесь.</p>
                 {!portalFlow && <button className="setup-button is-primary" disabled={busy} onClick={() => void startPortal()}>{operation === 'portal-start' ? <LoaderCircle className="setup-spin" size={14} /> : <ExternalLink size={14} />}Подключить через браузер</button>}
                 {portalFlow && !portalPreview && <div className="setup-portal-waiting"><div className="setup-auth-waiting" role="status"><LoaderCircle className="setup-spin" size={15} /><span>Ожидаем подтверждения в браузере</span></div><p>Проверьте код подключения:</p><code className="setup-portal-code" aria-label="Код подключения">{portalFlow.userCode}</code>{portalFlow.browserOpened === false && <p>Браузер не открылся автоматически. Откройте его кнопкой ниже.</p>}<div className="setup-inline-actions"><button className="setup-text-button" disabled={busy} onClick={() => void run('portal-open', async () => { await bridge?.openPortalVerification(portalFlow.flowId); })}><ExternalLink size={13} />Открыть браузер снова</button><button className="setup-text-button" disabled={busy} onClick={() => void run('portal-cancel', cancelPortal)}>Отменить подключение</button></div></div>}
                 {portalPreview && <p className="setup-portal-confirmed"><CircleCheck size={15} />Подключение подтверждено в браузере</p>}
@@ -364,7 +367,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
                 <div className="setup-inline-actions">{!signedIn && !configuredProvider && <button className="setup-button" disabled={busy || waiting} onClick={() => void login(provider)}><ExternalLink size={14} />{waiting ? 'Ожидаем вход' : provider === 'claude' ? 'Войти в Claude' : 'Войти в Codex'}</button>}<button className="setup-text-button" disabled={busy} onClick={() => void checkAuth(provider)}><RefreshCw size={13} />Проверить вход</button>{waiting && <button className="setup-text-button" disabled={busy} onClick={() => setAuthWaiting(current => ({ ...current, [provider]: undefined }))}>Не ждать</button>}</div>
               </section>;
             })}</div>}
-            <div className="setup-footnote"><ShieldCheck size={16} /><p>Вход выполняется средствами самого агента. Codex Desk использует уже сохранённую авторизацию.</p></div>
+            <div className="setup-footnote"><ShieldCheck size={16} /><p>Вход выполняется средствами самого агента. {productName} использует уже сохранённую авторизацию.</p></div>
           </>}
 
           {step === 3 && <MemoryRulesSettings providers={available} showTitle={false} onBusyChange={onMemoryBusyChange} />}
@@ -379,7 +382,7 @@ export default function SetupWizard({ onClose, initial = false }: { onClose: (pr
         <footer className="setup-footer"><div>{step > 0 ? <button className="setup-button is-quiet" disabled={busy} onClick={() => navigate(step - 1)}><ArrowLeft size={15} />Назад</button> : <button className="setup-button is-quiet" disabled={busy} onClick={() => finish(true)}>Настроить позже</button>}</div><div className="setup-footer-actions">
           {step === 0 && pending.length > 0 && scan?.platformSupported && <button className="setup-text-button setup-skip-install" disabled={busy} onClick={next}>Без установки</button>}
           {step === 1 && (preview || portalPreview) && <button className="setup-text-button" disabled={busy} onClick={next}>Пропустить</button>}
-          {step === 0 ? <button className="setup-button is-primary" disabled={busy || !scan} onClick={() => pending.length > 0 && scan?.platformSupported ? void installSelected() : next()}>{busy ? <LoaderCircle className="setup-spin" size={16} /> : pending.length > 0 && scan?.platformSupported ? <Download size={16} /> : null}{operation === 'install' ? 'Устанавливаем…' : pending.length > 0 && scan?.platformSupported ? 'Установить и продолжить' : 'Продолжить'}{!busy && <ArrowRight size={15} />}</button> : step === 4 ? <button className="setup-button is-primary" disabled={busy} onClick={() => finish(false)}>{operation === 'complete' ? <LoaderCircle className="setup-spin" size={16} /> : null}{available.length ? 'Начать работу' : 'Открыть Codex Desk'}<ArrowRight size={15} /></button> : step === 1 && (preview || portalPreview) ? <button className="setup-button is-primary" disabled={busy || Boolean(preview?.exists && !replaceExisting)} onClick={() => void (portalPreview ? applyPortal(true) : applyConfig(true))}>{operation === 'apply-config' || operation === 'apply-portal' ? <LoaderCircle className="setup-spin" size={16} /> : null}Применить и продолжить<ArrowRight size={15} /></button> : <button className="setup-button is-primary" disabled={busy} onClick={next}>{step === 1 && !appliedConfig ? scan?.config.exists && installed('codex') ? 'Оставить текущую' : 'Пропустить' : step === 2 && available.some(provider => auth[provider]?.state !== 'signed-in' && auth[provider]?.state !== 'provider') ? 'Войти позже' : 'Продолжить'}<ArrowRight size={15} /></button>}
+          {step === 0 ? <button className="setup-button is-primary" disabled={busy || !scan} onClick={() => pending.length > 0 && scan?.platformSupported ? void installSelected() : next()}>{busy ? <LoaderCircle className="setup-spin" size={16} /> : pending.length > 0 && scan?.platformSupported ? <Download size={16} /> : null}{operation === 'install' ? 'Устанавливаем…' : pending.length > 0 && scan?.platformSupported ? 'Установить и продолжить' : 'Продолжить'}{!busy && <ArrowRight size={15} />}</button> : step === 4 ? <button className="setup-button is-primary" disabled={busy} onClick={() => finish(false)}>{operation === 'complete' ? <LoaderCircle className="setup-spin" size={16} /> : null}{available.length ? 'Начать работу' : `Открыть ${productName}`}<ArrowRight size={15} /></button> : step === 1 && (preview || portalPreview) ? <button className="setup-button is-primary" disabled={busy || Boolean(preview?.exists && !replaceExisting)} onClick={() => void (portalPreview ? applyPortal(true) : applyConfig(true))}>{operation === 'apply-config' || operation === 'apply-portal' ? <LoaderCircle className="setup-spin" size={16} /> : null}Применить и продолжить<ArrowRight size={15} /></button> : <button className="setup-button is-primary" disabled={busy} onClick={next}>{step === 1 && !appliedConfig ? scan?.config.exists && installed('codex') ? 'Оставить текущую' : 'Пропустить' : step === 2 && available.some(provider => auth[provider]?.state !== 'signed-in' && auth[provider]?.state !== 'provider') ? 'Войти позже' : 'Продолжить'}<ArrowRight size={15} /></button>}
         </div></footer>
       </div>
     </div>

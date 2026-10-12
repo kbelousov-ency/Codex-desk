@@ -4,7 +4,8 @@ import path from 'node:path';
 
 const PREVIEW_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_FIELDS = ['model', 'model_provider', 'model_context_window', 'model_auto_compact_token_limit', 'model_reasoning_summary', 'hide_agent_reasoning'];
-const PROVIDER_FIELDS = ['name', 'base_url', 'wire_api', 'requires_openai_auth'];
+const PROVIDER_FIELDS = ['name', 'base_url', 'wire_api', 'requires_openai_auth', 'supports_websockets', 'supports_standalone_web_search'];
+const CAPABILITY_FIELDS = ['supports_websockets', 'supports_standalone_web_search'];
 const REASONING_SUMMARIES = new Set(['auto', 'concise', 'detailed', 'none']);
 const IDENTIFIER = /^[a-zA-Z0-9_-]{1,128}$/;
 const MODEL = /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/;
@@ -32,6 +33,7 @@ function normalize(payload) {
   if (!text(apiKey, 8192) || !record(provider) || !record(defaults)
     || !text(provider.name, 160) || !cleanUrl(provider.base_url)
     || provider.wire_api !== 'responses' || provider.requires_openai_auth !== false
+    || CAPABILITY_FIELDS.some(key => own(provider, key) && typeof provider[key] !== 'boolean')
     || (own(provider, 'http_headers') && !validHeaders(provider.http_headers))
     || typeof defaults.model !== 'string' || !MODEL.test(defaults.model)
     || typeof defaults.model_provider !== 'string' || !IDENTIFIER.test(defaults.model_provider)
@@ -56,6 +58,7 @@ function safeValue(key, value) {
   if (key === 'name') return text(value, 160) ? value : 'Настроено';
   if (key === 'base_url') return cleanUrl(value) || 'Настроено';
   if (key === 'wire_api') return ['responses', 'chat'].includes(value) ? value : 'Настроено';
+  if (CAPABILITY_FIELDS.includes(key)) return typeof value === 'boolean' ? value : 'Настроено';
   if (key === 'model_reasoning_summary') return REASONING_SUMMARIES.has(value) ? value : 'Настроено';
   if (key === 'model_context_window' || key === 'model_auto_compact_token_limit') return positiveInteger(value) ? value : 'Настроено';
   if (key === 'requires_openai_auth' || key === 'hide_agent_reasoning') return typeof value === 'boolean' ? value : 'Настроено';

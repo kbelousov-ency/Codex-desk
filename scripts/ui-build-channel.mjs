@@ -65,7 +65,7 @@ try {
   assert.equal(await badge().getAttribute('title'), null, 'Only the styled tooltip appears');
   await badge().hover();
   await tooltip().waitFor();
-  assert.match(await tooltip().innerText(), /Codex Desk[\s\S]*RELEASE[\s\S]*Версия\s*0\.1\.0[\s\S]*Сборка\s*123456789abc[\s\S]*18\.09\.2026, 10:20/);
+  assert.match(await tooltip().innerText(), /Кузьмич[\s\S]*RELEASE[\s\S]*Версия\s*0\.1\.0[\s\S]*Сборка\s*123456789abc[\s\S]*18\.09\.2026, 10:20/);
   assert.equal(await badge().getAttribute('aria-describedby'), await tooltip().getAttribute('id'));
   await tooltip().hover();
   assert.equal(await tooltip().isVisible(), true, 'Pointer can enter the tooltip to read or select metadata');

@@ -13,6 +13,7 @@ export function sameSessionSummary(previous: SessionSummary | undefined, next: S
   if (previous.initialized !== next.initialized || previous.terminalOpen !== next.terminalOpen) return false;
   if (previous.busy !== next.busy || previous.loading !== next.loading || previous.connection !== next.connection) return false;
   if (previous.pending !== next.pending || Boolean(previous.pendingDelivery) !== Boolean(next.pendingDelivery)) return false;
+  if (previous.pendingKind !== next.pendingKind || previous.completedTurnRevision !== next.completedTurnRevision) return false;
   const before = previous.changedFiles || [], after = next.changedFiles || [];
   if (before.length !== after.length || before.some((path, index) => path !== after[index])) return false;
   return previous.settings.provider === next.settings.provider && previous.settings.model === next.settings.model

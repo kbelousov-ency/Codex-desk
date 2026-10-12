@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, Notification, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, Notification, safeStorage, session, shell } from 'electron';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { directoryPath, decodeImage } from './host-utils.mjs';
 import { openLink, showLocalPathMenu } from './file-links.mjs';
 import { listProjectThreads } from './project-history.mjs';
+import { listThreadChildren } from './thread-children.mjs';
 import { listProjectFiles } from './project-files.mjs';
 import { getGitStatus, getGitDiff } from './git-reader.mjs';
 import { GitRollbackService } from './git-rollback.mjs';
@@ -17,6 +18,8 @@ import { readClipboardFilePaths } from './clipboard-files.mjs';
 import { ClaudeHistory } from './claude-history.mjs';
 import { ClaudeThreadManagement } from './claude-threads.mjs';
 import { ClaudeArchiveStore } from './claude-archive.mjs';
+import { ThreadGroupStore } from './thread-groups.mjs';
+import { ThreadChildLinkStore } from './thread-child-links.mjs';
 import { ClaudeAuthService } from './claude-auth.mjs';
 import { ClaudeLaunchGate, ClaudeTokenStore } from './claude-token.mjs';
 import { HistorySearch } from './history-search.mjs';
@@ -35,7 +38,7 @@ import { createNightlyUpdate } from './nightly-update.mjs';
 import { captureUpdateCheckpoint, createUpdateCheckpoint } from './update-checkpoint.mjs';
 import { captureWorkspaceState, createWorkspaceState, createWorkspaceSaveHandshake } from './workspace-state.mjs';
 import { NotificationService, NotificationSettingsStore } from './notification-service.mjs';
-import { applicationIdentity } from './app-identity.mjs';
+import { applicationIconName, applicationIdentity, applicationShortcutName, applicationWindowAppearance } from './app-identity.mjs';
 import { persistShellIcon, watchShellShortcutIcon } from './windows-shell-icon.mjs';
 import { SetupService } from './setup-service.mjs';
 import { SetupAuth, setupProvider } from './setup-auth.mjs';
@@ -43,8 +46,14 @@ import { AppUpdateService, AppUpdateStore } from './app-updates.mjs';
 import { RouterUsageClient } from './router-usage.mjs';
 import { RouterPortalClient } from './router-portal.mjs';
 import { PortalSetupService } from './portal-setup.mjs';
+import { PortalLimitsClient } from './portal-limits.mjs';
+import { readSessionRouterUsage } from './session-router-usage.mjs';
+import { BoatswainSetupService } from './boatswain-setup.mjs';
+import { PortalAuthWindow } from './portal-auth-window.mjs';
+import { PortalSessionService, PORTAL_PARTITION } from './portal-session.mjs';
+import { PortalConnectService } from './portal-connect.mjs';
 import { RouterConnectionStore } from './router-connections.mjs';
-import { buildClaudeConnectionProfile } from './connection-source.mjs';
+import { buildClaudeConnectionProfile, readInheritedClaudeRouter } from './connection-source.mjs';
 import { buildCodexConnectionProfile, readCodexRouterConnection } from './codex-connections.mjs';
 import { ClaudePortalSetupService } from './claude-portal-setup.mjs';
 import { ClaudePortalBrowser } from './claude-portal-browser.mjs';
@@ -64,17 +73,18 @@ catch {
 let releaseInfo;
 try { releaseInfo = resolveReleaseChannel({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, buildInfo: { ...buildInfo, version: buildInfo.version || app.getVersion() } }); }
 catch {
-  dialog.showErrorBox('Не удалось открыть Codex Desk', 'Повреждены сведения о канале сборки. Скопируйте всю папку приложения заново.');
+  dialog.showErrorBox('Не удалось открыть Кузьмич', 'Повреждены сведения о канале сборки. Скопируйте всю папку приложения заново.');
   app.exit(1);
   throw new Error('Invalid release channel metadata.');
 }
-const channelLabel = { stable: 'Release', nightly: 'Nightly', development: 'Development' }[releaseInfo.channel];
+const windowAppearance = applicationWindowAppearance(releaseInfo.channel);
+const routerOnly = releaseInfo.channel === 'experimental3';
 const channelPaths = resolveChannelPaths({ appData: app.getPath('appData'), channel: releaseInfo.channel, dataDirOverride: process.env.CODEX_DESK_DATA_DIR });
 const standardChannelPaths = resolveChannelPaths({ appData: app.getPath('appData'), channel: releaseInfo.channel });
 const isolatedProfile = path.resolve(channelPaths.userData).toLowerCase() !== path.resolve(standardChannelPaths.userData).toLowerCase();
 const identity = applicationIdentity(releaseInfo.channel, process.env.CODEX_DESK_TEST === '1' || isolatedProfile ? process.pid : undefined);
 const applicationName = identity.name;
-let windowIcon = path.join(here, 'icon.ico');
+let windowIcon = path.join(here, applicationIconName(releaseInfo.channel));
 let shellIcon = app.getPath('exe');
 let stopWatchingShellIcon;
 app.setName(applicationName);
@@ -109,6 +119,11 @@ const appUpdates = new AppUpdateService({
 });
 const threadActions = new ThreadActionCoordinator();
 const routerUsage = new RouterUsageClient({ fetchImpl: (...args) => net.fetch(...args) });
+const portalLimits = new PortalLimitsClient({ fetchImpl: (...args) => net.fetch(...args) });
+const boatswainSetup = new BoatswainSetupService({ fetchImpl: (...args) => net.fetch(...args) });
+const portalAuth = new PortalAuthWindow({ createWindow: options => new BrowserWindow(options), partition: PORTAL_PARTITION,
+  ...(releaseInfo.channel === 'experimental3' || releaseInfo.channel === 'nightly' ? { backgroundColor: windowAppearance.backgroundColor } : {}) });
+const portalSession = new PortalSessionService({ session: () => session.fromPartition(PORTAL_PARTITION), authWindow: portalAuth });
 const agentSkills = new AgentSkillsService();
 // A long-lived `claude setup-token` credential, encrypted with DPAPI, keeps the app's Claude processes off the
 // shared single-use refresh token that Claude Desktop, IDE extensions and parallel tabs otherwise race for.
@@ -127,7 +142,8 @@ const routerConnections = new RouterConnectionStore({
 async function claudeConnectionFor(settings = {}) {
   const source = settings.connectionSource || 'inherited';
   return buildClaudeConnectionProfile({ source, accountEnv: source === 'router' ? {} : await claudeToken.environment(),
-    ...(source === 'router' ? { router: await routerConnections.get('claude') } : {}) });
+    ...(source === 'router' ? { router: await routerConnections.get('claude') } : {}),
+    ...(source === 'inherited' ? { inheritedRouter: await readInheritedClaudeRouter() } : {}) });
 }
 async function codexRouterConnection() { return readCodexRouterConnection(); }
 async function codexConnectionFor(settings = {}) {
@@ -145,9 +161,16 @@ const claudeAuth = new ClaudeAuthService({
     if (threadActions.locks.size) throw new Error('Дождитесь завершения операции с диалогом.');
   },
 });
-const settingsStore = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'));
+const settingsStore = new SettingsStore(path.join(app.getPath('userData'), 'settings.json'), { routerOnly });
+const portalConnect = new PortalConnectService({
+  portalSession, session: () => session.fromPartition(PORTAL_PARTITION),
+  fetchImpl: (...args) => net.fetch(...args), scan: () => setupService.scan(),
+  getSettings: provider => settingsStore.snapshotProvider(provider),
+  runMutation: (provider, task) => setupService._exclusive(provider, task),
+  routerConnections, boatswainSetup, reconnectAfterSetup,
+});
 // Standing approvals the user granted, scoped per project. App-owned, like every other store here:
-// Codex Desk opens arbitrary folders and never writes a file into one.
+// Кузьмич opens arbitrary folders and never writes a file into one.
 const approvalCatalog = new ApprovalCatalog(path.join(app.getPath('userData'), 'approvals.json'));
 // An unreadable rules file keeps the last good rules in force; record that it happened, never its content.
 approvalCatalog.onWarning = () => diagnostics?.record('info', 'approval.auto', { unreadableCatalog: true });
@@ -156,6 +179,8 @@ const notificationSettings = new NotificationSettingsStore(path.join(app.getPath
 const claudeHistory = new ClaudeHistory();
 const bookmarks = new BookmarkStore(app.getPath('userData'));
 const claudeArchive = new ClaudeArchiveStore(app.getPath('userData'));
+const threadGroups = new ThreadGroupStore(app.getPath('userData'));
+const threadChildLinks = new ThreadChildLinkStore(app.getPath('userData'));
 const gitRollback = new GitRollbackService({ directory: path.join(app.getPath('userData'), 'git-rollback') });
 const rollbackPreviews = new Map();
 const rollbackReservations = new Set();
@@ -184,7 +209,7 @@ const setupAuth = new SetupAuth({
   assertMutable: provider => assertSetupMutable(provider),
   loginClaude: async record => {
     if (setupService?.busy || setupAuth.activeProvider) throw new Error('Дождитесь завершения настройки.');
-    record.setupClaudeSession ??= new WindowSession({ settings: { provider: 'claude', cwd: os.homedir() }, claudeAuth });
+    record.setupClaudeSession ??= new WindowSession({ settings: { provider: 'claude', cwd: os.homedir(), connectionSource: 'router' }, claudeAuth, routerOnly });
     record.setupClaudeSession.settings = { ...await settingsStore.snapshotProvider('claude'), provider: 'claude', connectionSource: 'account', cwd: os.homedir() };
     return claudeAuth.login(record.setupClaudeSession);
   },
@@ -258,7 +283,7 @@ function disposeSessionConnections(session) {
 const notifications = new NotificationService({
   // Automated IPC fixtures use isolated profiles and must never toast on the user's desktop.
   Notification: process.env.CODEX_DESK_TEST === '1' || isolatedProfile ? null : Notification,
-  settings: notificationSettings, icon: path.join(here, 'icon.ico'), diagnostics,
+  settings: notificationSettings, icon: windowIcon, diagnostics,
   available: () => !quitting && !updateFrozen,
 });
 const updateCheckpoint = createUpdateCheckpoint(channelPaths.userData);
@@ -367,7 +392,7 @@ function handle(channel, argumentCount, fn) {
 function workspaceHandle(channel, fn) {
   ipcMain.handle(channel, (event, ...args) => {
     const record = windowForEvent(windows, event);
-    if ((setupService?.busy || setupAuth.activeProvider) && ['host:listProjectThreads', 'host:listArchivedThreads', 'host:searchThreads', 'host:readArchivedThread', 'host:manageThread', 'host:searchHistory', 'host:resolveHistoryTarget', 'host:createSession', 'host:createWorktreeSession', 'host:mergeWorktree', 'host:removeWorktree'].includes(channel)) throw new Error('Дождитесь завершения настройки агента.');
+    if ((setupService?.busy || setupAuth.activeProvider) && ['host:listProjectThreads', 'host:listThreadChildren', 'host:listThreadGroups', 'host:manageThreadGroup', 'host:listThreadChildLinks', 'host:createThreadChildLink', 'host:manageThreadChildLink','host:listArchivedThreads', 'host:searchThreads', 'host:readArchivedThread', 'host:manageThread', 'host:searchHistory', 'host:resolveHistoryTarget', 'host:createSession', 'host:createWorktreeSession', 'host:mergeWorktree', 'host:removeWorktree'].includes(channel)) throw new Error('Дождитесь завершения настройки агента.');
     if (rollbackReservations.size && ['host:createSession', 'host:closeSession', 'host:closeProject', 'host:manageThread'].includes(channel)) throw new Error('Дождитесь завершения отката файла.');
     return traced(channel, event, {}, () => fn(record, event, ...args));
   });
@@ -378,14 +403,17 @@ function addSession(record, settings) {
   if (settings.cwd && record.closingProjects?.has(projectKey(settings.cwd))) throw new Error('Проект закрывается.');
   const id = randomUUID();
   const session = new WindowSession({
-    settings,
+    settings: { ...settings, ...(routerOnly ? { connectionSource: 'router' } : {}) },
+    routerOnly,
     approvalCatalog,
     attachmentsDirectory: channelPaths.attachmentsDirectory, claudeHistory, claudeAuth,
     claudeEnvironment: claudeConnectionFor, codexEnvironment: codexConnectionFor, claudeGate,
     diagnostics,
     diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(id) },
     threadActions,
-    persistSettings: patch => Promise.all([settingsStore.updateProvider(settings.provider || 'codex', patch), ...(patch.cwd ? [workspaceStore.addProject(patch.cwd)] : [])]),
+    providerDefaults: provider => settingsStore.snapshotProvider(provider),
+    // The tab can change agent in place, so the profile is the one in force at save time, not at creation.
+    persistSettings: patch => Promise.all([settingsStore.updateProvider(session.settings.provider || 'codex', patch), ...(patch.cwd ? [workspaceStore.addProject(patch.cwd)] : [])]),
     send: (type, data) => {
       const win = record.window;
       if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
@@ -400,20 +428,7 @@ function addSession(record, settings) {
 }
 
 function installHandlers() {
-  handle('host:getRouterUsage', 0, async ({ session }) => {
-    if (session.settings.connectionSource !== 'router') return session.settings.provider === 'claude' || session.settings.connectionSource === 'account'
-      ? { available: false, reason: 'В этой вкладке выбран личный источник.' } : routerUsage.overview();
-    // Other tabs keep their running profile after a credential replacement. Read
-    // usage for that exact process rather than the newer default in the store.
-    const profile = session.connectionProfile;
-    const claude = session.settings.provider === 'claude';
-    const baseUrl = claude ? profile?.env?.ANTHROPIC_BASE_URL : profile?.expectedConnection?.baseUrl;
-    const apiKey = claude ? profile?.env?.ANTHROPIC_AUTH_TOKEN || profile?.env?.ANTHROPIC_API_KEY : profile?.expectedConnection?.apiKey;
-    if (!baseUrl || !apiKey || new URL(baseUrl).origin !== 'https://router.encycam.com') return { available: false, reason: 'Статистика этого подключения недоступна. Переподключите вкладку.' };
-    const client = new RouterUsageClient({ env: {}, fetchImpl: (...args) => net.fetch(...args) });
-    client.token = async () => apiKey;
-    return client.overview();
-  });
+  handle('host:getRouterUsage', 1, ({ session }, options) => readSessionRouterUsage({ session, options, routerClient: routerUsage, portalClient: portalLimits, routerOnly }));
   workspaceHandle('skills:list', (_record, _event, options) => agentSkills.list(options || {}));
   workspaceHandle('memoryRules:preview', (_record, _event, provider) => setupService.previewMemoryRules(provider));
   workspaceHandle('memoryRules:apply', async (_record, _event, options) => {
@@ -421,8 +436,17 @@ function installHandlers() {
     if (result.changed) reconnectAfterSetup(options.provider, 'Правила памяти изменены. Начните новый диалог, чтобы использовать их.');
     return result;
   });
-  workspaceHandle('setup:state', async () => ({ ...await setupService.state(), preferredProvider: (await settingsStore.snapshot()).provider }));
+  workspaceHandle('setup:state', async () => ({ ...await setupService.state(), preferredProvider: (await settingsStore.snapshot()).provider, experimental3: routerOnly }));
+  workspaceHandle('setup:boatswainStatus', () => boatswainSetup.status());
+  workspaceHandle('setup:portalSession', (_record, _event, options) => portalSession.status({ refresh: options?.refresh === true }));
+  workspaceHandle('setup:portalLogin', record => portalSession.login({ parent: record.window.isDestroyed() ? null : record.window }));
+  workspaceHandle('setup:portalLogout', () => portalSession.logout());
+  workspaceHandle('setup:portalRequestKey', () => portalSession.requestKey());
+  workspaceHandle('setup:focusPortalLogin', () => portalSession.focusLogin());
+  workspaceHandle('setup:portalConnect', (_record, _event, options) => portalConnect.connect({ products: options?.products }));
+  workspaceHandle('setup:portalConnectStatus', () => portalConnect.status());
   workspaceHandle('setup:scan', () => setupService.scan());
+  workspaceHandle('setup:checkRouter', () => setupService.routerStatus({ check: true }));
   workspaceHandle('setup:update', async (record, _event) => {
     codexUpdatePrepared = false;
     try {
@@ -559,9 +583,9 @@ function installHandlers() {
     if (record.diagnosticsExport) return record.diagnosticsExport;
     record.diagnosticsExport = (async () => {
       const result = await dialog.showSaveDialog(record.window, {
-        title: 'Сохранить диагностику Codex Desk',
-        defaultPath: `Codex-Desk-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
-        filters: [{ name: 'Диагностика Codex Desk', extensions: ['json'] }],
+        title: 'Сохранить диагностику Кузьмича',
+        defaultPath: `Kuzmich-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`,
+        filters: [{ name: 'Диагностика Кузьмича', extensions: ['json'] }],
       });
       if (result.canceled || !result.filePath) return { canceled: true };
       try {
@@ -689,7 +713,7 @@ function installHandlers() {
       coordinator: threadActions,
       getSessions: () => [...windows.values()].flatMap(item => [...item.sessions.values()].filter(session => session.settings.provider !== 'claude')),
       getSettings: () => settingsStore.snapshotProvider('codex'),
-      createSession: settings => new WindowSession({ settings, diagnostics, diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(randomUUID()) } }),
+      createSession: settings => new WindowSession({ settings: { ...settings, ...(routerOnly ? { connectionSource: 'router' } : {}) }, routerOnly, diagnostics, diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(randomUUID()) } }),
       assertActive: () => { if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.'); },
       onRestore: async cwd => {
         await directoryPath(cwd);
@@ -853,10 +877,22 @@ function installHandlers() {
     windowForEvent(windows, event);
     return result;
   });
-  workspaceHandle('host:manageThread', (record, event, options) => {
+  workspaceHandle('host:manageThread', async (record, event, options) => {
     const claude = typeof options?.threadId === 'string' && options.threadId.startsWith('claude:');
-    return (claude ? claudeManagement(record, event) : management(record, event)).manageThread(options);
+    const result = await (claude ? claudeManagement(record, event) : management(record, event)).manageThread(options);
+    // Deleting a conversation must not leave a dead member behind in a local group.
+    // Grouping is presentation metadata only, so a failure here never reverses the delete.
+    if (options?.action === 'delete') await threadGroups.forget([options.threadId, ...(result?.affectedThreadIds || [])]).catch(() => {});
+    if (options?.action === 'delete') await threadChildLinks.forget([options.threadId, ...(result?.affectedThreadIds || [])]).catch(() => {});
+    return result;
   });
+  // Kuzmich's own conversation grouping. Read and written only here; it never touches
+  // CLI history, SQLite, native Claude data or the Codex configuration.
+  workspaceHandle('host:listThreadGroups', (_record, _event, cwd) => threadGroups.list(cwd ?? undefined));
+  workspaceHandle('host:manageThreadGroup', (_record, _event, options) => threadGroups.manage(options));
+  workspaceHandle('host:listThreadChildLinks', (_record, _event, cwd) => threadChildLinks.list(cwd ?? undefined));
+  workspaceHandle('host:createThreadChildLink', async (_record, _event, options) => threadChildLinks.create(options));
+  workspaceHandle('host:manageThreadChildLink', async (_record, _event, options) => threadChildLinks.manage(options));
   workspaceHandle('host:openArchivedPath', async (record, event, options) => {
     const thread = typeof options?.threadId === 'string' && options.threadId.startsWith('claude:')
       ? await archivedClaudeEntry(options.threadId)
@@ -865,6 +901,25 @@ function installHandlers() {
     const params = { target: options?.target, cwd: thread.cwd, shell, assertActive };
     if (options?.menu) return showLocalPathMenu({ ...params, clipboard, Menu, window: record.window });
     return openLink(params);
+  });
+  // A single read-only connection also serves history and relationships when no tabs are
+  // open. It never publishes events or changes persisted cwd/settings.
+  const createHistorySessionFor = (record, assertWindow) => async folder => {
+    if (!record.historySession) {
+      const settings = await settingsStore.snapshotProvider('codex');
+      assertWindow();
+      record.historySession ??= new WindowSession({ settings: { ...settings, cwd: folder }, diagnostics, diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(randomUUID()) } });
+    }
+    return record.historySession;
+  };
+  // Dependent (child) conversations are read separately from the folder history so that the
+  // history page and its cursor keep their current meaning. Codex only; Claude Code reports
+  // no parent, fork or session-tree field, so there is nothing to ask it for.
+  workspaceHandle('host:listThreadChildren', async (record, event, cwd, cursor) => {
+    const assertWindow = () => {
+      if (windowForEvent(windows, event) !== record || quitting) throw new Error('Окно уже закрыто.');
+    };
+    return listThreadChildren({ record, workspaceStore, cwd, cursor, assertWindow, createHistorySession: createHistorySessionFor(record, assertWindow) });
   });
   workspaceHandle('host:listProjectThreads', async (record, event, cwd, cursor) => {
     const assertWindow = () => {
@@ -880,16 +935,7 @@ function installHandlers() {
     const includeClaude = Boolean(paging || defaults.providers?.claude || [...record.sessions.values()].some(session => session.settings.provider === 'claude'));
     const codexRead = paging?.codex === null ? Promise.resolve({ data: [], nextCursor: null }) : listProjectThreads({
       record, workspaceStore, cwd, cursor: paging?.codex || cursor, assertWindow,
-      createHistorySession: async folder => {
-        if (!record.historySession) {
-          const settings = await settingsStore.snapshotProvider('codex');
-          assertWindow();
-          // A single read-only connection also serves history when no tabs are
-          // open. It never publishes events or changes persisted cwd/settings.
-          record.historySession ??= new WindowSession({ settings: { ...settings, cwd: folder }, diagnostics, diagnosticContext: { windowId: record.window.webContents.id, sessionId: diagnostics.id(randomUUID()) } });
-        }
-        return record.historySession;
-      },
+      createHistorySession: createHistorySessionFor(record, assertWindow),
     });
     // Attach the rejection handler before any independent folder checks await.
     const codexOutcome = codexRead.then(value => ({ status: 'fulfilled', value }), reason => ({ status: 'rejected', reason }));
@@ -917,7 +963,7 @@ function installHandlers() {
     const provider = options.provider || source?.settings.provider || (await settingsStore.snapshot()).provider || 'codex';
     const sameProvider = provider === (source?.settings.provider || 'codex');
     const snapshot = source && sameProvider ? source.getSettings() : await settingsStore.snapshotProvider(provider);
-    const effective = cleanSettings(options.settings);
+    const effective = cleanSettings(options.settings, routerOnly);
     const settings = { ...snapshot };
     if (provider === 'claude' || options.provider) settings.provider = provider;
     for (const key of ['model', 'effort', 'access']) {
@@ -1184,7 +1230,7 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
   if (quitting) return null;
   const win = new BrowserWindow({
     width: 1480, height: 960, minWidth: 940, minHeight: 640,
-    title: `Codex Desk — ${channelLabel}`, icon: windowIcon, show: false, backgroundColor: '#101311', autoHideMenuBar: true,
+    ...windowAppearance, icon: windowIcon, show: false, autoHideMenuBar: true,
     webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   if (process.platform === 'win32') win.setAppDetails({
@@ -1218,6 +1264,7 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
   win.webContents.on('preload-error', (_event, _preloadPath, error) => diagnostics.error('window.preloadError', error, { windowId: contentsId }));
   win.on('unresponsive', () => diagnostics.record('warn', 'window.unresponsive', { windowId: contentsId }));
   win.webContents.on('render-process-gone', (_event, details) => {
+    if (record.rendererGone) return;
     record.portalSetup?.dispose(); record.portalSetup = null;
     record.historySearch?.dispose(); record.historySearch = null;
     record.rendererGone = true;
@@ -1229,11 +1276,12 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
     record.historySession?.stop();
     record.management?.dispose();
     record.management = null;
+    void offerRendererRecovery(record, details.reason);
   });
   win.on('close', event => {
     if (setupService?.busy && !quitting) {
       event.preventDefault();
-      void dialog.showMessageBox(win, { type: 'info', title: 'Настройка Codex Desk', message: 'Дождитесь завершения установки или применения конфигурации.', buttons: ['Хорошо'] });
+      void dialog.showMessageBox(win, { type: 'info', title: 'Настройка Кузьмича', message: 'Дождитесь завершения установки или применения конфигурации.', buttons: ['Хорошо'] });
       return;
     }
     if (record.closeReady || settingsFlushed || updateFrozen) return;
@@ -1271,8 +1319,40 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
 
 const reportWindowError = error => {
   diagnostics.error('window.openFailed', error);
-  if (!quitting) dialog.showErrorBox('Не удалось открыть Codex Desk', `${error.message}\n\nЖурналы приложения: ${diagnosticsDirectory}`);
+  if (!quitting) dialog.showErrorBox('Не удалось открыть Кузьмич', `${error.message}\n\nЖурналы приложения: ${diagnosticsDirectory}`);
 };
+
+// A dead renderer leaves an empty window that no longer answers IPC, while the main
+// process keeps the single-instance lock — relaunching the app would only focus the
+// corpse. Offer a rebuild from the last autosave instead of stranding the workspace.
+const RECOVERABLE_RENDERER_EXITS = new Set(['crashed', 'oom', 'abnormal-exit', 'integrity-failure', 'launch-failed']);
+async function offerRendererRecovery(record, reason) {
+  const dead = record.window;
+  if (!RECOVERABLE_RENDERER_EXITS.has(reason) || record.recovering) return;
+  if (quitting || updateFrozen || dead.isDestroyed()) return;
+  record.recovering = true;
+  const windowId = dead.webContents.id;
+  const { response } = await dialog.showMessageBox(dead, {
+    type: 'error', title: identity.name, noLink: true, defaultId: 0, cancelId: 1,
+    buttons: ['Перезагрузить', 'Закрыть'],
+    message: reason === 'oom' ? 'Интерфейсу Кузьмича не хватило памяти.' : 'Интерфейс Кузьмича аварийно завершился.',
+    detail: `Вкладки и черновики восстановятся из последнего автосохранения; ответы моделей прерваны.\n\nЖурналы приложения: ${diagnosticsDirectory}`,
+  });
+  if (quitting || updateFrozen) return;
+  if (response !== 0) {
+    diagnostics.record('info', 'window.recovery', { windowId, reason, action: 'close' });
+    if (!dead.isDestroyed()) dead.destroy();
+    return;
+  }
+  let checkpoint = null;
+  try { checkpoint = await workspaceState.read(); }
+  catch (error) { diagnostics.error('window.openFailed', error); }
+  diagnostics.record('info', 'window.recovery', { windowId, reason, action: 'reload' });
+  // Open the replacement first: dropping the last window fires `window-all-closed`, which quits.
+  try { await createWindow(undefined, checkpoint, 'workspace'); }
+  catch (error) { reportWindowError(error); }
+  finally { if (!dead.isDestroyed()) dead.destroy(); }
+}
 
 const gotLock = process.env.CODEX_DESK_TEST === '1' || app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
@@ -1281,7 +1361,10 @@ else {
   if (previousRun) diagnostics.record('warn', 'app.previousAbnormal', previousRun);
   app.on('will-quit', () => diagnostics.markCleanExit());
   app.on('second-instance', () => {
-    const win = [...windows.values()].find(record => !record.window.isDestroyed())?.window;
+    // Prefer a window that can still draw; a crashed one is only worth raising so its
+    // recovery prompt becomes visible, which is why relaunching used to appear dead.
+    const open = [...windows.values()].filter(record => !record.window.isDestroyed());
+    const win = (open.find(record => !record.rendererGone) ?? open[0])?.window;
     if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
   });
   app.whenReady().then(async () => {
@@ -1291,12 +1374,12 @@ else {
         shellIcon = await persistShellIcon({ source: windowIcon, userData: channelPaths.userData });
         windowIcon = shellIcon;
         notifications.icon = shellIcon;
-        // Electron's PE ProductName is shared by both channels. It asynchronously
+        // Electron uses the built PE ProductName, even after channel promotion, and
         // recreates this shortcut for notifications, dropping IconLocation.
         // Watch only production registrations and patch only this process's link.
         if (app.isPackaged && process.env.CODEX_DESK_TEST !== '1' && !isolatedProfile) {
           stopWatchingShellIcon = watchShellShortcutIcon({
-            shell, shortcut: path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Codex Desk.lnk'),
+            shell, shortcut: path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', applicationShortcutName(buildInfo.productName)),
             executable: app.getPath('exe'), appId: identity.appId, icon: shellIcon,
           }, { onError: error => diagnostics.error('app.shellIcon', error) });
         }
@@ -1305,6 +1388,7 @@ else {
     setupInitiallyNew = !['settings.json', 'workspace.json', 'workspace-state.json'].some(name => existsSync(path.join(channelPaths.userData, name)));
     setupService = new SetupService({
       directory: channelPaths.userData, initialExisting: !setupInitiallyNew,
+      forceShow: process.argv.includes('--setup'),
       getSettings: provider => settingsStore.snapshotProvider(provider),
       saveSettings: async (provider, patch) => {
         await settingsStore.updateProvider(provider, patch);
@@ -1313,6 +1397,7 @@ else {
         }
       },
       getClaudeEnvironment: async () => ({ ...process.env, ...(await claudeToken.environment()) }),
+      fetchImpl: (...args) => net.fetch(...args),
       beforeUpdate: async provider => {
         if (provider !== 'codex') return;
         codexUpdatePrepared = true;
@@ -1368,6 +1453,9 @@ else {
     diagnostics.record('info', 'app.quitRequested');
     setupAuth.dispose();
     claudeAuth.dispose();
+    portalSession.cancelLogin();
+    portalConnect.cancel();
+    portalAuth.close();
     stopWatchingShellIcon?.();
     const closeUpdater = updater?.close();
     const closeAppUpdates = appUpdates.close();

@@ -221,7 +221,18 @@ try {
   const rpc = await readFile(path.join(run, 'rpc.jsonl'), 'utf8');
   assert.ok(rpc.trim().split('\n').every(method => ['initialize', 'account/read'].includes(method)));
   const calls = (await readFile(path.join(run, 'calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-  assert.ok(calls.every(({ args }) => args[0] === '--version' || args[0] === 'app-server' || (args[0] === 'auth' && ['status', 'login'].includes(args[1]))), 'Only version, authentication and app-server fixture operations are allowed');
+  assert.ok(calls.every(({ provider, args }) => {
+    if (args[0] === '--settings') {
+      assert.equal(provider, 'claude');
+      assert.ok(path.isAbsolute(args[1]));
+      assert.equal(path.basename(args[1]), 'settings.json');
+      args = args.slice(2);
+    }
+    return (args.length === 1 && args[0] === '--version')
+      || (args.length === 3 && args[0] === 'app-server' && args[1] === '--listen' && args[2] === 'stdio://')
+      || (args.length === 2 && args[0] === 'auth' && args[1] === 'status')
+      || (args.length === 3 && args[0] === 'auth' && args[1] === 'login' && args[2] === '--claudeai');
+  }), 'Only version, authentication and app-server fixture operations are allowed');
   const skillSnapshots = await page.evaluate(cwd => Promise.all(['codex', 'claude'].map(provider => window.codex.skills.list({ provider, cwd }))), skillProject);
   assert.deepEqual(skillSnapshots[0].skills.map(skill => `${skill.source}:${skill.name}`), ['project:host-project', 'user:host-codex', 'shared:host-shared']);
   assert.deepEqual(skillSnapshots[1].skills.map(skill => `${skill.source}:${skill.name}`), ['user:host-claude', 'shared:host-shared']);

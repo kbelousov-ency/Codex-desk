@@ -12,7 +12,7 @@ const messages = {
   network: 'Не удалось связаться с порталом. Повторите проверку.',
   timeout: 'Портал не ответил вовремя. Повторите проверку.',
   unavailable: 'Портал временно недоступен. Повторите проверку.',
-  unsupported: 'Портал пока не поддерживает подключение Codex Desk через браузер.',
+  unsupported: 'Портал пока не поддерживает подключение Кузьмича через браузер.',
   invalid_response: 'Портал вернул некорректные данные подключения.',
 };
 
@@ -43,8 +43,10 @@ function validHeaders(value) {
 }
 
 function validateConfig(apiKey, provider, defaults) {
-  if (!onlyKeys(provider, ['name', 'base_url', 'wire_api', 'requires_openai_auth', 'http_headers'])
+  if (!onlyKeys(provider, ['name', 'base_url', 'wire_api', 'requires_openai_auth', 'http_headers', 'supports_websockets', 'supports_standalone_web_search'])
     || !text(provider.name, 160) || provider.wire_api !== 'responses' || provider.requires_openai_auth !== false
+    || (Object.hasOwn(provider, 'supports_websockets') && typeof provider.supports_websockets !== 'boolean')
+    || (Object.hasOwn(provider, 'supports_standalone_web_search') && typeof provider.supports_standalone_web_search !== 'boolean')
     || (Object.hasOwn(provider, 'http_headers') && !validHeaders(provider.http_headers))
     || !onlyKeys(defaults, ['model', 'model_provider', 'model_context_window', 'model_auto_compact_token_limit', 'model_reasoning_summary', 'hide_agent_reasoning'])
     || !['model', 'model_provider', 'model_context_window', 'model_auto_compact_token_limit', 'model_reasoning_summary', 'hide_agent_reasoning'].every(key => Object.hasOwn(defaults, key))
@@ -194,7 +196,7 @@ export class RouterPortalClient {
     this.#flow = flow;
     try {
       const { status, value } = await this.#request(flow, '/api/device/codex', {
-        method: 'POST', body: { client: 'Codex Desk', host: text(host, 255) ? host : 'Windows' },
+        method: 'POST', body: { client: 'Кузьмич', host: text(host, 255) ? host : 'Windows' },
       });
       if (status !== 200 || !text(value.device_code, 4096) || !text(value.user_code, 32) || !/^[A-Z0-9-]+$/i.test(value.user_code)
         || value.user_code.includes(value.device_code) || !Number.isInteger(value.expires_in) || value.expires_in < 1 || value.expires_in > 3600
@@ -245,10 +247,7 @@ export class RouterPortalClient {
         flow.apiKey = value.api_key;
         flow.deviceCode = '';
       }
-      const provider = await this.#request(flow, '/api/codex/provider', { token: flow.apiKey });
-      const defaults = await this.#request(flow, '/api/codex/defaults', { token: flow.apiKey });
-      if (provider.status !== 200 || defaults.status !== 200) throw portalError('invalid_response');
-      const config = validateConfig(flow.apiKey, provider.value, defaults.value);
+      const config = await this.#configuration(flow, flow.apiKey);
       this.#assertActive(flow);
       this.#end(flow);
       return { state: 'ready', config };
@@ -260,6 +259,23 @@ export class RouterPortalClient {
 
   cancel(flowId) {
     if (this.#flow && (flowId === undefined || flowId === this.#flow.id)) this.#end(this.#flow);
+  }
+
+  async #configuration(flow, apiKey) {
+    const provider = await this.#request(flow, '/api/codex/provider', { token: apiKey });
+    const defaults = await this.#request(flow, '/api/codex/defaults', { token: apiKey });
+    if (provider.status !== 200 || defaults.status !== 200) throw portalError('invalid_response');
+    return validateConfig(apiKey, provider.value, defaults.value);
+  }
+
+  async config(apiKey) {
+    if (this.#disposed) throw portalError('cancelled');
+    if (!text(apiKey, 8192) || !/^[\x21-\x7e]+$/.test(apiKey)) throw portalError('unauthorized');
+    this.cancel();
+    const flow = { id: randomUUID(), controller: new AbortController(), apiKey, deviceCode: '' };
+    this.#flow = flow;
+    try { return await this.#configuration(flow, apiKey); }
+    finally { this.#end(flow); }
   }
 
   dispose() { this.#disposed = true; this.cancel(); }

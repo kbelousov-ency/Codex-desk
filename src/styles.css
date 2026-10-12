@@ -31,6 +31,8 @@ html,body,#root{height:100%;min-height:0;overflow:hidden}
 .session-tab>[role=tab]{display:flex;align-items:center;gap:9px;padding:6px 9px 6px 12px;min-width:0;flex:1;text-align:left}
 .session-tab-label{display:flex;flex-direction:column;gap:2px;min-width:0;max-width:185px}.session-tab-label strong{font-size:10px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.session-tab-label>span{font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8ca096}
 .session-tab-close{width:25px;flex-shrink:0;color:#87968e;border-radius:5px;margin:7px 4px 7px 0}.session-tab-close:hover{background:#435248;color:#e2eee7}
+.session-tab-close.close-when-complete{background:#303a34;color:#aab4ad}.session-tab-close.close-when-complete:hover{color:#9bb6a4}
+.session-tab-child{width:26px;height:26px;display:grid;place-items:center;flex-shrink:0;align-self:center;color:#9BB6A4;background:#303A34;border:1px solid #3A413D;border-radius:5px;margin:0 2px}.session-tab-child:hover{background:#3b4b41;border-color:#82968A;color:#D5E0D8}.session-tab-child:disabled{opacity:.45}
 .tab-state{height:5px;width:5px;border-radius:50%;background:#6d8a79;flex-shrink:0}.tab-state.running{background:#acd79e}.tab-state.waiting{background:#efc97c;box-shadow:0 0 0 3px #efc97c18}.tab-state.error{background:#e5a29d}.tab-add{align-self:center}
 .workspace-views{flex:1;min-height:0;position:relative;overflow:hidden}.session-view{height:100%;min-height:0}.session-view[hidden]{display:none!important}.session-view>.app-shell{height:100%;min-height:0}
 .session-view>.app-shell>.main-column,.session-view>.app-shell>.details-panel{margin-top:51px}

@@ -4,6 +4,8 @@ import { createPortal } from 'react-dom';
 import { OpenAppUpdatesContext } from './AppUpdateContext';
 import type { BuildInfo } from './types';
 import './build-info.css';
+import { productNameForChannel, productNameGenitive } from './product-identity';
+export { productNameForChannel, productNameGenitive } from './product-identity';
 
 // Build identity belongs to the window, not to an App Server or chat tab.
 // A shared promise also avoids duplicate IPC from StrictMode and archive views.
@@ -13,7 +15,7 @@ function loadBuildInfo() {
   return buildInfoRequest ??= Promise.resolve().then(async () => {
     if (!window.codex?.getBuildInfo) return { channel: 'development', version: '' } as BuildInfo;
     const result = await window.codex.getBuildInfo();
-    if (!result || !['stable', 'nightly', 'development'].includes(result.channel) || typeof result.version !== 'string') return null;
+    if (!result || !['stable', 'nightly', 'experimental3', 'development'].includes(result.channel) || typeof result.version !== 'string') return null;
     return result;
   }).catch(() => null).then(result => { buildInfo = result; return result; });
 }
@@ -28,7 +30,22 @@ export function useBuildInfo() {
   return info;
 }
 
-const labels = { stable: 'RELEASE', nightly: 'NIGHTLY', development: 'DEV' };
+const labels = { stable: 'RELEASE', nightly: 'NIGHTLY', experimental3: 'EXPERIMENTAL 3', development: 'DEV' };
+export function useProductName() {
+  const info = useBuildInfo();
+  return info ? productNameForChannel(info.channel) : 'Кузьмич';
+}
+
+export function useProductNameGenitive() {
+  const info = useBuildInfo();
+  return info ? productNameGenitive(info.channel) : 'Кузьмича';
+}
+
+export function ProductBrand() {
+  const productName = useProductName();
+  return <span className="brand-product-name">{productName}</span>;
+}
+
 function buildDate(info: BuildInfo) {
   if (!info.builtAt) return '';
   const date = new Date(info.builtAt);
@@ -37,7 +54,7 @@ function buildDate(info: BuildInfo) {
 }
 function description(info: BuildInfo) {
   return [
-    `Codex Desk · ${labels[info.channel]}`,
+    `${productNameForChannel(info.channel)} · ${labels[info.channel]}`,
     info.version ? `Версия ${info.version}` : '',
     info.buildId ? `Сборка ${info.buildId.slice(0, 12)}` : '',
     buildDate(info),
@@ -95,7 +112,7 @@ export function BuildBadge() {
       {info ? labels[info.channel] : info === null ? '—' : '…'}
     </button>
     {open && createPortal(<div ref={tooltip} id={id} role="tooltip" className={`build-tooltip ${info?.channel || 'unknown'}`} style={position} onPointerEnter={cancelClose} onPointerLeave={scheduleClose}>
-      <div className="build-tooltip-heading"><strong>Codex Desk</strong>{info && <span>{labels[info.channel]}</span>}</div>
+      <div className="build-tooltip-heading"><strong>{info ? productNameForChannel(info.channel) : 'Кузьмич'}</strong>{info && <span>{labels[info.channel]}</span>}</div>
       {info ? <dl>
         <div><dt>Версия</dt><dd className="build-tooltip-version">{info.version || 'Не указана'}</dd></div>
         {info.buildId && <div><dt>Сборка</dt><dd className="build-tooltip-hash">{info.buildId.slice(0, 12)}</dd></div>}
@@ -110,11 +127,12 @@ export function BuildDetails() {
   if (!info) return <p className="build-details-unavailable">{info === null ? 'Сведения о сборке недоступны.' : 'Загружаем сведения о сборке…'}</p>;
   const date = buildDate(info);
   return <div className="build-details">
-    <strong>Codex Desk <span className={`build-channel-text ${info.channel}`}>{labels[info.channel]}</span></strong>
+    <strong>{productNameForChannel(info.channel)} <span className={`build-channel-text ${info.channel}`}>{labels[info.channel]}</span></strong>
     <dl>
       <div><dt>Версия</dt><dd>{info.version || 'Не указана'}</dd></div>
       {info.buildId && <div><dt>Сборка</dt><dd data-tooltip={info.buildId}>{info.buildId.slice(0, 12)}</dd></div>}
       {date && <div><dt>Дата сборки</dt><dd><time dateTime={info.builtAt}>{date}</time></dd></div>}
     </dl>
+    {info.channel === 'experimental3' && <p className="build-runtime-note">Сведения о запущенном приложении, а не о скачанном Setup. При проверке обновления сравнивайте версию и ID сборки установщика.</p>}
   </div>;
 }

@@ -54,11 +54,11 @@ export class SetupService {
   constructor({ directory, env = process.env, home = env.USERPROFILE || os.homedir(), platform = process.platform,
     getSettings = async () => ({}), saveSettings = async () => {}, getClaudeEnvironment = async () => env,
     assertMutable = () => {}, beforeUpdate = async () => {}, initialExisting = false, hasExistingUser, now = Date.now, run = execFileAsync,
-    finders = {}, beforeConfigCommit = async () => {}, writeBackup = writeFile,
+    finders = {}, beforeConfigCommit = async () => {}, writeBackup = writeFile, fetchImpl = globalThis.fetch, forceShow = false,
     memoryRules = new MemoryRulesService({ env, home }) } = {}) {
     if (!directory || !path.isAbsolute(directory)) throw new TypeError('SetupService requires an absolute directory.');
     Object.assign(this, { directory, env, home, platform, getSettings, saveSettings, getClaudeEnvironment, beforeUpdate,
-      assertMutable, initialExisting, hasExistingUser, now, run, beforeConfigCommit, writeBackup, memoryRules });
+      assertMutable, initialExisting, hasExistingUser, now, run, beforeConfigCommit, writeBackup, fetchImpl, forceShow, memoryRules });
     this.finders = {
       codex: (preferred, options) => findCodex(preferred, options),
       claude: (preferred, options) => findClaude(preferred, options),
@@ -125,7 +125,7 @@ export class SetupService {
     }
     const completed = saved?.completed === true;
     const deferred = saved?.deferred === true;
-    return { show: !completed && !deferred && (!existing || saved?.started === true), completed, deferred };
+    return { show: this.forceShow || (!completed && !deferred && (!existing || saved?.started === true)), completed, deferred };
   }
 
   _configPaths() {
@@ -163,7 +163,40 @@ export class SetupService {
     this._active();
     const config = this._configPaths();
     const components = await Promise.all([...IDS].map(id => this._check(id)));
-    return { components, config: { ...config, exists: await this._exists(config.targetPath) }, platformSupported: this.platform === 'win32' };
+    const configInfo = { ...config, exists: await this._exists(config.targetPath) };
+    return { components, config: configInfo, router: await this.routerStatus({ check: false }), platformSupported: this.platform === 'win32' };
+  }
+
+  async routerStatus({ check = true } = {}) {
+    const config = this._configPaths();
+    let bytes;
+    try { bytes = await readFile(config.targetPath); }
+    catch (error) { if (error.code === 'ENOENT') return { configured: false, reachable: false, message: 'Конфигурация Router не найдена.' }; throw new Error('Не удалось прочитать config.toml.'); }
+    let parsed;
+    try { parsed = TOML.parse(bytes.toString('utf8').replace(/^\uFEFF/, '')); }
+    catch { return { configured: false, reachable: false, message: 'config.toml найден, но его не удалось разобрать.' }; }
+    const router = parsed?.model_providers?.router;
+    const baseUrl = typeof router?.base_url === 'string' ? router.base_url.replace(/\/+$/, '') : '';
+    const token = typeof router?.experimental_bearer_token === 'string' ? router.experimental_bearer_token.trim() : '';
+    const configured = parsed?.model_provider === 'router' && Boolean(baseUrl && token);
+    if (!configured) return { configured: false, reachable: false, baseUrl: baseUrl || undefined, message: 'В config.toml не настроен Router.' };
+    if (!check) return { configured: true, reachable: null, baseUrl, message: 'Router настроен. Можно проверить соединение.' };
+    if (typeof this.fetchImpl !== 'function') return { configured: true, reachable: false, baseUrl, message: 'Проверка соединения недоступна в этом режиме.' };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const response = await this.fetchImpl(`${baseUrl}/models`, { method: 'GET', headers: {
+        Authorization: `Bearer ${token}`,
+        ...(typeof router.http_headers?.['x-openai-actor-authorization'] === 'string' ? { 'x-openai-actor-authorization': router.http_headers['x-openai-actor-authorization'] } : {}),
+        Accept: 'application/json',
+      }, signal: controller.signal });
+      if (!response.ok) return { configured: true, reachable: false, baseUrl, status: response.status, message: `Router ответил HTTP ${response.status}.` };
+      const body = await response.json().catch(() => null);
+      const modelCount = Array.isArray(body?.data) ? body.data.length : undefined;
+      return { configured: true, reachable: true, baseUrl, modelCount, message: modelCount === undefined ? 'Router доступен.' : `Router доступен, моделей: ${modelCount}.` };
+    } catch (error) {
+      return { configured: true, reachable: false, baseUrl, message: error?.name === 'AbortError' ? 'Router не ответил за 10 секунд.' : 'Не удалось подключиться к Router.' };
+    } finally { clearTimeout(timer); }
   }
 
   async setExecutable(id, filename) {
@@ -197,7 +230,7 @@ export class SetupService {
 
   async update(id, onProgress) {
     componentId(id);
-    if (id !== 'codex') throw new Error('Обновлять из Desk можно только Codex CLI.');
+    if (id !== 'codex') throw new Error('Обновлять из Кузьмича можно только Codex CLI.');
     if (this.platform !== 'win32') throw new Error('Автоматическое обновление доступно только в Windows.');
     return this._exclusive(id, async () => {
       const current = await this._check(id);

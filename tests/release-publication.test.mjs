@@ -1,10 +1,10 @@
 ﻿import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import asar from '@electron/asar';
-import { createReleaseManifest, removeChecked } from '../scripts/release-utils.mjs';
+import { createReleaseManifest, removeChecked, verifyRelease } from '../scripts/release-utils.mjs';
 import { assertReleaseVersion, installerFilename } from '../scripts/release-version.mjs';
 import { prepareRelease, releaseNotes } from '../scripts/prepare-release.mjs';
 
@@ -26,6 +26,12 @@ async function fixture(t, legacy = false) {
   await writeFile(path.join(stable, 'Codex Desk.exe'), 'fixture application');
   await writeFile(path.join(stable, 'resources', 'channel.json'), JSON.stringify({ channel: 'stable' }));
   await createReleaseManifest(root, stable);
+  const experimental = path.join(root, 'release', 'experimental3');
+  await mkdir(path.join(experimental, 'resources'), { recursive: true });
+  await cp(path.join(stable, 'resources', 'app.asar'), path.join(experimental, 'resources', 'app.asar'));
+  await writeFile(path.join(experimental, 'Kuzmich.exe'), 'fixture application');
+  await writeFile(path.join(experimental, 'resources', 'channel.json'), JSON.stringify({ channel: 'experimental3' }));
+  await createReleaseManifest(root, experimental, 'experimental3');
   const payload = Buffer.from('fixture installer');
   const filename = legacy ? 'Codex Desk Setup 0.2.0.exe' : installerFilename(build.version);
   const info = { ...build, channel: 'stable', installer: filename, sha256: createHash('sha256').update(payload).digest('hex'),
@@ -37,7 +43,7 @@ async function fixture(t, legacy = false) {
   await writeFile(path.join(root, 'CHANGELOG.md'), '# Releases\n\n## [0.2.0]\n\n- Updates\n\n## [0.1.0]\n\n- Initial\n');
   // The development version must never override an already approved binary.
   await writeFile(path.join(root, 'package.json'), JSON.stringify({ version: '0.3.0' }));
-  return { root, stable, installer, filename, payload, info, infoFile };
+  return { root, stable, experimental, installer, filename, payload, info, infoFile };
 }
 
 test('release versions reject prereleases, malformed numbers and unsafe components', () => {
@@ -47,11 +53,19 @@ test('release versions reject prereleases, malformed numbers and unsafe componen
   }
   assert.equal(installerFilename('0.2.0'), 'Codex-Desk-Setup-0.2.0.exe');
   assert.equal(installerFilename('0.2.0', 'nightly'), 'Codex-Desk-Nightly-Setup-0.2.0.exe');
+  assert.equal(installerFilename('0.2.0', 'experimental3'), 'Kuzmich-Setup-0.2.0.exe');
   assert.throws(() => installerFilename('0.2.0', 'other'));
 });
 
+test('experimental3 release uses Kuzmich executable', async t => {
+  const data = await fixture(t);
+  const manifest = await verifyRelease(data.root, data.experimental, 'experimental3');
+  assert.ok(manifest.files['Kuzmich.exe']);
+  assert.equal(manifest.files['Codex Desk.exe'], undefined);
+});
+
 test('release notes require one non-empty matching section', () => {
-  assert.equal(releaseNotes('## [0.2.0]\r\n\r\n- Update\r\n\r\n## [0.1.0]\r\nOld\r\n', '0.2.0'), '# Codex Desk 0.2.0\n\n- Update\n');
+  assert.equal(releaseNotes('## [0.2.0]\r\n\r\n- Update\r\n\r\n## [0.1.0]\r\nOld\r\n', '0.2.0'), '# Кузьмич 0.2.0\n\n- Update\n');
   assert.throws(() => releaseNotes('## [0.1.0]\nOld\n', '0.2.0'));
   assert.throws(() => releaseNotes('## [0.2.0]\n\n## [0.1.0]\nOld\n', '0.2.0'));
   assert.throws(() => releaseNotes('## [0.2.0]\nOne\n## [0.2.0]\nTwo\n', '0.2.0'));
@@ -73,7 +87,7 @@ for (const legacy of [false, true]) {
     assert.equal(metadata.format, 1);
     assert.equal(metadata.size, data.payload.length);
     assert.equal(metadata.buildId, data.info.buildId);
-    assert.equal(await readFile(path.join(result.output, 'RELEASE_NOTES.md'), 'utf8'), '# Codex Desk 0.2.0\n\n- Updates\n');
+    assert.equal(await readFile(path.join(result.output, 'RELEASE_NOTES.md'), 'utf8'), '# Кузьмич 0.2.0\n\n- Updates\n');
     assert.deepEqual(await readFile(path.join(data.installer, data.filename)), data.payload);
   });
 }

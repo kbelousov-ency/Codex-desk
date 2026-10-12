@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ArrowDown, ArrowRight, ArrowUp, Brain, ChevronDown, ChevronRight, Code2, CornerDownRight, Cpu, Folder, FolderOpen, FolderPlus, GitBranch, ImagePlus, ListPlus, LoaderCircle, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, RefreshCw, Search, Settings2, Shield, Square, Terminal, X } from 'lucide-react';
-import type { Access, AgentProvider, Attachment, CodexBridge, ComposerFiles, Item, MessageQueueState, PendingMessage, ScrollAnchor, SessionAttentionEvent, Settings, Thread, UpdateTabSnapshot } from './types';
+import { ArrowDown, ArrowRight, ArrowUp, Bot, Brain, ChevronDown, ChevronRight, Code2, CornerDownRight, Cpu, Folder, FolderOpen, FolderPlus, GitBranch, ImagePlus, ListPlus, LoaderCircle, MessageSquare, MoreHorizontal, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, RefreshCw, Search, Settings2, Shield, Square, Terminal, X } from 'lucide-react';
+import type { Access, AgentProvider, Attachment, CodexBridge, ComposerFiles, ExecutorAction, ExecutorThread, Item, MessageQueueState, PendingMessage, ScrollAnchor, SessionAttentionEvent, Settings, Thread, UpdateTabSnapshot } from './types';
 import { BridgeContext } from './BridgeContext';
 import { AgentContext, agentName } from './AgentContext';
-import { BuildBadge } from './BuildInfo';
+import { BuildBadge, ProductBrand } from './BuildInfo';
+import ProductLogo from './ProductLogo';
+import { useComposerPlaceholder } from './use-composer-placeholder';
 import { errorText, folderName, useCodex } from './useCodex';
 import ChatSearch from './ChatSearch';
 import { canAnswerQuestion } from './agent-questions';
@@ -45,12 +47,24 @@ import RouterUsage from './RouterUsage';
 import SubagentPanel from './SubagentPanel';
 import ExportConversation from './ExportConversation';
 import AgentHandoff from './AgentHandoff';
-import { Download, ArrowRightLeft, List } from 'lucide-react';
+import ExecutorTabMenu from './ExecutorTabMenu';
+import { Download, ArrowRightLeft, Clock3, List } from 'lucide-react';
+import './child-tabs.css';
 
 const effortLabels: Record<string, string> = { none: 'Без размышлений', minimal: 'Минимум', low: 'Низкий', medium: 'Средний', high: 'Высокий', xhigh: 'Очень высокий', max: 'Максимум', ultra: 'Ультра' };
 
-export type SessionSummary = { cwd: string; title: string; threadId?: string; initialized: boolean; terminalOpen: boolean; busy: boolean; loading: boolean; connection: string; pending: number; pendingDelivery?: boolean; changedFiles?: string[]; settings: Settings };
+/** Codex may add a synthetic user-facing history marker when a spawned session is
+ * opened. It is transport metadata, not part of the conversation the user wrote. */
+const isCodexHistoryMarker = (item: Item) => {
+  const text = item.type === 'userMessage'
+    ? (item.content || []).filter((part: any) => part?.type === 'text').map((part: any) => String(part.text || '')).join('\n')
+    : item.type === 'agentMessage' ? String(item.text || '') : '';
+  return /^The following is the Codex agent history\b/i.test(text.trim());
+};
+
+export type SessionSummary = { cwd: string; title: string; threadId?: string; initialized: boolean; terminalOpen: boolean; busy: boolean; loading: boolean; connection: string; pending: number; pendingKind?: 'question' | 'approval'; completedTurnRevision?: number; pendingDelivery?: boolean; changedFiles?: string[]; settings: Settings };
 export type WorkspaceControls = ProjectTreeControls & {
+  forkThread?(cwd: string, thread: Thread, lastTurnId?: string): void;
   threadNames?: Record<string, string>;
   newChat(cwd: string, provider?: AgentProvider): void;
   openThread(cwd: string, thread: Thread): void;
@@ -59,17 +73,28 @@ export type WorkspaceControls = ProjectTreeControls & {
   onSessionStateChange?(id: string): void;
   flushSessionState?(): Promise<void>;
   onSessionAttention?(id: string, event: SessionAttentionEvent, title: string): void;
-  /** Opens a copy of the dialog as a new tab (App Server thread/fork or Claude SDK forkSession). */
-  forkThread?(cwd: string, thread: Thread, lastTurnId?: string): void;
+  /** Opens an executor agent: a plain empty dialog of `cwd` linked to `parentThreadId` for
+   * navigation only. No parent context is copied and no fork request is sent. */
+  createExecutor?(cwd: string, parentThreadId: string, draft?: string): void;
+  /** Right-click actions of an executor sub-tab: rename, unlink from the parent, archive, close. */
+  executorAction?(action: ExecutorAction, cwd: string, thread: ExecutorThread): void;
+  /** Stops new queued work or cache pings while waiting for this tab's final turn. */
+  closeWhenComplete?(sessionId: string): boolean;
+  /** Title of any conversation of a known folder, for the executor breadcrumb. */
+  threadTitle?(threadId: string, cwd?: string): string | undefined;
+  executorLabel?(sessionId: string): string | undefined;
   handoff?(cwd: string, provider: AgentProvider, text: string): Promise<boolean>;
   openPalette?(): void;
 };
-export default function App({ bridge = window.codex, sessionId = 'default', active = true, initialThread, initialFork, initialDraft = '', initialAttachments = [], initialQueue, initialPendingMessage, initialScrollTop, initialScrollAnchor, initialPreservedDraft, restoreSettings, workspace, jump }: {
-  bridge?: CodexBridge; sessionId?: string; active?: boolean; initialThread?: Thread; initialFork?: { lastTurnId?: string }; initialDraft?: string; initialAttachments?: Attachment[]; initialQueue?: MessageQueueState; initialPendingMessage?: PendingMessage; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; initialPreservedDraft?: { text: string; attachments: Attachment[] }; restoreSettings?: Settings; workspace?: WorkspaceControls; jump?: MessageJump;
+export default function App({ bridge = window.codex, sessionId = 'default', active = true, initialThread, executorOf, executorLabel, initialFork, initialDraft = '', initialAttachments = [], initialQueue, initialPendingMessage, initialScrollTop, initialScrollAnchor, initialPreservedDraft, restoreSettings, workspace, jump }: {
+  /** Set when this session is an executor agent: the parent conversation it is listed under.
+   * Known before the first send, when the executor has no conversation id of its own yet. */
+  bridge?: CodexBridge; sessionId?: string; active?: boolean; initialThread?: Thread; executorOf?: string; executorLabel?: string; initialFork?: { lastTurnId?: string }; initialDraft?: string; initialAttachments?: Attachment[]; initialQueue?: MessageQueueState; initialPendingMessage?: PendingMessage; initialScrollTop?: number; initialScrollAnchor?: ScrollAnchor; initialPreservedDraft?: { text: string; attachments: Attachment[] }; restoreSettings?: Settings; workspace?: WorkspaceControls; jump?: MessageJump;
 }) {
   const attentionRef = useRef<(event: SessionAttentionEvent) => void>(() => {});
   const codex = useCodex(bridge, { restoreSettings, restorePendingMessage: initialPendingMessage, onAttention: event => attentionRef.current(event) });
   const engineName = agentName(codex.provider);
+  const { placeholder, selectPlaceholder } = useComposerPlaceholder(sessionId, codex.cwd, initialThread?.id);
   const retryAttempt = codex.retry?.message.match(/\bReconnecting(?:\.{3}|…)?\s*(\d+)\s*\/\s*(\d+)/i);
   const [text, setText] = useState(initialDraft);
   const [attachments, setAttachments] = useState<Attachment[]>(initialAttachments);
@@ -112,6 +137,8 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   };
   const [showExport, setShowExport] = useState(false);
   const [showHandoff, setShowHandoff] = useState(false);
+  /** Right-click menu of one executor sub-tab, positioned where the pointer was. */
+  const [executorMenu, setExecutorMenu] = useState<{ thread: ExecutorThread; x: number; y: number } | null>(null);
   useEffect(() => { if (!active) setShowHandoff(false); }, [active]);
   useEffect(() => { if (showSettings && codex.provider === 'claude' && codex.connection === 'ready') void codex.refreshAgentDetails(); }, [showSettings, codex.provider, codex.connection]);
   const [showChatSearch, setShowChatSearch] = useState(false);
@@ -166,15 +193,22 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     }
     resultContext.current = { cwd: codex.cwd, threadId: codex.thread?.id };
   }, [codex.cwd, codex.thread?.id]);
-  const locked = codex.sourceChanging || Boolean(codex.pendingMessage) || workspace?.actionBusy || codex.terminalOpen || codex.busy || codex.loading || codex.authInProgress || codex.connection === 'connecting';
+  const deferredClosing = Boolean(workspace?.closeWhenComplete?.(sessionId));
+  const locked = deferredClosing || codex.sourceChanging || Boolean(codex.pendingMessage) || workspace?.actionBusy || codex.terminalOpen || codex.busy || codex.loading || codex.authInProgress || codex.connection === 'connecting';
   const ready = codex.connection === 'ready';
+  // Router statistics replace the plan limits whenever the tab actually talks to the router —
+  // by explicit source, or because the inherited CLI is configured for it (both agents).
+  const routerConnected = codex.connectionSource === 'router' || (codex.connectionSource === 'inherited' && codex.routerSource);
   const queueOwner = useRef<{ threadId?: string; cwd?: string } | null>(initialQueue?.items.length ? { threadId: initialQueue.threadId || initialThread?.id, cwd: initialQueue.cwd || initialThread?.cwd } : null);
   const queueOwnerMismatch = Boolean(queueOwner.current && ((queueOwner.current.threadId && queueOwner.current.threadId !== codex.thread?.id) || (queueOwner.current.cwd && codex.cwd && queueOwner.current.cwd !== codex.cwd)));
-  const queueBlocked = Boolean(queueOwnerMismatch || workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || (codex.thread && !codex.threadReady) || (initialThread && !resumeAttempted.current));
+  const queueBlocked = Boolean(deferredClosing || queueOwnerMismatch || workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || (codex.thread && !codex.threadReady) || (initialThread && !resumeAttempted.current));
   const queue = useMessageQueue(initialQueue, {
     busy: codex.busy, blocked: queueBlocked, completion: codex.queueCompletion, pause: codex.queuePause,
     canSend: codex.canSendQueued, send: codex.send, reconcile: codex.reconcileQueuedMessage, flush: workspace?.flushSessionState,
   });
+  useEffect(() => {
+    if (deferredClosing) queue.pause('Очередь приостановлена: вкладка закроется по завершении хода.');
+  }, [deferredClosing]);
   useEffect(() => {
     if (!queue.state.items.length) { queueOwner.current = null; return; }
     if (queueOwnerMismatch && ready && !codex.loading && (!initialThread || resumeAttempted.current) && queue.state.reason !== 'Очередь относится к прежнему диалогу. Откройте его перед продолжением.') queue.pause('Очередь относится к прежнему диалогу. Откройте его перед продолжением.');
@@ -200,7 +234,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     }
     editThread.current = codex.thread.id;
   }, [bridge, codex.cwd, codex.thread?.id]);
-  const canOperateThread = !codex.pendingMessage && !selectingFiles && !workspace?.actionBusy && ready && codex.threadReady && Boolean(codex.thread) && !codex.terminalOpen && !codex.busy && !codex.loading && !codex.requests.length;
+  const canOperateThread = !deferredClosing && !codex.pendingMessage && !selectingFiles && !workspace?.actionBusy && ready && codex.threadReady && Boolean(codex.thread) && !codex.terminalOpen && !codex.busy && !codex.loading && !codex.requests.length;
   const canCompact = codex.capabilities.compact && canOperateThread && !codex.modelUnavailable;
   useEffect(() => {
     if (codex.busy || codex.loading || codex.authInProgress || codex.terminalOpen || codex.connection !== 'ready') setShowHandoff(false);
@@ -227,7 +261,8 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const effortOptions = [{ value: '', label: 'По умолчанию' }, ...efforts.map(item => ({ value: item.reasoningEffort, label: effortLabels[item.reasoningEffort] || item.reasoningEffort }))];
   if (codex.effort && !effortOptions.some(option => option.value === codex.effort)) effortOptions.splice(1, 0, { value: codex.effort, label: effortLabels[codex.effort] || codex.effort });
   const imagesSupported = !selectedModel?.inputModalities || selectedModel.inputModalities.includes('image');
-  const chatItems = codex.items.filter(item => ['userMessage', 'agentMessage', 'plan'].includes(item.type) || (item.type === 'reasoning' && Boolean(reasoningText(item))));
+  const conversationItems = codex.items.filter(item => !isCodexHistoryMarker(item));
+  const chatItems = conversationItems.filter(item => ['userMessage', 'agentMessage', 'plan'].includes(item.type) || (item.type === 'reasoning' && Boolean(reasoningText(item))));
   const activeAction = [...codex.items].reverse().find(item => !item.complete && (!item.status || ['inProgress', 'running', 'pending'].includes(item.status)) && activityLabel(item));
   const currentAction = activityLabel(activeAction);
   const changedFiles = groupFileChanges(codex.items, codex.cwd).length;
@@ -291,15 +326,19 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     }
   }, [initialThread, ready]);
   useEffect(() => {
+    const latestRequest = codex.requests[codex.requests.length - 1];
     workspace?.report(sessionId, {
       cwd: codex.cwd, title: dialogueTitle,
       threadId: codex.thread?.id, terminalOpen: codex.terminalOpen, busy: codex.busy, loading: codex.loading,
       initialized: ready && (!initialThread || resumeAttempted.current),
       connection: codex.connection, pending: codex.requests.length, pendingDelivery: Boolean(codex.pendingMessage),
+      pendingKind: latestRequest ? ['item/tool/requestUserInput', 'mcpServer/elicitation/request'].includes(latestRequest.method) ? 'question' : 'approval' : undefined,
+      completedTurnRevision: codex.completedTurnRevision,
       changedFiles: collectActiveChangedFiles(codex.items, codex.turnWork, codex.busy),
-      settings: { ...(codex.provider === 'claude' ? { provider: codex.provider } : {}), connectionSource: codex.connectionSource, model: codex.model, effort: codex.effort, access: codex.access },
+      // The agent is always reported: a tab that changed it in place must not keep the icon of the previous one.
+      settings: { provider: codex.provider, connectionSource: codex.connectionSource, model: codex.model, effort: codex.effort, access: codex.access },
     });
-  }, [workspace?.report, sessionId, codex.cwd, codex.thread?.id, dialogueTitle, initialThread, codex.terminalOpen, codex.busy, codex.loading, codex.connection, codex.requests.length, codex.pendingMessage, codex.provider, codex.connectionSource, codex.model, codex.effort, codex.access, codex.items, codex.turnWork]);
+  }, [workspace?.report, sessionId, codex.cwd, codex.thread?.id, dialogueTitle, initialThread, codex.terminalOpen, codex.busy, codex.loading, codex.connection, codex.requests, codex.completedTurnRevision, codex.pendingMessage, codex.provider, codex.connectionSource, codex.model, codex.effort, codex.access, codex.items, codex.turnWork]);
   const captureUpdateRef = useRef<(persistent?: boolean) => UpdateTabSnapshot | null>(() => null);
   captureUpdateRef.current = persistent => {
     if (!persistent && (sending || queue.inFlight || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || codex.loading || codex.busy || codex.terminalOpen || codex.requests.length || codex.connection === 'connecting')) return null;
@@ -524,14 +563,14 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
     } finally { setCheckingMessage(false); }
   };
   const steerCurrent = async () => {
-    if (workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || !codex.busy || codex.compacting || codex.steering || sending || readingImages || filePickerPending.current || editPending.current) return;
+    if (deferredClosing || workspace?.actionBusy || codex.terminalOpen || codex.loading || !ready || codex.requests.length || !codex.busy || codex.compacting || codex.steering || sending || readingImages || filePickerPending.current || editPending.current) return;
     if (!editingMessage && parseSlashCommand(text)) { codex.setError('Команды выполняются отдельно. Для уточнения напишите обычное сообщение.'); return; }
     const draft = text, images = attachments;
     setSending(true);
     try { if (await codex.steer(draft, images)) clearSentDraft(draft, images); }
     finally { setSending(false); inputRef.current?.focus(); }
   };
-  const questionDisabled = !active || !ready || !codex.threadReady || Boolean(codex.pendingMessage) || Boolean(workspace?.actionBusy) || codex.terminalOpen || codex.loading || codex.authInProgress || codex.requests.length > 0 || codex.compacting || codex.steering || sending || readingImages || selectingFiles || loadingEdit || editingMessage || Boolean(queue.inFlight) || (codex.busy && !codex.capabilities.steer);
+  const questionDisabled = deferredClosing || !active || !ready || !codex.threadReady || Boolean(codex.pendingMessage) || Boolean(workspace?.actionBusy) || codex.terminalOpen || codex.loading || codex.authInProgress || codex.requests.length > 0 || codex.compacting || codex.steering || sending || readingImages || selectingFiles || loadingEdit || editingMessage || Boolean(queue.inFlight) || (codex.busy && !codex.capabilities.steer);
   const answerQuestion = async (item: Item, answer: string): Promise<boolean> => {
     if (questionDisabled || filePickerPending.current || editPending.current || !canAnswerQuestion(codex.items, item)) return false;
     setSending(true);
@@ -575,10 +614,13 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const newChat = () => {
     if (workspace) { workspace.newChat(codex.cwd, codex.provider); return; }
     if (locked) return;
-    codex.clearThread(); setText(''); setAttachments([]); codex.setNotice(''); inputRef.current?.focus();
+    codex.clearThread(); selectPlaceholder('new'); setText(''); setAttachments([]); codex.setNotice(''); inputRef.current?.focus();
   };
-  const selectProvider = (value: string) => {
+  // An empty dialogue changes agent right here; a dialogue with messages belongs to its agent and opens a new tab.
+  const selectProvider = async (value: string) => {
     if (!workspace || value === codex.provider || (value !== 'codex' && value !== 'claude')) return;
+    const empty = !codex.thread && !codex.pendingMessage && !queue.state.items.length && !queue.inFlight && !codex.requests.length && !sending && !readingImages && !editingMessage && !loadingEdit;
+    if (empty && await codex.selectProvider(value)) { selectPlaceholder('new'); return; }
     workspace.newChat(codex.cwd || workspace.activeCwd, value);
   };
   const continueStopped = async () => {
@@ -626,10 +668,34 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
   const chatSearchButton = <button type="button" className="icon-button" aria-label="Поиск в чате" data-tooltip="Поиск в чате (Ctrl+F)" aria-expanded={showChatSearch} onClick={openChatSearch}><Search size={17} /></button>;
   const outlineButton = <button type="button" className="icon-button" aria-label="Открыть оглавление диалога" data-tooltip="Оглавление и подписи этапов" aria-expanded={showPanel && tab === 'outline'} onClick={() => { setTab('outline'); setShowPanel(true); }}><List size={17} /></button>;
   const terminalButton = <button type="button" className={`terminal-button ${codex.terminalOpen ? 'terminal-open' : ''}`} aria-label="Открыть текущую сессию в терминале" data-tooltip={!codex.capabilities.terminal ? `Продолжение ${engineName} в терминале пока недоступно` : codex.terminalOpen ? 'Диалог открыт в терминале. Закройте терминал, чтобы продолжить здесь.' : !codex.thread ? 'Сначала начните диалог' : locked || codex.requests.length ? 'Дождитесь завершения текущей операции' : `Продолжить текущий диалог в терминале ${engineName}`} disabled={!codex.capabilities.terminal || !canOperateThread || sending || readingImages} onClick={() => void codex.openTerminal()}><Terminal size={13} /><span>Терминал</span></button>;
+  // Executor agents are plain conversations of this folder, tied to the parent for navigation only.
+  // The parent's context is never handed over; model and depth are chosen in the executor's composer.
+  const childParentId = executorOf || (codex.thread ? workspace?.childParentOf?.(codex.thread.id) : undefined);
+  const linkedExecutorThreads = workspace && (childParentId || codex.thread?.id) ? workspace.childThreads?.(childParentId || codex.thread!.id) || [] : [];
+  const resolvedExecutorLabel = executorLabel || workspace?.executorLabel?.(sessionId);
+  // This tab's own entry. Deduplication is by conversation id as well as by session: a tab opened
+  // without `childOf` would otherwise appear twice — once from the saved link, once from here.
+  const selfExecutor: ExecutorThread = { id: codex.thread?.id || `session:${sessionId}`, cwd: codex.cwd, provider: codex.provider, name: resolvedExecutorLabel || 'Агент A', label: resolvedExecutorLabel || 'Агент A', sessionId, busy: codex.busy, pending: codex.requests.length, loading: codex.loading, connection: codex.connection, terminalOpen: codex.terminalOpen };
+  const selfIndex = childParentId ? linkedExecutorThreads.findIndex(thread => thread.sessionId === sessionId || thread.id === selfExecutor.id) : -1;
+  const executorThreads: ExecutorThread[] = !childParentId ? linkedExecutorThreads
+    : selfIndex < 0 ? [...linkedExecutorThreads, selfExecutor]
+    : linkedExecutorThreads[selfIndex].sessionId ? linkedExecutorThreads
+    : linkedExecutorThreads.map((thread, index) => index === selfIndex ? { ...thread, ...selfExecutor, name: thread.name || selfExecutor.name, label: thread.label || selfExecutor.label } : thread);
+  const isExecutor = Boolean(childParentId);
+  const executorTitle = (thread: ExecutorThread) => workspace?.threadNames?.[thread.id] || thread.label || thread.name || thread.preview || 'Агент-исполнитель';
+  const executorSelected = (thread: ExecutorThread) => thread.sessionId ? thread.sessionId === sessionId : codex.thread?.id === thread.id;
+  // Depth is exactly one: an executor row is navigation for the parent's executors and offers no creation.
+  const canCreateExecutor = Boolean(workspace?.createExecutor && codex.thread && !isExecutor);
+  // The breadcrumb of an executor names the conversation it was created from, so the owner
+  // can always see whose executor this is and step back to it in one click.
+  const parentCrumb = isExecutor && childParentId ? workspace?.threadTitle?.(childParentId, codex.cwd) || 'Родительский диалог' : '';
+  // Read the current entry while the menu is open, so a terminal or close operation that
+  // starts in the meantime immediately updates the same reasons as the inline cross.
+  const executorMenuThread = executorMenu ? executorThreads.find(thread => executorMenu.thread.sessionId ? thread.sessionId === executorMenu.thread.sessionId : thread.id === executorMenu.thread.id) : undefined;
 
   return <AgentContext.Provider value={codex.provider}><BridgeContext.Provider value={bridge}><div className={`app-shell ${showSidebar ? '' : 'sidebar-hidden'} ${showPanel ? '' : 'panel-hidden'} ${resultDocked ? 'with-result-dock' : ''}`}>
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><Terminal size={19} strokeWidth={2.4} /></div><span>codex<span className="brand-light"> desk</span></span><BuildBadge /></div>
+      <div className="brand"><ProductLogo /><ProductBrand /><BuildBadge /></div>
       {workspace ? <ProjectSidebar controls={workspace} active={active} /> : <>
       <button className="new-chat" onClick={newChat} disabled={locked}><Plus size={17} /><span>Новый диалог</span><kbd>+</kbd></button>
       <button className="new-session" aria-label="Добавить рабочую папку" data-tooltip="Выбрать рабочую папку" onClick={addProject}><FolderPlus size={17} /><span><strong>Новая сессия</strong><small>Добавить рабочую папку</small></span></button>
@@ -639,20 +705,47 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       </div>
       <div className="sidebar-section-label history-label"><span>ДИАЛОГИ</span><button className="icon-button small" data-tooltip="Обновить историю" aria-label="Обновить историю" disabled={!ready || locked || codex.historyLoading} onClick={() => void codex.refreshHistory()}><RefreshCw size={13} className={codex.historyLoading ? 'spin' : ''} /></button></div>
       <div className="history-list">
-        {codex.history.map(thread => <button key={thread.id} className={`history-item ${codex.thread?.id === thread.id ? 'active' : ''}`} disabled={locked} onClick={() => { setAttachments([]); setText(''); void codex.resume(thread); }} data-tooltip={thread.name || thread.preview || 'Новый диалог'}><MessageSquare size={14} /><span>{thread.name || thread.preview || 'Новый диалог'}</span>{codex.thread?.id === thread.id && <span className="history-active-dot" />}</button>)}
+        {codex.history.map(thread => <button key={thread.id} className={`history-item ${codex.thread?.id === thread.id ? 'active' : ''}`} disabled={locked} onClick={() => { setAttachments([]); setText(''); void codex.resume(thread).then(resumed => { if (resumed) selectPlaceholder('continuing'); }); }} data-tooltip={thread.name || thread.preview || 'Новый диалог'}><MessageSquare size={14} /><span>{thread.name || thread.preview || 'Новый диалог'}</span>{codex.thread?.id === thread.id && <span className="history-active-dot" />}</button>)}
         {!codex.history.length && <div className="history-empty"><MessageSquare size={19} /><p>{codex.historyLoading ? 'Загружаем историю…' : 'Здесь будет история\nдиалогов этого проекта'}</p></div>}
         {codex.historyCursor && <button className="text-button history-more" disabled={codex.historyLoading || locked} onClick={() => void codex.refreshHistory(codex.cwd, codex.historyCursor!)}>Загрузить ещё</button>}
       </div>
       </>}
-      <div className="sidebar-bottom"><div className="local-engine"><span className={`status-dot ${ready ? 'online' : ''}`} /><span>Локальный {engineName} CLI</span><span className="connection-label">{ready ? 'ON' : 'OFF'}</span></div><button className="account-button" onClick={() => setShowSettings(true)}><div className="avatar"><Terminal size={15} /></div><span><strong>Ваш {engineName}</strong><small>{accountLabel}</small></span><Settings2 size={15} /></button></div>
+      <div className="sidebar-bottom"><div className="local-engine"><span className={`status-dot ${ready ? 'online' : ''}`} /><span>Локальный {engineName} CLI</span><span className="connection-label">{ready ? 'ON' : 'OFF'}</span></div><button className="account-button" onClick={() => setShowSettings(true)}><div className="avatar kuzmich-avatar"><img src={new URL('../electron/kuzmich-logo.svg', import.meta.url).href} width={30} height={30} alt="" aria-hidden="true" /></div><span><strong>Ваш {engineName}</strong><small>{accountLabel}</small></span><Settings2 size={15} /></button></div>
     </aside>
 
     <main className="main-column">
-      <header className="topbar"><button className="icon-button" data-tooltip={showSidebar ? 'Скрыть проекты' : 'Показать проекты'} aria-label="Переключить панель проектов" onClick={() => setShowSidebar(!showSidebar)}>{showSidebar ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button><div className="breadcrumbs"><span>{codex.cwd ? folderName(codex.cwd) : 'Рабочее пространство'}</span><ChevronRight size={13} /><strong>{dialogueTitle || 'Новый диалог'}</strong></div><div className="topbar-actions">{chatSearchButton}{outlineButton}<button type="button" className="icon-button" data-tooltip="Экспорт беседы" aria-label="Экспорт беседы" disabled={!codex.items.length || codex.loading} onClick={() => setShowExport(true)}><Download size={17} /></button>{workspace?.handoff && codex.thread && <button type="button" className="icon-button" data-tooltip="Передать задачу другому агенту с контекстом" aria-label="Передать задачу другому агенту" disabled={!canOperateThread || codex.authInProgress || sending || editingMessage || loadingEdit || Boolean(workspace.opening) || Boolean(queue.inFlight)} onClick={() => { queue.pause('Очередь приостановлена для передачи задачи другому агенту.'); setShowHandoff(true); }}><ArrowRightLeft size={17} /></button>}{codex.thread && <button type="button" className="icon-button" data-tooltip="Копия беседы в новой вкладке. Папка и файлы общие" aria-label="Ответвить беседу" disabled={!codex.threadReady || codex.busy || codex.loading || codex.terminalOpen || Boolean(codex.pendingMessage) || Boolean(workspace?.opening)} onClick={() => { const thread = { ...codex.thread!, cwd: codex.cwd, ...(codex.provider === 'claude' ? { provider: codex.provider } : {}) }; if (workspace?.forkThread) workspace.forkThread(codex.cwd, thread); else void codex.resume(thread, true, {}); }}><GitBranch size={17} /></button>}<span className={`connection-pill ${codex.busy ? 'is-working' : ''}`}><span className={`status-dot ${ready ? codex.busy ? 'working' : 'online' : ''}`} />{status}</span><button className="icon-button" data-tooltip="Настройки" aria-label="Настройки" onClick={() => setShowSettings(true)}><MoreHorizontal size={19} /></button><button className="icon-button" data-tooltip={showPanel ? 'Скрыть действия' : 'Показать действия'} aria-label="Переключить панель действий" onClick={() => setShowPanel(!showPanel)}>{showPanel ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button></div></header>
+      <div className="conversation-toolbar-stack">
+        {executorThreads.length > 0 && <div className="child-tabs-row" role="tablist" aria-label="Агенты-исполнители этого диалога">
+          <span className="child-tabs-caption">Исполнители</span>
+          {executorThreads.map(child => {
+            const closed = !child.sessionId;
+            const waiting = !closed && (Boolean(child.pending) || Boolean(child.unread && child.attentionKind === 'question'));
+            const question = waiting && (child.pendingKind || child.attentionKind) === 'question';
+            const status = closed ? 'Вкладка закрыта' : waiting ? 'Ждёт вашего ответа' : child.busy ? 'Работает' : child.connection === 'error' ? 'Ошибка подключения' : 'Готов';
+            const stateClass = closed ? 'closed' : waiting ? 'waiting' : child.busy ? 'running' : child.connection === 'error' ? 'error' : '';
+            const blockedReason = closed ? child.unlinkBlockedReason : child.closeBlockedReason;
+            const closeHint = blockedReason || (closed ? 'Убрать из ряда (диалог останется в папке)' : child.closeWhenComplete ? 'Закроется по завершении' : 'Закрыть вкладку');
+            return <div className={`child-tab-wrap ${executorSelected(child) ? 'active' : ''} ${closed ? 'closed' : ''} ${child.unread ? 'has-unread' : ''}`} key={child.sessionId || child.id}>
+            <button type="button" role="tab" className={`child-tab ${executorSelected(child) ? 'active' : ''}`} aria-selected={executorSelected(child)} aria-label={`${executorTitle(child)}, ${status}${child.unread ? ', есть непрочитанное событие' : ''}`} data-thread-id={child.id} data-tooltip={`${executorTitle(child)} · ${status}${child.terminalOpen ? ' · Открыт в терминале' : ''}${child.closeWhenComplete ? ' · Закроется по завершении' : ''}${child.unread ? child.attentionKind === 'completed' ? ' · Новый результат' : ' · Требует внимания' : ''}`}
+              onClick={() => workspace?.openChildThread?.(child.cwd || codex.cwd, child)}
+              onContextMenu={event => { if (!workspace?.executorAction) return; event.preventDefault(); setExecutorMenu({ thread: child, x: event.clientX, y: event.clientY }); }}
+              onKeyDown={event => {
+                if (!workspace?.executorAction || !(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return;
+                event.preventDefault();
+                const box = event.currentTarget.getBoundingClientRect();
+                setExecutorMenu({ thread: child, x: box.left, y: box.bottom });
+              }}>{!closed && child.busy ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Bot size={14} aria-hidden="true" />}<span className="child-tab-label">{executorTitle(child)}</span><span className={`child-tab-state tab-state ${stateClass} ${question ? 'question' : ''}`} aria-hidden="true">{question ? '?' : null}</span>{!closed && child.unread && <span className="child-tab-unread tab-unread" aria-hidden="true" />}</button>
+            <button type="button" className={`child-tab-close ${child.closeWhenComplete ? 'close-when-complete' : ''}`} aria-label={`${closed ? 'Убрать из ряда' : 'Закрыть вкладку'} ${executorTitle(child)}`} data-tooltip={closeHint} disabled={Boolean(blockedReason)} onClick={event => { event.stopPropagation(); workspace?.executorAction?.(closed ? 'unlink' : 'close', child.cwd || codex.cwd, child); }}>{child.closeWhenComplete ? <Clock3 size={12} /> : <X size={11} />}</button>
+          </div>;
+          })}
+          {canCreateExecutor && <button type="button" className="child-tab child-tab-create" aria-label="Новый агент-исполнитель" data-tooltip="Новый агент-исполнитель: чистый диалог этой папки" disabled={Boolean(workspace?.opening) || Boolean(workspace?.actionBusy)} onClick={() => workspace?.createExecutor?.(codex.cwd, codex.thread!.id)}><Plus size={14} /><span>Исполнитель</span></button>}
+        </div>}
+        <header className="topbar"><button className="icon-button" data-tooltip={showSidebar ? 'Скрыть проекты' : 'Показать проекты'} aria-label="Переключить панель проектов" onClick={() => setShowSidebar(!showSidebar)}>{showSidebar ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}</button><div className="breadcrumbs"><span>{codex.cwd ? folderName(codex.cwd) : 'Рабочее пространство'}</span><ChevronRight size={13} />{parentCrumb && <><button type="button" className="breadcrumb-parent" data-tooltip="Родительский диалог: открыть его вкладку" disabled={Boolean(workspace?.opening)} onClick={() => workspace?.openParentThread?.(codex.cwd, childParentId!)}>{parentCrumb}</button><ChevronRight size={13} /></>}<strong>{dialogueTitle || 'Новый диалог'}</strong></div><div className="topbar-actions">{chatSearchButton}{outlineButton}<button type="button" className="icon-button" data-tooltip="Экспорт беседы" aria-label="Экспорт беседы" disabled={!codex.items.length || codex.loading} onClick={() => setShowExport(true)}><Download size={17} /></button>{workspace?.handoff && codex.thread && <button type="button" className="icon-button" data-tooltip="Передать задачу другому агенту с контекстом" aria-label="Передать задачу другому агенту" disabled={!canOperateThread || codex.authInProgress || sending || editingMessage || loadingEdit || Boolean(workspace.opening) || Boolean(queue.inFlight)} onClick={() => { queue.pause('Очередь приостановлена для передачи задачи другому агенту.'); setShowHandoff(true); }}><ArrowRightLeft size={17} /></button>}<span className={`connection-pill ${codex.busy ? 'is-working' : ''}`}><span className={`status-dot ${ready ? codex.busy ? 'working' : 'online' : ''}`} />{status}</span><button className="icon-button" data-tooltip="Настройки" aria-label="Настройки" onClick={() => setShowSettings(true)}><MoreHorizontal size={19} /></button><button className="icon-button" data-tooltip={showPanel ? 'Скрыть действия' : 'Показать действия'} aria-label="Переключить панель действий" onClick={() => setShowPanel(!showPanel)}>{showPanel ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button></div></header>
+      </div>
 
       <div className="chat-scroll" ref={chatRef} onScroll={e => { const el = e.currentTarget; if (!active || pendingScroll.current !== undefined) return; savedScrollTop.current = el.scrollTop; savedAnchor.current = readScrollAnchor(el); setScrolledUp(el.scrollHeight - el.scrollTop - el.clientHeight > 100); workspace?.onSessionStateChange?.(sessionId); }}>
         {!showChatSearch && !chatItems.length && !codex.loading && !codex.busy && !codex.items.some(item => activityLabel(item)) ? <section className="welcome">
-          <div className="welcome-symbol"><Terminal size={33} strokeWidth={1.7} /><span /></div>
+          <div className="welcome-symbol welcome-product-symbol"><ProductLogo className="welcome-product-logo" /></div>
           <div className="eyebrow welcome-eyebrow">ВАШ ПРОЕКТ. ВАШ {codex.provider === 'claude' ? 'CLAUDE' : 'CODEX'}.</div>
           <h1>Давайте что-нибудь<br /><span>сделаем.</span></h1>
           <p className="welcome-description">Возможности {engineName} CLI — в удобном пространстве.<br />Код, изображения и весь ход работы в одном окне.</p>
@@ -660,7 +753,7 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
           <button className="welcome-folder" disabled={workspace?.opening || (!workspace && locked)} onClick={addProject}><FolderOpen size={14} /><span>{codex.cwd ? codex.cwd : 'Выбрать рабочую папку'}</span><ChevronDown size={12} /></button>
         </section> : <div className="conversation">
           {codex.itemCursor && !showChatSearch && <button className="text-button load-earlier" disabled={codex.loading} onClick={() => void codex.loadEarlier()}>Показать предыдущие сообщения</button>}
-          <ChatSearch key={codex.thread?.id || 'new'} items={codex.items} turnWork={codex.turnWork} open={showChatSearch} active={active} onClose={() => { setShowChatSearch(false); inputRef.current?.focus({ preventScroll: true }); }} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} onEditMessage={editMessage} onBookmark={saveBookmark} onQuote={loadingEdit || sending ? undefined : quoteMessage} onOpenResultFile={openResultFile} onJumpToItem={jumpToItem} onReviewResult={turnId => { setExternalTurnSelection({ turnId, key: Date.now() }); setTab('changes'); setShowPanel(true); }} onAnswerQuestion={answerQuestion} questionDisabled={questionDisabled} editDisabled={sending || readingImages || loadingEdit || codex.loading || codex.terminalOpen || Boolean(workspace?.actionBusy)} />
+          <ChatSearch key={codex.thread?.id || 'new'} items={conversationItems} turnWork={codex.turnWork} open={showChatSearch} active={active} onClose={() => { setShowChatSearch(false); inputRef.current?.focus({ preventScroll: true }); }} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} onEditMessage={editMessage} onBookmark={saveBookmark} onQuote={loadingEdit || sending ? undefined : quoteMessage} onOpenResultFile={openResultFile} onJumpToItem={jumpToItem} onReviewResult={turnId => { setExternalTurnSelection({ turnId, key: Date.now() }); setTab('changes'); setShowPanel(true); }} onSendToExecutor={active && canCreateExecutor ? prompt => workspace?.createExecutor?.(codex.cwd, codex.thread!.id, prompt) : undefined} onAnswerQuestion={answerQuestion} questionDisabled={questionDisabled} editDisabled={sending || readingImages || loadingEdit || codex.loading || codex.terminalOpen || Boolean(workspace?.actionBusy)} />
           {codex.busy && <div className="working-indicator"><span className="working-orb" /><span>{codex.requests.length ? `${engineName} ждёт вашего ответа` : currentAction || `${engineName} работает`}<span className="working-dots">...</span></span></div>}
         </div>}
         {codex.loading && <div className="loading-chat"><LoaderCircle className="spin" size={22} /><span>Открываем диалог…</span></div>}
@@ -682,23 +775,23 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
           {commands.length > 0 && <CommandMenu commands={commands} selected={Math.min(commandIndex, commands.length - 1)} onHighlight={setCommandIndex} onSelect={name => void chooseCommand(name)} />}
           {dragOver && <div className="drop-overlay"><ImagePlus size={24} />Изображения — вложениями, остальные файлы — путями</div>}
           {attachments.length > 0 && <div className="attachments">{attachments.map((attachment, i) => <div className="attachment" key={`${attachment.name}-${i}`}><img src={attachment.dataUrl} alt={attachment.name} /><button data-tooltip="Удалить изображение" aria-label={`Удалить ${attachment.name}`} disabled={loadingEdit || sending} onClick={() => setAttachments(previous => previous.filter((_, index) => index !== i))}><X size={12} /></button><span>{attachment.name}</span></div>)}</div>}
-          <textarea ref={inputRef} value={text} readOnly={loadingEdit || (editingMessage && sending) || Boolean(workspace?.actionBusy)} rows={2} placeholder="Что будем делать? Можно вставить или перенести файлы…" aria-label={`Сообщение ${engineName}`} onChange={e => { setCommandMenuOpen(false); setText(e.target.value); }} onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === 'Escape' && (editingMessage || loadingEdit)) { e.preventDefault(); cancelEdit(); } else if (commands.length && e.key === 'Escape') { e.preventDefault(); setCommandMenuOpen(false); setCommandDismissed(true); } else if (commands.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setCommandKeyboardSelected(true); setCommandIndex(index => (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length); } else if (commands.length && (matchingCommands(text).length > 0 || commandKeyboardSelected) && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { e.preventDefault(); void chooseCommand(commands[Math.min(commandIndex, commands.length - 1)].name); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
+          <textarea ref={inputRef} value={text} readOnly={loadingEdit || (editingMessage && sending) || Boolean(workspace?.actionBusy)} rows={2} placeholder={placeholder} aria-label={`Сообщение ${engineName}`} onChange={e => { setCommandMenuOpen(false); setText(e.target.value); }} onKeyDown={e => { if (e.nativeEvent.isComposing) return; if (e.key === 'Escape' && (editingMessage || loadingEdit)) { e.preventDefault(); cancelEdit(); } else if (commands.length && e.key === 'Escape') { e.preventDefault(); setCommandMenuOpen(false); setCommandDismissed(true); } else if (commands.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setCommandKeyboardSelected(true); setCommandIndex(index => (index + (e.key === 'ArrowDown' ? 1 : commands.length - 1)) % commands.length); } else if (commands.length && (matchingCommands(text).length > 0 || commandKeyboardSelected) && (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey))) { e.preventDefault(); void chooseCommand(commands[Math.min(commandIndex, commands.length - 1)].name); } else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }} />
           <div className="composer-toolbar"><div className="composer-tools"><button className="icon-button attach-button" data-tooltip="Добавить файлы: изображения с превью, остальные — путями в сообщение" aria-label="Добавить файлы" disabled={readingImages || selectingFiles || loadingEdit || sending || Boolean(workspace?.actionBusy)} onClick={() => void chooseFiles()}>{readingImages || selectingFiles ? <LoaderCircle size={18} className="spin" /> : <Plus size={20} />}</button><span className="toolbar-divider" />
             <button type="button" className="icon-button" aria-label={`Команды ${engineName}`} data-tooltip={`Команды ${engineName} (/)`} disabled={editingMessage || loadingEdit || sending} onClick={() => { setCommandMenuOpen(value => !value); setCommandDismissed(false); setCommandKeyboardSelected(false); inputRef.current?.focus(); }}><Terminal size={16} /></button>
-            <ComposerSelect kind="provider" label="Агент" value={codex.provider} options={[{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude Code" }]} icon={<Terminal size={14} />} disabled={!workspace || Boolean(workspace.opening) || Boolean(workspace.actionBusy) || selectingFiles} active={active} onChange={selectProvider} />
-            <ComposerSelect kind="source" label="Источник" value={codex.connectionSource} options={[{ value: "inherited", label: "Настройки CLI" }, { value: "account", label: "Личный аккаунт" }, { value: "router", label: "Роутер" }]} icon={<Plug size={14} />} disabled={Boolean(locked || selectingFiles || sending || readingImages || codex.requests.length)} active={active} onChange={value => void codex.selectConnectionSource(value)} />
+            <ComposerSelect kind="provider" label="Агент" value={codex.provider} options={[{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude Code" }]} icon={<Terminal size={14} />} disabled={!workspace || Boolean(workspace.opening) || Boolean(workspace.actionBusy) || selectingFiles || codex.sourceChanging || codex.connection === 'connecting'} active={active} onChange={selectProvider} />
+
             <ComposerSelect kind="model" label="Модель" value={codex.model} options={modelOptions} icon={<Cpu size={14} />} disabled={locked || selectingFiles || !ready} active={active} openSignal={modelSignal} onChange={codex.selectModel} />
             <ComposerSelect kind="effort" label="Глубина размышлений" value={codex.effort} options={effortOptions} icon={<Brain size={14} />} disabled={locked || selectingFiles || !ready || !efforts.length} active={active} onChange={codex.selectEffort} />
           </div><div className="composer-actions">
             {(codex.busy || queue.state.items.length > 0) && <>
-              {codex.busy && <button type="button" className="composer-action composer-steer" aria-label="Уточнить текущую задачу" data-tooltip={codex.capabilities.steer ? `Уточнить текущую задачу — передать сообщение ${engineName} во время выполнения` : `Уточнения во время выполнения для ${engineName} пока недоступны. Используйте очередь.`} disabled={Boolean(codex.pendingMessage) || !codex.capabilities.steer || (!text.trim() && !attachments.length) || Boolean(workspace?.actionBusy) || codex.terminalOpen || codex.loading || !ready || Boolean(codex.requests.length) || selectingFiles || sending || readingImages || loadingEdit || codex.compacting || codex.steering || (attachments.length > 0 && !imagesSupported)} onClick={() => void steerCurrent()}><CornerDownRight size={14} /><span>Уточнить</span></button>}
+              {codex.busy && <button type="button" className="composer-action composer-steer" aria-label="Уточнить текущую задачу" data-tooltip={deferredClosing ? 'Закроется по завершении: отмените отложенное закрытие, чтобы продолжить' : codex.capabilities.steer ? `Уточнить текущую задачу — передать сообщение ${engineName} во время выполнения` : `Уточнения во время выполнения для ${engineName} пока недоступны. Используйте очередь.`} disabled={deferredClosing || Boolean(codex.pendingMessage) || !codex.capabilities.steer || (!text.trim() && !attachments.length) || Boolean(workspace?.actionBusy) || codex.terminalOpen || codex.loading || !ready || Boolean(codex.requests.length) || selectingFiles || sending || readingImages || loadingEdit || codex.compacting || codex.steering || (attachments.length > 0 && !imagesSupported)} onClick={() => void steerCurrent()}><CornerDownRight size={14} /><span>Уточнить</span></button>}
               <button type="button" className="composer-action composer-enqueue" aria-label="Отправить после завершения" data-tooltip="В очередь — отправить сообщение после завершения текущей задачи" disabled={(!text.trim() && !attachments.length) || queueOwnerMismatch || selectingFiles || sending || readingImages || loadingEdit || (attachments.length > 0 && !imagesSupported)} onClick={enqueueMessage}><ListPlus size={15} /><span>В очередь</span></button>
               {codex.busy && <span className="composer-action-divider" aria-hidden="true" />}
             </>}
             {codex.busy ? <button className="stop-button" onClick={() => void codex.stop()} data-tooltip="Остановить выполнение" aria-label="Остановить выполнение"><Square size={14} fill="currentColor" /></button> : <button className="send-button" data-tooltip="Отправить (Enter)" aria-label="Отправить сообщение" disabled={!ready || locked || codex.modelUnavailable || selectingFiles || sending || readingImages || loadingEdit || (!text.trim() && !attachments.length)} onClick={() => void send()}><ArrowUp size={20} /></button>}
           </div></div>
         </div>
-        <div className="composer-footer"><AccessSelect provider={codex.provider} value={codex.access} disabled={locked || selectingFiles || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span>{codex.capabilities.usage && codex.connectionSource !== 'router' && <UsageLimit usage={codex.usage} loading={codex.usageLoading} active={active} disabled={!ready || locked || sending} onRefresh={() => void codex.refreshUsage()} onCommand={command => { if (ready && !locked && !sending) void codex.send(command, []); }} />}<RouterUsage bridge={bridge} enabled={codex.connectionSource === 'router' || (codex.connectionSource === 'inherited' && codex.provider === 'codex' && codex.config?.model_provider === 'router')} ready={ready} active={active} /><CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compactSupported={codex.capabilities.compact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
+        <div className="composer-footer"><AccessSelect provider={codex.provider} value={codex.access} disabled={locked || selectingFiles || !ready} active={active} openSignal={accessSignal} onChange={selectAccess} />{terminalButton}<span className="keyboard-hint"><kbd>Enter</kbd> отправить<span>·</span><kbd>Shift Enter</kbd> новая строка</span>{codex.capabilities.usage && !routerConnected && <UsageLimit usage={codex.usage} loading={codex.usageLoading} active={active} disabled={!ready || locked || sending} onRefresh={() => void codex.refreshUsage()} onCommand={command => { if (ready && !locked && !sending) void codex.send(command, []); }} />}<RouterUsage bridge={bridge} enabled={routerConnected} ready={ready} active={active} provider={codex.provider} threadId={codex.thread?.id ?? null} refreshKey={codex.completedTurnRevision} /><CacheControl active={active} tokens={codex.tokens} session={{ activityAt: codex.cacheActivityAt, generation: codex.cacheGeneration, completed: codex.cacheTurnCompleted, threadId: codex.thread?.id, busy: codex.busy, loading: codex.loading, connection: codex.connection, pending: codex.requests.length, blocked: deferredClosing || queue.state.items.length > 0 || Boolean(queue.inFlight) || !codex.threadReady || Boolean(workspace?.actionBusy) || codex.terminalOpen || sending || readingImages || selectingFiles || editingMessage || loadingEdit || showSettings || showExport || showHandoff || showChangesReview || modalResultOpen || confirmFull || showHistory || commands.length > 0, sendPing: codex.sendPing }} /><TokenUsage tokens={codex.tokens} openSignal={statusSignal} canCompact={canCompact} compactSupported={codex.capabilities.compact} compacting={codex.compacting} onCompact={() => void codex.compact()} active={active} sessionKey={`${sessionId}:${codex.thread?.id || "new"}`} /></div>
       </div>
     </main>
 
@@ -710,17 +803,17 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       <button className={tab === 'outline' ? 'active' : ''} onClick={() => setTab('outline')}><List size={14} />Диалог</button>
     </div><div className="panel-scroll">
       <div hidden={tab !== 'files'}><FileBrowser cwd={codex.cwd} active={active && showPanel && tab === 'files'} refreshKey={changedFiles} onAskCodex={askAboutPath} onPreview={path => { setReviewSelection(null); setFileViewer(current => ({ path, docked: current?.docked })); }} /></div>
-      <div hidden={tab !== 'outline'}><ConversationOutline key={outlineStorageKey} storageKey={outlineStorageKey} items={codex.items} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} onJump={jumpToItem} /></div>
+      <div hidden={tab !== 'outline'}><ConversationOutline key={outlineStorageKey} storageKey={outlineStorageKey} items={conversationItems} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} onJump={jumpToItem} /></div>
       {tab === 'activity' && <ActivityPanel items={codex.items} plan={codex.plan} busy={codex.busy} />}
       {tab === 'agents' && <SubagentPanel items={codex.items} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} onLoadEarlier={() => void codex.loadEarlier()} onJump={itemId => { setShowChatSearch(false); if (window.innerWidth <= 1000) setShowPanel(false); setLocalJump({ itemId, key: Date.now() }); }} />}
       {tab === 'changes' && <ChangesPanel key={codex.thread?.id || 'new'} items={codex.items} diff={codex.diff} cwd={codex.cwd} diffTurnId={codex.diffTurnId} turnDiffs={codex.turnDiffs} active={active && !workspace?.actionBusy} hasEarlier={Boolean(codex.itemCursor)} loading={codex.loading} busy={codex.busy} mutationsAllowed={ready && codex.access !== 'read-only' && !locked && !codex.requests.length && !sending && !readingImages} onLoadEarlier={() => void codex.loadEarlier()} onReviewChange={setShowChangesReview} onPinReview={pinReview} onQuote={appendDraft} externalTurnSelection={externalTurnSelection} />}
     </div><div className="panel-bottom"><span className="status-dot online" /><span>{tab === 'files' ? 'Файлы текущей рабочей папки' : tab === 'outline' ? 'Подписи хранятся только в этом приложении' : 'Изменения сохраняются в проекте'}</span></div></aside>
     <input ref={filesRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => { void addFiles([...(e.target.files || [])]); e.currentTarget.value = ''; }} />
 
-    {showHistory && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setShowHistory(false); }}><section className="settings-modal" role="dialog" aria-modal="true" aria-label="История диалогов"><div className="modal-header"><h2>История диалогов</h2><button type="button" className="icon-button" aria-label="Закрыть историю" onClick={() => setShowHistory(false)}><X size={18} /></button></div><div className="command-history">{codex.history.map(thread => <button key={thread.id} disabled={!workspace && locked} onClick={() => { setShowHistory(false); if (workspace) workspace.openThread(codex.cwd, thread); else void codex.resume(thread); }}>{thread.name || thread.preview || 'Новый диалог'}</button>)}{!codex.history.length && <p className="muted">{codex.historyLoading ? 'Загружаем историю…' : 'В этой папке пока нет диалогов.'}</p>}{codex.historyCursor && <button disabled={codex.historyLoading} onClick={() => void codex.refreshHistory(codex.cwd, codex.historyCursor!)}>Загрузить ещё</button>}</div></section></div>}
     {showSettings && <SettingsDialog active={active} busy={memoryRulesBusy} onClose={() => setShowSettings(false)} tabs={[
       { id: 'agent', label: 'Агент', icon: <Cpu size={15} aria-hidden="true" />, content: <>
-        <div className="settings-provider-summary"><strong>Агент: {engineName}</strong><p>Выберите агента под сообщением. Другой агент откроется в отдельной вкладке.</p></div>
+        <div className="settings-provider-summary"><strong>Агент: {engineName}</strong><p>Выберите агента под сообщением. В пустом диалоге агент меняется на месте; в диалоге с сообщениями другой агент откроется в отдельной вкладке.</p></div>
+        <div className="settings-row"><span><strong>Источник подключения</strong><small>Только для текущей вкладки; конфигурация CLI не меняется.</small></span><ComposerSelect kind="source" label="Источник" value={codex.connectionSource} options={[{ value: "inherited", label: "Настройки CLI" }, { value: "account", label: "Личный аккаунт" }, { value: "router", label: "Роутер" }]} icon={<Plug size={14} />} disabled={Boolean(memoryRulesBusy || locked || selectingFiles || sending || readingImages || codex.requests.length)} active={active} onChange={value => void codex.selectConnectionSource(value)} /></div>
         {codex.provider === 'claude' && <RouterConnectionSettings bridge={bridge} disabled={Boolean(locked || codex.requests.length || sending || readingImages || selectingFiles)} onBusyChange={setMemoryRulesBusy} onConnected={() => codex.connectionSource === 'router' ? codex.reconnect() : codex.selectConnectionSource('router')} />}
         {codex.provider === 'claude' && <ClaudeAuthSettings bridge={bridge} disabled={Boolean(memoryRulesBusy || locked || codex.requests.length || sending || readingImages || selectingFiles)} loginInProgress={codex.authInProgress} />}
         <EffectiveSettings details={codex.agentDetails} detailsLoading={codex.agentDetailsLoading} provider={codex.provider} model={codex.model} effort={codex.effort} access={codex.access} sources={codex.sources} executable={codex.executable} cliVersion={codex.cliVersion} capabilities={codex.capabilities} cwd={codex.cwd} />
@@ -742,6 +835,10 @@ export default function App({ bridge = window.codex, sessionId = 'default', acti
       { id: 'memory', label: 'Память', icon: <BookOpen size={15} aria-hidden="true" />, content: <MemoryRulesSettings onBusyChange={setMemoryRulesBusy} /> },
     ]} />}
 
+    {executorMenu && executorMenuThread && workspace?.executorAction && <ExecutorTabMenu thread={executorMenuThread} title={executorTitle(executorMenuThread)} x={executorMenu.x} y={executorMenu.y}
+      locked={Boolean(workspace.opening) || Boolean(workspace.actionBusy) || Boolean(workspace.threadLocked?.(executorMenuThread.id))}
+      onClose={() => setExecutorMenu(null)}
+      onAction={action => workspace.executorAction?.(action, executorMenuThread.cwd || codex.cwd, executorMenuThread)} />}
     {confirmFull && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="full-access-title"><div className="permission-symbol"><Shield size={26} /></div><h2 id="full-access-title">Включить полный доступ?</h2><p>{engineName} сможет выполнять команды, обращаться к сети и изменять файлы за пределами проекта без запросов подтверждения.</p><p className="muted">Режим применяется со следующего сообщения в этой вкладке.</p><div className="confirm-actions"><button className="secondary-button" autoFocus onClick={() => setConfirmFull(false)}>Отмена</button><button className="danger-button" onClick={() => { codex.selectAccess('danger-full-access'); setConfirmFull(false); }}>Включить полный доступ</button></div></section></div>}
     {fileViewer && <aside className={fileViewer.docked ? 'result-dock' : 'result-modal-host'} aria-label={fileViewer.docked ? 'Результат рядом с чатом' : undefined}><FileViewer cwd={codex.cwd} active={active} initialPath={fileViewer.path} docked={Boolean(fileViewer.docked)} onToggleDock={() => { setReviewSelection(null); setShowPanel(false); setFileViewer(current => current ? { ...current, docked: !current.docked } : null); }} onClose={() => setFileViewer(null)} onAsk={question => { appendDraft(question); if (!fileViewer.docked) setFileViewer(null); }} /></aside>}
     {reviewSelection && <aside className={reviewSelection.docked ? 'result-dock' : 'result-modal-host'} aria-label={reviewSelection.docked ? 'Результат рядом с чатом' : undefined}><DiffReview selection={reviewSelection.selection} docked={reviewSelection.docked} onToggleDock={() => { setShowPanel(false); setReviewSelection(current => current ? { ...current, docked: !current.docked } : null); }} onClose={() => setReviewSelection(null)} onQuote={appendDraft} onOpen={path => bridge.openPath(path)} /></aside>}

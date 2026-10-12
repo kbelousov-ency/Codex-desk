@@ -79,7 +79,7 @@ input.on('line', line => {
     return;
   }
   if (method === 'initialized') return;
-  if (method === 'initialize') return reply(id, { userAgent: 'Codex Desk session fixture', fixturePid: process.pid, fixtureCwd: cwd });
+  if (method === 'initialize') return reply(id, { userAgent: 'Кузьмич session fixture', fixturePid: process.pid, fixtureCwd: cwd });
   if (method === 'model/list') return reply(id, { data: models, nextCursor: null });
   if (method === 'account/read') return reply(id, { account: null, requiresOpenaiAuth: false });
   if (method === 'config/read') return reply(id, { config: { model: 'fixture-alpha', model_reasoning_effort: 'high', approval_policy: 'on-request', sandbox_mode: 'workspace-write' } });

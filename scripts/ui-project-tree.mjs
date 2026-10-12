@@ -30,7 +30,7 @@ try {
     const sessions = {};
     const fixture = { projects, sessions, creates: [], lists: [], closes: [], failClose: false, nextFolder: 'C:/Fixtures/PROJECT_C', holdB: true, failB: false, releaseB: null };
     const history = (cwd, second = false) => ({ id: second ? 'second-history' : 'shared-history', name: `${second ? 'Ещё' : 'История'} ${cwd.split('/').at(-1)}`, cwd, historyMode: 'legacy' });
-    const listing = (cwd, cursor) => ({ data: /\/(EMPTY|PROJECT_C)$/.test(cwd) ? [] : [history(cwd, !!cursor)], nextCursor: cwd.endsWith('PROJECT_B') && !cursor ? 'page-2' : null });
+    const listing = (cwd, cursor) => ({ data: /\/(EMPTY|PROJECT_C)$/.test(cwd) ? [] : (cwd.endsWith('PROJECT_A') && fixture.extraA ? [history(cwd), ...Array.from({ length: 24 }, (_, index) => ({ ...history(cwd), id: `extra-${index}`, name: `Диалог ${index + 2}` }))] : [history(cwd, !!cursor)]), nextCursor: cwd.endsWith('PROJECT_B') && !cursor ? 'page-2' : null });
     const models = [{ id: 'fixture-alpha', model: 'fixture-alpha', displayName: 'fixture-alpha', inputModalities: ['text'], defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'high' }] }];
     const create = (cwd, settings = {}) => {
       const id = `session-${++serial}`;
@@ -144,6 +144,21 @@ try {
   assert.ok(projectButtonPosition.top >= projectButtonPosition.brandBottom && projectButtonPosition.bottom <= projectButtonPosition.treeTop, 'New project button is below the logo and above the folder tree');
   if (await toggle('PROJECT_A').getAttribute('aria-expanded') !== 'true') await toggle('PROJECT_A').click();
   await historyButton('PROJECT_A').waitFor();
+  await page.evaluate(() => { window.__tree.extraA = true; });
+  await folder('PROJECT_A').getByRole('button', { name: 'Обновить диалоги PROJECT_A', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-cwd="C:/Fixtures/PROJECT_A"]').querySelectorAll('.folder-thread').length === 10);
+  const moreA = folder('PROJECT_A').getByRole('button', { name: 'Показать ещё', exact: true });
+  await moreA.click();
+  assert.equal(await folder('PROJECT_A').locator('.folder-thread').count(), 20);
+  await moreA.click();
+  assert.equal(await folder('PROJECT_A').locator('.folder-thread').count(), 25);
+  assert.equal(await moreA.count(), 0);
+  await toggle('PROJECT_A').click();
+  await toggle('PROJECT_A').click();
+  assert.equal(await folder('PROJECT_A').locator('.folder-thread').count(), 25);
+  await page.evaluate(() => { window.__tree.extraA = false; });
+  await folder('PROJECT_A').getByRole('button', { name: 'Обновить диалоги PROJECT_A', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-cwd="C:/Fixtures/PROJECT_A"]').querySelectorAll('.folder-thread').length === 1);
   await toggle('PROJECT_B').click();
   await page.waitForFunction(() => typeof window.__tree.releaseB === 'function');
   assert.equal(await activeId(), 'session-1', 'Expanding another folder preserves the active session');
@@ -153,11 +168,11 @@ try {
   assert.equal(await page.evaluate(() => Object.values(window.__tree.sessions).flatMap(state => state.requests).filter(request => request.method === 'turn/start').length), 0);
   await page.evaluate(() => window.__tree.releaseB());
   await historyButton('PROJECT_B').waitFor();
-  await folder('PROJECT_B').getByRole('button', { name: 'Загрузить ещё', exact: true }).click();
+  await folder('PROJECT_B').getByRole('button', { name: 'Показать ещё', exact: true }).click();
   await historyButton('PROJECT_B', true).waitFor();
   assert.equal(await folder('PROJECT_B').locator('.folder-thread').count(), 2);
   assert.equal(await folder('PROJECT_A').locator('.folder-thread').count(), 1);
-  assert.equal(await folder('PROJECT_B').getByRole('button', { name: 'Загрузить ещё', exact: true }).count(), 0);
+  assert.equal(await folder('PROJECT_B').getByRole('button', { name: 'Показать ещё', exact: true }).count(), 0);
   assert.ok(await page.evaluate(() => window.__tree.lists.some(call => call.cwd.endsWith('PROJECT_B') && call.cursor === 'page-2')));
   await page.evaluate(() => { window.__tree.failB = true; });
   await folder('PROJECT_B').getByRole('button', { name: 'Обновить диалоги PROJECT_B', exact: true }).click();

@@ -2,7 +2,7 @@
  * ApprovalCatalog — the standing approvals a project carries, so a routine action is asked about once.
  *
  * Ported from the Aurora fleet's `armada/approvals.py`, with its reasoning intact and two deliberate
- * changes: the catalog lives in this app's own userData rather than inside the user's repository (Codex Desk
+ * changes: the catalog lives in this app's own userData rather than inside the user's repository (Кузьмич
  * opens arbitrary folders and has never written a file into one — a `.codexdesk/` directory appearing in
  * somebody's `git status` is not ours to create), and a third rule kind was added for network hosts, which
  * is the escalation Codex's sandbox raises most and which Aurora's own sandbox never let through at all.

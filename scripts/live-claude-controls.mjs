@@ -66,7 +66,7 @@ try {
   assert.ok(steered.items.some(item => item.type === 'userMessage' && item.id === report.steerMessageId));
   report.checks.steerApplied = true;
   stage = 'rename';
-  const title = `Codex Desk controls ${path.basename(cwd)}`;
+  const title = `Кузьмич controls ${path.basename(cwd)}`;
   await client.request('thread/name/set', { threadId: thread.id, name: title });
   assert.equal((await client.request('thread/read', { threadId: thread.id })).thread.name, title);
   report.checks.renameLive = true;

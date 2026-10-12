@@ -3,11 +3,17 @@ import { directoryPath } from './host-utils.mjs';
 
 const directoryKey = cwd => process.platform === 'win32' ? path.normalize(cwd).toLowerCase() : path.normalize(cwd);
 
-/** Read saved folder history without changing a tab's cwd or starting a model turn. */
-export async function listProjectThreads({ record, workspaceStore, cwd, cursor, assertWindow, createHistorySession, resolveDirectory = directoryPath }) {
+export function checkHistoryCursor(cursor) {
+  if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursor.length > 16384)) throw new Error('Некорректная страница истории.');
+}
+
+/** Picks a ready read-only Codex connection for an exact registered folder and returns a
+ * request function that re-checks window, session and client before and after every call.
+ * Shared by the folder history and the parent/child relationship read; neither changes a
+ * tab's cwd, settings or model, and neither starts a model turn. */
+export async function folderReader({ record, workspaceStore, cwd, assertWindow, createHistorySession, resolveDirectory = directoryPath }) {
   assertWindow();
   if (typeof cwd !== 'string' || !cwd || cwd.length >= 4096) throw new Error('Некорректная папка проекта.');
-  if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursor.length > 16384)) throw new Error('Некорректная страница истории.');
   const requested = await resolveDirectory(cwd);
   assertWindow();
   const workspace = await workspaceStore.snapshot();
@@ -43,11 +49,23 @@ export async function listProjectThreads({ record, workspaceStore, cwd, cursor, 
   if (!owned || !session.bootstrap) throw new Error('Нет подключения к Codex.');
   // This one explicit workspace read deliberately bypasses the session-level
   // request(), whose cwd forcing remains in place for all general tab RPC.
-  const result = await owned.request('thread/list', {
+  const request = async (method, params) => {
+    assertSession();
+    const result = await owned.request(method, params);
+    assertSession();
+    if (session.client !== owned) throw new Error('Подключение Codex изменилось.');
+    return result;
+  };
+  return { registered, request };
+}
+
+/** Read saved folder history without changing a tab's cwd or starting a model turn. */
+export async function listProjectThreads({ record, workspaceStore, cwd, cursor, assertWindow, createHistorySession, resolveDirectory = directoryPath }) {
+  checkHistoryCursor(cursor);
+  const { registered, request } = await folderReader({ record, workspaceStore, cwd, assertWindow, createHistorySession, resolveDirectory });
+  const result = await request('thread/list', {
     cwd: registered, limit: 40, sortKey: 'updated_at', sourceKinds: ['appServer', 'cli', 'vscode'],
     ...(cursor !== undefined ? { cursor } : {}),
   });
-  assertSession();
-  if (session.client !== owned) throw new Error('Подключение Codex изменилось.');
   return { data: result.data, nextCursor: result.nextCursor ?? null };
 }

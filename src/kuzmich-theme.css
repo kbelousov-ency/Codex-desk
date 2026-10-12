@@ -1,0 +1,142 @@
+/* Тема канала experimental3 («Кузьмич») по Kuzmich_Design_System.md: графит + сдержанный
+   серо-зелёный, без оранжевого, без градиентов и свечения. Шрифты лежат в репозитории
+   (src/assets/fonts/README.md), сеть не нужна — CSP font-src 'self' data: этого и требует.
+   Всё, кроме @font-face, ограничено селектором [data-theme=kuzmich]: остальные каналы
+   (stable/nightly/development) должны выглядеть ровно как раньше, до пикселя. */
+
+/* Перекраска жёстко заданных цветов приложения — отдельным файлом и первой строкой:
+   у сгенерированных правил та же специфичность, что у ручных ниже, поэтому ручные
+   должны идти после и побеждать. Генератор: scripts/kuzmich-theme-colors.mjs. */
+@import './kuzmich-theme-colors.css';
+
+/* User messages keep the exact pre-Kuzmich conversation colors. */
+[data-theme=kuzmich] .conversation .user-message .message-content{border-color:#405749;background:#2b3c32}
+[data-theme=kuzmich] .conversation .user-message .user-text{color:#e0e9e1}
+
+/* Диапазоны font-weight в дескрипторе раздают три статических начертания по тем весам,
+   которыми уже пользуется интерфейс (520/550 → Medium, 600…650 → SemiBold). */
+@font-face{font-family:'IBM Plex Sans';src:url('./assets/fonts/IBMPlexSans-Regular.ttf') format('truetype');font-weight:400 450;font-style:normal;font-display:swap}
+@font-face{font-family:'IBM Plex Sans';src:url('./assets/fonts/IBMPlexSans-Medium.ttf') format('truetype');font-weight:451 575;font-style:normal;font-display:swap}
+@font-face{font-family:'IBM Plex Sans';src:url('./assets/fonts/IBMPlexSans-SemiBold.ttf') format('truetype');font-weight:576 700;font-style:normal;font-display:swap}
+@font-face{font-family:'IBM Plex Mono';src:url('./assets/fonts/IBMPlexMono-Regular.ttf') format('truetype');font-weight:400 700;font-style:normal;font-display:swap}
+@font-face{font-family:'Russo One';src:url('./assets/fonts/RussoOne-Regular.ttf') format('truetype');font-weight:400;font-style:normal;font-display:block}
+
+/* Токены. Селектор с элементом (html[...]) бьёт :root из styles.css независимо от порядка
+   подключения файлов — фикстура мастера грузит CSS в другом порядке, чем приложение. */
+html[data-theme=kuzmich]{
+  --bg:#171a19;--panel:#121514;--line:#3a413d;--muted:#929d96;--text:#d5e0d8;--accent:#9bb6a4;--green:#7fc49a;--red:#ce8e8e;
+  --kz-surface:#232826;--kz-surface-muted:#303a34;--kz-accent-muted:#82968a;--kz-text-secondary:#aab4ad;
+  --kz-error-surface:#241d1c;--kz-error-line:#5c4341;--kz-accent-hover:#aec7b6;
+  --font-ui:'IBM Plex Sans','Segoe UI Variable','Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif;
+  --font-mono:'IBM Plex Mono','Cascadia Code',Consolas,monospace;
+  --font-brand:'Russo One','IBM Plex Sans','Segoe UI',sans-serif;
+  font-family:var(--font-ui);color:var(--text);background:var(--bg);
+  /* Курсивного начертания IBM Plex мы не везём: наклон для <em> в markdown синтезируем,
+     а подделку жирного так и оставляем выключенной — для веса есть три реальных файла. */
+  font-synthesis:style;
+}
+
+/* Общие состояния: фокус, выделение, полосы прокрутки, нативные списки. */
+[data-theme=kuzmich] button:focus-visible,[data-theme=kuzmich] select:focus-visible,[data-theme=kuzmich] summary:focus-visible,[data-theme=kuzmich] .markdown-link:focus-visible{outline-color:var(--accent)}
+[data-theme=kuzmich] ::selection{background:#3c4e45;color:#e7efe9}
+[data-theme=kuzmich] ::-webkit-scrollbar-thumb{background:#3a413d}
+[data-theme=kuzmich] ::-webkit-scrollbar-thumb:hover{background:#4c544f}
+[data-theme=kuzmich] option{background:var(--kz-surface);color:var(--text)}
+
+/* Технические контексты — IBM Plex Mono. Пути, идентификаторы, вывод команд. */
+[data-theme=kuzmich] .markdown code,[data-theme=kuzmich] .setup-body code,[data-theme=kuzmich] .build-tooltip-hash,[data-theme=kuzmich] .approval-rules-settings code,[data-theme=kuzmich] .claude-token-form .text-input,[data-theme=kuzmich] .handoff-dialog .handoff-preview,[data-theme=kuzmich] .mcp-paste-label>textarea{font-family:var(--font-mono)}
+
+/* Словомарка — только Russo One и только здесь. Кернинг у неё свой, минусовый трекинг
+   соседних заголовков ей не нужен. */
+[data-theme=kuzmich] .setup-brand-word,[data-theme=kuzmich] .brand-product-name{font-family:var(--font-brand);font-weight:400;letter-spacing:normal}
+
+/* --- Главное окно -------------------------------------------------------------------- */
+[data-theme=kuzmich] .sidebar,[data-theme=kuzmich] .details-panel{background:var(--panel)}
+[data-theme=kuzmich] .brand-mark{background:var(--kz-surface-muted);border-color:var(--line);color:var(--accent)}
+[data-theme=kuzmich] .new-chat{background:var(--kz-surface);border-color:var(--line)}
+[data-theme=kuzmich] .new-chat:hover{background:var(--kz-surface-muted)}
+[data-theme=kuzmich] .project-card{background:var(--kz-surface);border-color:var(--line)}
+[data-theme=kuzmich] .project-card:hover{background:var(--kz-surface-muted)}
+[data-theme=kuzmich] .project-icon,[data-theme=kuzmich] .avatar,[data-theme=kuzmich] .message-avatar,[data-theme=kuzmich] .empty-icon{background:var(--kz-surface-muted);border-color:var(--line);color:var(--accent)}
+[data-theme=kuzmich] .history-item:hover{background:var(--kz-surface)}
+[data-theme=kuzmich] .history-item.active{background:var(--kz-surface-muted);color:var(--text)}
+[data-theme=kuzmich] .history-item.active>svg{color:var(--accent)}
+[data-theme=kuzmich] .history-active-dot{background:var(--accent)}
+[data-theme=kuzmich] .icon-button:hover{background:var(--kz-surface-muted);color:var(--text)}
+[data-theme=kuzmich] .status-dot.online{background:var(--green)}
+[data-theme=kuzmich] .status-dot.working{background:var(--accent);box-shadow:none}
+[data-theme=kuzmich] .panel-tabs>button.active{color:var(--text)}
+[data-theme=kuzmich] .panel-tabs>button.active::after,[data-theme=kuzmich] .tab-live-dot{background:var(--accent)}
+[data-theme=kuzmich] .panel-tabs>button.active svg{color:var(--accent)}
+[data-theme=kuzmich] .count-badge{background:var(--kz-surface-muted);color:var(--text)}
+/* Дизайн-система прямо запрещает градиенты и свечение — символ приветствия становится плитой. */
+[data-theme=kuzmich] .welcome-symbol{background:var(--kz-surface);border-color:var(--line);box-shadow:none;color:var(--accent)}
+[data-theme=kuzmich] .welcome-symbol>span{background:var(--accent)}
+[data-theme=kuzmich] .welcome h1{color:var(--text)}
+[data-theme=kuzmich] .welcome h1 span{color:var(--accent)}
+[data-theme=kuzmich] .welcome-cards button{background:var(--kz-surface);border-color:var(--line)}
+[data-theme=kuzmich] .welcome-cards button:hover{background:var(--kz-surface-muted);border-color:var(--kz-accent-muted);transform:none}
+[data-theme=kuzmich] .welcome-cards button>svg:first-child{color:var(--accent)}
+[data-theme=kuzmich] .composer{background:var(--kz-surface);border-color:var(--line);box-shadow:none}
+[data-theme=kuzmich] .composer:focus-within{border-color:var(--kz-accent-muted);box-shadow:none}
+[data-theme=kuzmich] .composer textarea{color:var(--text)}
+[data-theme=kuzmich] .select-chip{background:var(--kz-surface-muted);color:var(--text)}
+[data-theme=kuzmich] .select-chip>svg{color:var(--kz-accent-muted)}
+[data-theme=kuzmich] .send-button{background:var(--accent);color:var(--bg)}
+[data-theme=kuzmich] .send-button:hover{background:var(--kz-accent-hover)}
+[data-theme=kuzmich] .send-button:disabled{background:var(--kz-surface-muted);color:var(--muted)}
+/* Остановка и полный доступ — состояния, а не бренд: уводим из коричневого в сдержанный красный. */
+[data-theme=kuzmich] .stop-button{background:var(--kz-error-surface);border-color:var(--kz-error-line);color:var(--red)}
+[data-theme=kuzmich] .stop-button:hover{background:#302422}
+[data-theme=kuzmich] .access-select.full-access{color:var(--red)}
+[data-theme=kuzmich] .working-orb{background:var(--accent)}
+[data-theme=kuzmich] .markdown code{background:var(--kz-surface);border-color:var(--line);color:var(--text)}
+[data-theme=kuzmich] .markdown pre{background:var(--panel);border-color:var(--line)}
+[data-theme=kuzmich] .markdown blockquote{border-left-color:var(--kz-accent-muted)}
+[data-theme=kuzmich] .markdown th{background:var(--kz-surface);color:var(--text)}
+[data-theme=kuzmich] .markdown-link{color:var(--accent);text-decoration-color:var(--kz-accent-muted)}
+
+/* --- Мастер настройки ----------------------------------------------------------------- */
+[data-theme=kuzmich] .setup-overlay{background:#0d100ee0;color:var(--text)}
+[data-theme=kuzmich] .setup-dialog{background:var(--kz-surface);border-color:var(--line)}
+[data-theme=kuzmich] .setup-sidebar{background:var(--bg);border-right-color:var(--line)}
+[data-theme=kuzmich] .setup-footer{background:var(--bg);border-top-color:var(--line)}
+[data-theme=kuzmich] .setup-brand{color:var(--text)}
+[data-theme=kuzmich] .setup-brand-mark{background:var(--kz-surface-muted);border-color:var(--line);color:var(--accent)}
+[data-theme=kuzmich] .setup-body h1{color:var(--text)}
+[data-theme=kuzmich] .setup-description{color:var(--kz-text-secondary)}
+[data-theme=kuzmich] .setup-step-symbol{border-color:var(--line)}
+[data-theme=kuzmich] .setup-steps .is-current{color:var(--text)}
+[data-theme=kuzmich] .setup-steps .is-current .setup-step-symbol{background:var(--kz-surface-muted);border-color:var(--kz-accent-muted);color:var(--text);box-shadow:none}
+[data-theme=kuzmich] .setup-steps .is-current small{color:var(--kz-text-secondary)}
+[data-theme=kuzmich] .setup-steps .is-complete{color:var(--accent)}
+[data-theme=kuzmich] .setup-steps .is-complete .setup-step-symbol{background:var(--kz-surface);border-color:var(--line)}
+[data-theme=kuzmich] .setup-steps li:not(:last-child):after{background:var(--line)}
+[data-theme=kuzmich] .setup-icon-button:hover{background:var(--kz-surface-muted);color:var(--text)}
+[data-theme=kuzmich] .setup-agent-card,[data-theme=kuzmich] .setup-auth-card,[data-theme=kuzmich] .setup-portal-card,[data-theme=kuzmich] .setup-git-card,[data-theme=kuzmich] .setup-empty-card,[data-theme=kuzmich] .setup-config-preview{background:var(--bg);border-color:var(--line)}
+[data-theme=kuzmich] .setup-agent-card.is-selected{background:var(--kz-surface-muted);border-color:var(--kz-accent-muted)}
+/* Плитка Claude в стандартном мастере коричневая — в этой теме оба агента нейтральны. */
+[data-theme=kuzmich] .setup-agent-logo,[data-theme=kuzmich] .setup-agent-logo.setup-agent-claude,[data-theme=kuzmich] .setup-feature-icon,[data-theme=kuzmich] .setup-finish-mark{background:var(--kz-surface-muted);border-color:var(--line);color:var(--accent)}
+[data-theme=kuzmich] .setup-status{background:var(--kz-surface);border-color:var(--line);color:var(--muted)}
+[data-theme=kuzmich] .setup-status.is-good{background:var(--kz-surface-muted);border-color:var(--kz-accent-muted);color:var(--accent)}
+[data-theme=kuzmich] .setup-button{background:var(--kz-surface-muted);border-color:var(--line);color:var(--text)}
+[data-theme=kuzmich] .setup-button:hover{background:#39423c;border-color:var(--kz-accent-muted)}
+[data-theme=kuzmich] .setup-button.is-primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+[data-theme=kuzmich] .setup-button.is-primary:hover{background:var(--kz-accent-hover);border-color:var(--kz-accent-hover)}
+[data-theme=kuzmich] .setup-button.is-quiet{background:none;border-color:transparent;color:var(--kz-text-secondary)}
+[data-theme=kuzmich] .setup-button.is-quiet:hover{background:var(--kz-surface-muted);color:var(--text)}
+[data-theme=kuzmich] .setup-text-button{color:var(--accent)}
+[data-theme=kuzmich] .setup-text-button:hover{color:var(--kz-accent-hover)}
+[data-theme=kuzmich] .setup-inline-link{color:var(--accent);border-bottom-color:var(--kz-accent-muted)}
+[data-theme=kuzmich] .setup-overlay button:focus-visible,[data-theme=kuzmich] .setup-overlay input:focus-visible{outline-color:var(--accent)}
+[data-theme=kuzmich] .setup-overlay input[type=checkbox],[data-theme=kuzmich] .setup-overlay input[type=radio]{accent-color:var(--accent)}
+[data-theme=kuzmich] .setup-result-list{border-top-color:var(--line)}
+[data-theme=kuzmich] .setup-result-row{border-bottom-color:var(--line);color:var(--kz-text-secondary)}
+[data-theme=kuzmich] .setup-result-row strong{color:var(--text)}
+[data-theme=kuzmich] .setup-result-row>span.is-good,[data-theme=kuzmich] .setup-auth-good{color:var(--accent)!important}
+[data-theme=kuzmich] .setup-start-agent label{background:var(--bg);border-color:var(--line);color:var(--kz-text-secondary)}
+[data-theme=kuzmich] .setup-start-agent label.is-selected{background:var(--kz-surface-muted);border-color:var(--kz-accent-muted);color:var(--text)}
+[data-theme=kuzmich] .setup-alert.is-error{background:var(--kz-error-surface);border-color:var(--kz-error-line);color:var(--red)}
+[data-theme=kuzmich] .setup-card-error,[data-theme=kuzmich] .setup-git-card .setup-card-error{color:var(--red)}
+[data-theme=kuzmich] .setup-portal-confirmed,[data-theme=kuzmich] .setup-install-progress,[data-theme=kuzmich] .setup-auth-waiting{color:var(--accent)}
+[data-theme=kuzmich] .setup-scan-placeholder{color:var(--kz-text-secondary)}

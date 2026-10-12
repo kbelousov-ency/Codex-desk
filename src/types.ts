@@ -10,8 +10,10 @@ export type AgentSkillsSnapshot = { provider: AgentProvider; cwd: string; readAt
 export interface AgentSkillsBridge { list(options: { provider: AgentProvider; cwd?: string }): Promise<AgentSkillsSnapshot>; }
 export type UsageWindow = { key: string; label: string; utilization: number | null; resetsAt: string | null };
 export type UsageLimits = { available: boolean; subscription?: string | null; windows: UsageWindow[]; updatedAt?: string; message?: string };
-export type RouterLimit = { key: string | null; available: boolean | null; tier: string | null; state: string | null; reset_at: string | null; limit_credits: number | null; used_credits: number | null; ledger_used_credits?: number | null; remaining_credits: number | null; used_percent: number | null };
-export type RouterUsageSnapshot = { available: boolean; fetchedAt?: string; overview?: Record<string, unknown>; limits?: RouterLimit[]; status?: number; reason?: string; limitReason?: string; overviewReason?: string };
+export type RouterBand = { name: string | null; left: number | null; resetAt: string | null; blocked: boolean | null; band?: string | null; hours?: number | null; sharePercent?: number | null; usedPercent?: number | null; limitCredits?: number | null; usedCredits?: number | null; remainingCredits?: number | null };
+export type RouterLimit = { key?: string | null; name?: string | null; available?: boolean | null; tier: string | null; state: string | null; reset_at?: string | null; resetAt?: string | null; limit_credits?: number | null; used_credits?: number | null; ledger_used_credits?: number | null; remaining_credits?: number | null; used_percent?: number | null; left?: number | null; blocked?: boolean | null; blockedReason?: string | null; usedPercent?: number | null; limitCredits?: number | null; usedCredits?: number | null; remainingCredits?: number | null; ledgerUsedCredits?: number | null; bonusCredits?: number | null; bands?: RouterBand[] };
+export type RouterCreditSpend = { credits: number | null; partial?: boolean; reason?: string; threadCount?: number };
+export type RouterUsageSnapshot = { available: boolean; provider?: AgentProvider; fetchedAt?: string; overview?: Record<string, unknown>; limits?: RouterLimit[]; status?: number; reason?: string; limitReason?: string; overviewReason?: string; spend?: { session: RouterCreditSpend; today: RouterCreditSpend & { since: string } } };
 export type ClaudeAuthStatus = { loggedIn: boolean; authMethod?: string; email?: string; subscriptionType?: string; apiProvider?: string; configDirectory?: string; loginInProgress: boolean };
 export type ClaudeTokenInfo = { configured: boolean; savedAt?: string; encryptionAvailable: boolean; error?: string; restarted?: number; busy?: number };
 export type ConnectionSource = 'inherited' | 'account' | 'router';
@@ -37,6 +39,44 @@ export type Item = { id: string; type: string; turnId?: string; complete?: boole
 // Internal timestamps are milliseconds; App Server turn timestamps are seconds.
 export type TurnWork = { id: string; status: string; startedAt?: number; completedAt?: number; durationMs?: number; answerStartedAt?: number; answerItemId?: string };
 export type Thread = { id: string; name?: string; preview?: string; cwd?: string; updatedAt?: number; turns?: any[]; provider?: AgentProvider; [key: string]: any };
+/** Kuzmich's own grouping of conversations. Presentation metadata owned by the shell:
+ * it is not a claim about the agent's native parent/child lineage, and the CLI never sees it. */
+export type ThreadGroupMember = { threadId: string; addedAt: string };
+export type ThreadGroup = { id: string; name: string; cwd: string; rootThreadId: string | null; createdAt: string; updatedAt: string; members: ThreadGroupMember[] };
+export type ThreadGroupAction =
+  | { action: 'create'; name: string; cwd: string; rootThreadId?: string }
+  | { action: 'rename'; groupId: string; name: string }
+  | { action: 'delete'; groupId: string }
+  | { action: 'assign'; groupId: string; threadId: string; root?: boolean }
+  | { action: 'unassign'; threadId: string };
+export type ThreadGroupResult = { group?: ThreadGroup; removedGroupId?: string; removedThreadId?: string };
+/** Navigation-only link between a conversation and an executor agent of the same folder.
+ * `label` is the default executor name («Агент A»); records written before it existed have none. */
+export type ThreadChildLink = { id: string; cwd: string; parentThreadId: string; childThreadId: string; provider: AgentProvider; model?: string | null; effort?: string | null; label?: string | null; createdAt: string };
+/** An executor agent as the «Исполнители» row shows it: the conversation plus its default
+ * name and, while a tab is open, the session that already hosts it. A tab that has not sent
+ * anything yet has no conversation id, so it is addressed by `sessionId` alone. */
+export type ExecutorThread = Thread & {
+  label?: string;
+  sessionId?: string;
+  /** Live state is absent when only the saved parent link remains. */
+  busy?: boolean;
+  pending?: number;
+  loading?: boolean;
+  connection?: string;
+  terminalOpen?: boolean;
+  unread?: boolean;
+  attentionKind?: NotificationKind;
+  pendingKind?: 'question' | 'approval';
+  /** Only kept for this application run, never written into the parent link. */
+  closeWhenComplete?: boolean;
+  closeBlockedReason?: string;
+  unlinkBlockedReason?: string;
+};
+/** Context-menu actions of an executor sub-tab. `unlink` only drops the navigation link —
+ * the conversation stays and becomes a plain dialog of the same folder. */
+export type ExecutorAction = 'rename' | 'unlink' | 'archive' | 'close';
+export type ThreadChildLinkAction = { action: 'relabel'; childThreadId: string; label: string | null } | { action: 'unlink'; childThreadId: string };
 export type ThreadAction = 'rename' | 'archive' | 'delete' | 'restore' | 'fork';
 export type ArchivedThreadPage = { thread: Thread; items: Item[]; turns: any[]; nextCursor: string | null };
 export type ApprovalRuleKind = 'commands' | 'paths' | 'hosts';
@@ -59,7 +99,7 @@ export type UpdateStatus = { state: 'awaiting' | 'waiting' | 'manual' | 'prepari
 export type WorkspaceInfo = { projects: string[]; sessions: SessionInfo[]; restore?: { activeIndex: number; tabs: RestoredTab[]; kind?: 'workspace' | 'update' } };
 export type AppUpdateStatus = {
   currentVersion: string;
-  channel: 'stable' | 'nightly' | 'development';
+  channel: 'stable' | 'nightly' | 'experimental3' | 'development';
   enabled: boolean;
   supported: boolean;
   phase: 'idle' | 'checking' | 'available' | 'up-to-date' | 'error' | 'disabled';
@@ -79,7 +119,7 @@ export type ReleaseNotesState = {
   releases: ReleaseNotesRelease[];
   shouldShow: boolean;
 };
-export type BuildInfo = { channel: 'stable' | 'nightly' | 'development'; version: string; buildId?: string; builtAt?: string };
+export type BuildInfo = { channel: 'stable' | 'nightly' | 'experimental3' | 'development'; version: string; buildId?: string; builtAt?: string };
 export type DiagnosticsStatus = { enabled: boolean; directory: string | null; error?: string };
 export type RendererErrorReport = { kind: 'error' | 'unhandledrejection' | 'react'; name?: string; message?: string; stack?: string; componentStack?: string };
 export type ProjectFile = { name: string; path: string; type: 'directory' | 'file' | 'link' };
@@ -103,7 +143,7 @@ export type McpRemovalPreview = { previewId: string; configPath: string; server:
 export type McpSaveResult = { configPath: string; backupPath: string | null; servers: string[]; message?: string };
 export type McpConnectionReport = { servers: { name: string; authStatus: string; status: string; toolCount: number }[]; message?: string };
 export interface CodexBridge {
-  start(options?: { cwd?: string; refreshModels?: boolean }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities; cliVersion?: string }>;
+  start(options?: { cwd?: string; refreshModels?: boolean }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities; cliVersion?: string; routerSource?: boolean }>;
   request(method: string, params?: any): Promise<any>;
   respond(id: number | string, result: any, options?: { remember?: boolean }): Promise<void>;
   listApprovalRules(): Promise<ApprovalRules>;
@@ -150,7 +190,7 @@ export interface CodexBridge {
   removeMcpServer(options: { previewId: string }): Promise<McpSaveResult>;
   reloadMcp(): Promise<{ status: 'applied' | 'deferred'; message: string }>;
   checkMcp(): Promise<McpConnectionReport>;
-  getRouterUsage?(): Promise<RouterUsageSnapshot>;
+  getRouterUsage?(options?: { threadId?: string | null }): Promise<RouterUsageSnapshot>;
 }
 export interface WorkspaceBridge extends CodexBridge {
   setup?: SetupBridge;
@@ -193,6 +233,13 @@ export interface WorkspaceBridge extends CodexBridge {
   completeUpdatePrepare(result: { requestId: string; snapshot?: UpdateSnapshot; defer?: boolean }): Promise<void>;
   completeUpdateRestore(): Promise<void>;
   listProjectThreads(cwd: string, cursor?: string): Promise<{ data: Thread[]; nextCursor: string | null }>;
+  /** Dependent (child) conversations of a folder, read separately from its history page. Codex only. */
+  listThreadChildren?(cwd: string, cursor?: string): Promise<{ data: Thread[]; nextCursor: string | null }>;
+  listThreadGroups?(cwd?: string): Promise<ThreadGroup[]>;
+  manageThreadGroup?(options: ThreadGroupAction): Promise<ThreadGroupResult>;
+  listThreadChildLinks?(cwd?: string): Promise<ThreadChildLink[]>;
+  createThreadChildLink?(options: Omit<ThreadChildLink, 'id' | 'createdAt'>): Promise<{ link: ThreadChildLink }>;
+  manageThreadChildLink?(options: ThreadChildLinkAction): Promise<{ changed: boolean; link: ThreadChildLink | null }>;
   searchThreads(options: { query: string; archived: boolean; cursor?: string }): Promise<{ data: Thread[]; nextCursor: string | null }>;
   listArchivedThreads(cursor?: string): Promise<{ data: Thread[]; nextCursor: string | null }>;
   readArchivedThread(options: { threadId: string; cursor?: string }): Promise<ArchivedThreadPage>;

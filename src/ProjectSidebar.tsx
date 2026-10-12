@@ -3,6 +3,10 @@ import { Archive, ArrowLeft, Bookmark, ChevronRight, LoaderCircle, MessageSquare
 import ProjectTree, { projectKey, type ProjectTreeControls } from './ProjectTree';
 import ThreadMenu from './ThreadMenu';
 import { DiagnosticsButton } from './Diagnostics';
+import { BulkArchiveBar, BulkThreadCheckbox, bulkActive } from './BulkArchive';
+import ProjectMenu from './ProjectMenu';
+import { bulkThreadTitle } from './bulk-archive';
+import type { BulkRow, BulkScope } from './bulk-archive';
 import { folderName } from './useCodex';
 import type { Thread } from './types';
 import './archive.css';
@@ -35,6 +39,16 @@ function DialogSearch({ controls, archived, active, query, onQuery }: {
   const groups = useMemo(() => groupThreads(current ? result.data : []), [current, result.data]);
   const searching = Boolean(normalized);
   const loading = searching && (!current || result.loading);
+  // Multi-select scope for search: exactly the results loaded for this query.
+  const scope: BulkScope = { kind: 'search', query: normalized };
+  const rows: BulkRow[] = useMemo(() => groups.flatMap(([, group]) => group.threads.map(thread => ({ thread, cwd: thread.cwd || group.cwd }))), [groups]);
+  const picking = !archived && bulkActive(controls, scope);
+  // A selection belongs to one stated query; editing the query drops it instead of silently carrying
+  // it over. Only the visible sidebar may do this: every tab mounts its own copy of this search box.
+  useEffect(() => {
+    const open = controls.bulkScope;
+    if (active && !archived && open?.kind === 'search' && open.query !== normalized) controls.cancelBulk?.();
+  }, [active, archived, normalized, controls.bulkScope]);
 
   async function load(cursor?: string) {
     if (!active || !normalized || (cursor && pending.current)) return;
@@ -68,14 +82,23 @@ function DialogSearch({ controls, archived, active, query, onQuery }: {
       {searching && <span className="dialog-search-hint">По названию диалога Codex</span>}
     </div>
     {searching && <nav className="dialog-search-results" aria-label="Результаты поиска диалогов" aria-busy={loading}>
+      {!archived && current && Boolean(rows.length) && <ProjectMenu name={`результаты поиска «${normalized}»`} active={active} disabled={controls.opening || Boolean(controls.actionBusy)} onClose={() => undefined} onBulkArchive={!picking ? () => controls.startBulk?.(scope) : undefined}><div className="bulk-search-menu-anchor"><span>Результаты поиска</span><span className="archive-folder-count">{rows.length}</span></div></ProjectMenu>}
+      {!archived && picking && <BulkArchiveBar controls={controls} scope={scope} label={`результаты поиска «${normalized}»`} rows={rows} morePages={Boolean(result.cursor)} locked={controls.threadLocked} />}
       {groups.map(([key, group]) => <section className="folder-tree-entry dialog-search-folder" data-cwd={group.cwd} key={key}>
         <div className="dialog-search-folder-heading" data-tooltip={group.cwd}><span>{group.cwd ? folderName(group.cwd) : 'Без рабочей папки'}</span><span className="archive-folder-count">{group.threads.length}</span></div>
         <div className="folder-threads">{group.threads.map(thread => {
-          const title = thread.name || thread.preview || 'Новый диалог';
+          const title = bulkThreadTitle(thread);
           const selected = (archived ? controls.archiveThreadId : controls.activeThreadId) === thread.id;
+          const checked = picking && (controls.bulkSelected || []).includes(thread.id);
+          if (picking) return <div key={thread.id} className={`folder-thread-row bulk-row ${checked ? 'bulk-selected' : ''}`}>
+            <label className="folder-thread" data-thread-id={thread.id} data-tooltip={title}>
+              <BulkThreadCheckbox controls={controls} scope={scope} row={{ thread, cwd: thread.cwd || group.cwd }} title={title} locked={controls.threadLocked} />
+              <MessageSquare size={12} /><span>{title}</span>
+            </label>
+          </div>;
           return <div key={thread.id} className={`folder-thread-row ${selected ? 'active' : ''}`}>
             <button className={`folder-thread ${archived ? 'archived-thread archive-thread' : ''} ${selected ? 'active' : ''}`} data-thread-id={thread.id} data-tooltip={title} aria-current={selected ? 'page' : undefined} disabled={controls.opening} onClick={() => archived ? controls.openArchivedThread?.(thread) : controls.openThread(group.cwd, thread)}><MessageSquare size={12} /><span>{title}</span>{selected && <span className="folder-thread-dot" />}</button>
-            {controls.threadAction && <ThreadMenu title={title} threadId={thread.id} archived={archived} active={active} disabled={controls.opening || controls.actionBusy || controls.threadLocked?.(thread.id)} onAction={action => controls.threadAction?.(action, group.cwd, thread)} />}
+            {controls.threadAction && <ThreadMenu allowFork={false} title={title} threadId={thread.id} archived={archived} active={active} disabled={controls.opening || controls.actionBusy || controls.threadLocked?.(thread.id)} onAction={action => controls.threadAction?.(action, group.cwd, thread)} />}
           </div>;
         })}</div>
       </section>)}
@@ -91,14 +114,15 @@ export default function ProjectSidebar({ controls, active = true }: { controls: 
   const [archiveQuery, setArchiveQuery] = useState('');
   const groups = useMemo(() => groupThreads(controls.archiveThreads || []), [controls.archiveThreads]);
   const archiveOpen = Boolean(controls.archiveOpen);
+  const overlay = archiveOpen;
 
   return <div className="project-sidebar">
     <div className="project-sidebar-content">
-      <div className="project-sidebar-main" hidden={archiveOpen}>
+      <div className="project-sidebar-main" hidden={overlay}>
         <button className="new-project" aria-label="Новый проект" data-tooltip="Выбрать новую рабочую папку" disabled={controls.opening} onClick={controls.addProject}><Plus size={15} /><span>Новый проект</span></button>
-        <DialogSearch controls={controls} query={query} onQuery={setQuery} archived={false} active={active && !archiveOpen} />
+        <DialogSearch controls={controls} query={query} onQuery={setQuery} archived={false} active={active && !overlay} />
         {controls.openLibrary && <button className="library-sidebar-button" type="button" onClick={controls.openLibrary}><Bookmark size={13} />История и закладки</button>}
-        {!query.trim() && <ProjectTree controls={controls} active={active && !archiveOpen} />}
+        {!query.trim() && <ProjectTree controls={controls} active={active && !overlay} />}
       </div>
       {archiveOpen && <section className="archive-panel" role="region" aria-label="Архив диалогов">
         <div className="archive-heading">

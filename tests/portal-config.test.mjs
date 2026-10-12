@@ -11,6 +11,7 @@ const secret = 'portal-config-fixture-private-key';
 const oldSecret = 'old-config-private-key';
 const input = () => ({ apiKey: secret,
   provider: { name: 'Fixture router', base_url: 'https://router.example.test/v1', wire_api: 'responses', requires_openai_auth: false,
+    supports_websockets: true, supports_standalone_web_search: false,
     http_headers: { 'X-Image-Mode': 'vision', 'X-Feature-Flag': 'enabled' } },
   defaults: { model: 'gpt-5.6-terra', model_provider: 'router', model_context_window: 1000000,
     model_auto_compact_token_limit: 900000, model_reasoning_summary: 'detailed', hide_agent_reasoning: false },
@@ -74,6 +75,8 @@ test('portal config preview exposes only allowlisted metadata and hides credenti
   assert.equal(preview.providerLabel, 'Fixture router');
   assert.equal(preview.baseUrl, input().provider.base_url);
   assert.equal(preview.model, input().defaults.model);
+  assert.equal(preview.changes.find(change => change.key.endsWith('.supports_websockets')).after, true);
+  assert.equal(preview.changes.find(change => change.key.endsWith('.supports_standalone_web_search')).after, false);
   assert.equal(preview.changes.find(change => change.key === 'model').before, 'old-model');
   assert.equal(preview.changes.find(change => change.key.endsWith('.base_url')).before, 'Настроено');
   assert.ok(preview.changes.some(change => change.key.endsWith('.http_headers.Authorization')));
@@ -101,6 +104,8 @@ test('portal config save uses native CAS, exact protected backup and preserves u
   assert.equal(provider.env_key, undefined);
   assert.equal(provider.env_key_instructions, undefined);
   assert.equal(provider.stream_idle_timeout_ms, 12345);
+  assert.equal(provider.supports_websockets, true);
+  assert.equal(provider.supports_standalone_web_search, false);
   assert.deepEqual(provider.http_headers, input().provider.http_headers);
   assert.deepEqual(provider.env_http_headers, { 'X-Keep-Env': 'KEEP_HEADER_KEY' });
   const write = calls.find(call => call.method === 'config/batchWrite');
@@ -111,6 +116,15 @@ test('portal config save uses native CAS, exact protected backup and preserves u
   assert.equal(typeof write.params.expectedVersion, 'string');
   assert.doesNotMatch(JSON.stringify(result), new RegExp(`${secret}|${oldSecret}`));
   await assert.rejects(manager.save({ previewId: preview.previewId }), /истекла|отменена/);
+});
+
+test('portal config rejects non-boolean capability flags', async t => {
+  const { manager } = await fixture(t);
+  for (const key of ['supports_websockets', 'supports_standalone_web_search']) {
+    const payload = input();
+    payload.provider[key] = 'true';
+    await assert.rejects(manager.preview(payload), /неподдерживаемые настройки Codex/);
+  }
 });
 
 test('portal config may create a missing user config without a spurious backup', async t => {

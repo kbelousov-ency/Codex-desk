@@ -1,9 +1,88 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, stat } from 'node:fs/promises';
-import { buildClaudeConnectionProfile, claudeConnectionProfile, createClaudeSettingsFile } from '../electron/connection-source.mjs';
+import path from 'node:path';
+import { buildClaudeConnectionProfile, claudeConnectionProfile, createClaudeSettingsFile, readInheritedClaudeRouter } from '../electron/connection-source.mjs';
 
 const secret = 'fixture-router-credential-only';
+const fixtureHome = path.resolve('artifacts', 'fixture-claude-home');
+const routerEnv = { ANTHROPIC_BASE_URL: 'https://router.example/anthropic', ANTHROPIC_AUTH_TOKEN: secret };
+
+async function readRouterFixture(settings, env = { USERPROFILE: fixtureHome }) {
+  return readInheritedClaudeRouter({ env, read: async () => Buffer.from(JSON.stringify(settings)) });
+}
+
+test('inherited Claude router reads the settings env from the user profile', async () => {
+  const filenames = [];
+  const result = await readInheritedClaudeRouter({ env: { USERPROFILE: fixtureHome }, read: async filename => {
+    filenames.push(filename);
+    return Buffer.from(JSON.stringify({ env: routerEnv }));
+  } });
+  assert.deepEqual(filenames, [path.join(fixtureHome, '.claude', 'settings.json')]);
+  assert.deepEqual(result, { baseUrl: routerEnv.ANTHROPIC_BASE_URL, apiKey: secret });
+});
+
+test('inherited Claude router prefers the auth token and falls back to a valid API key', async () => {
+  for (const token of [secret, undefined, '', 'invalid token', 123]) {
+    const result = await readRouterFixture({ env: { ...routerEnv, ANTHROPIC_AUTH_TOKEN: token, ANTHROPIC_API_KEY: 'fixture-api-key' } });
+    assert.equal(result.apiKey, token === secret ? secret : 'fixture-api-key');
+  }
+});
+
+test('inherited Claude router honors the config directory and trims the trailing slash', async () => {
+  const directory = path.resolve('artifacts', 'fixture-claude-config');
+  const filenames = [];
+  const result = await readInheritedClaudeRouter({ env: { USERPROFILE: fixtureHome, CLAUDE_CONFIG_DIR: directory }, read: async filename => {
+    filenames.push(filename);
+    return Buffer.from(JSON.stringify({ env: { ...routerEnv, ANTHROPIC_BASE_URL: `${routerEnv.ANTHROPIC_BASE_URL}/` } }));
+  } });
+  assert.deepEqual(filenames, [path.join(directory, 'settings.json')]);
+  assert.deepEqual(result, { baseUrl: routerEnv.ANTHROPIC_BASE_URL, apiKey: secret });
+});
+
+test('inherited Claude router rejects unsafe or oversized URLs', async () => {
+  for (const baseUrl of ['http://router.example', 'https://user@router.example', `https://user:${secret}@router.example`, `https://router.example?key=${secret}`, `https://router.example#${secret}`, 'not-a-url', `https://router.example/${'a'.repeat(2048)}`]) {
+    assert.equal(await readRouterFixture({ env: { ...routerEnv, ANTHROPIC_BASE_URL: baseUrl } }), null);
+  }
+});
+
+test('inherited Claude router rejects missing or nonobject settings env blocks', async () => {
+  for (const settings of [{}, null, { env: null }, { env: false }, { env: 42 }, { env: 'invalid' }, { env: [] }, { env: [routerEnv] }]) {
+    assert.equal(await readRouterFixture(settings), null);
+  }
+});
+
+test('inherited Claude router rejects missing or invalid keys including control characters', async () => {
+  for (const apiKey of [undefined, '', 123, 'a'.repeat(8193), ...['\0', '\t', '\n', '\r', '\x1f', ' ', '\x7f'].map(character => `${secret}${character}`)]) {
+    assert.equal(await readRouterFixture({ env: { ANTHROPIC_BASE_URL: routerEnv.ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN: apiKey } }), null);
+    assert.equal(await readRouterFixture({ env: { ANTHROPIC_BASE_URL: routerEnv.ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY: apiKey } }), null);
+  }
+  assert.equal((await readRouterFixture({ env: { ...routerEnv, ANTHROPIC_AUTH_TOKEN: 'a'.repeat(8192) } })).apiKey.length, 8192);
+});
+
+test('inherited Claude router rejects malformed JSON and oversized files without leaking secrets', async () => {
+  const exactSize = JSON.stringify({ env: routerEnv }).padEnd(512 * 1024, ' ');
+  for (const read of [
+    async () => Buffer.from(`{"env":${secret}`),
+    async () => Buffer.from(`${exactSize} `),
+    async () => { throw Object.assign(new Error(`Missing fixture ${secret}`), { code: 'ENOENT' }); },
+  ]) assert.equal(await readInheritedClaudeRouter({ env: { USERPROFILE: fixtureHome }, read }), null);
+  assert.deepEqual(await readInheritedClaudeRouter({ env: { USERPROFILE: fixtureHome }, read: async () => Buffer.from(exactSize) }), { baseUrl: routerEnv.ANTHROPIC_BASE_URL, apiKey: secret });
+});
+
+test('inherited router marker passes through profiles without changing the merged environment', () => {
+  const processEnv = Object.freeze({ PATH: 'fixture-bin', ANTHROPIC_BASE_URL: 'https://unchanged.example', ANTHROPIC_AUTH_TOKEN: 'unchanged-token' });
+  const accountEnv = Object.freeze({ CLAUDE_CODE_OAUTH_TOKEN: 'fixture-oauth', PATH: 'account-bin' });
+  const inheritedRouter = Object.freeze({ baseUrl: routerEnv.ANTHROPIC_BASE_URL, apiKey: secret });
+  const expectedEnv = { ...processEnv, ...accountEnv };
+  const plain = buildClaudeConnectionProfile({ source: 'inherited', processEnv, accountEnv });
+  assert.equal(Object.hasOwn(plain, 'inheritedRouter'), false);
+  const profile = buildClaudeConnectionProfile({ source: 'inherited', processEnv, accountEnv, inheritedRouter });
+  assert.equal(profile.inheritEnv, false);
+  assert.equal(profile.inheritedRouter, inheritedRouter);
+  assert.deepEqual(profile.env, expectedEnv);
+  assert.deepEqual(claudeConnectionProfile(profile), profile);
+});
 const inherited = Object.freeze({ PATH: 'system-bin', CLAUDE_CONFIG_DIR: 'existing-history', TOOL_SETTING: 'keep', ANTHROPIC_BASE_URL: 'https://old.invalid', ANTHROPIC_API_KEY: 'other-api-key', ANTHROPIC_AUTH_TOKEN: 'other-token', CLAUDE_CODE_OAUTH_TOKEN: 'old-oauth', CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_CUSTOM_HEADERS: 'Authorization: other', anthropic_auth_token: 'other-cased-token' });
 
 test('inherited source preserves existing environment and the application OAuth token without settings overrides', () => {

@@ -726,3 +726,47 @@ test('public task status updates survive main turn completion without exposing n
   h.child.send({ type: 'assistant', parent_tool_use_id: 'agent-tool', message: { content: [{ type: 'text', text: 'nested content' }] } });
   assert.equal(h.events.length, itemCount);
 });
+
+test('the CLI wake-up after a finished background task opens a visible follow-up turn', async t => {
+  const h = await running(t);
+  h.child.send({ type: 'system', subtype: 'task_started', task_id: 'task-9', tool_use_id: 'agent-tool', description: 'Research' });
+  h.child.send(result(h.turn.id));
+  assert.equal(h.events.filter(e => e.method === 'turn/completed').length, 1);
+  h.child.send({ type: 'system', subtype: 'task_notification', task_id: 'task-9', status: 'completed', summary: 'Agent "Research" finished' });
+  assert.equal(h.events.filter(e => e.method === 'turn/started').length, 1, 'the notification alone opens no turn');
+  const wakeId = 'cccccccc-1111-2222-3333-444444444444';
+  h.child.send({ type: 'user', uuid: wakeId, message: { role: 'user', content: [{ type: 'text', text: '<task-notification>\n<task-id>task-9</task-id>\n<status>completed</status>\n<summary>Agent "Research" finished</summary>\n</task-notification>' }] } });
+  const started = h.events.filter(e => e.method === 'turn/started');
+  assert.equal(started.length, 2);
+  assert.equal(started.at(-1).params.turn.id, wakeId);
+  const echo = h.events.filter(e => e.params.item?.type === 'userMessage').at(-1).params.item;
+  assert.ok(echo.content[0].text.includes('Agent "Research" finished'));
+  assert.ok(!echo.content[0].text.includes('<task-notification>'), 'the echo shows the summary, not the raw frame');
+  h.child.send({ type: 'assistant', message: { id: 'msg-wake', content: [{ type: 'text', text: 'Готово: итоги подагента.' }] } });
+  h.child.send(result(wakeId));
+  const completed = h.events.filter(e => e.method === 'turn/completed');
+  assert.equal(completed.length, 2);
+  assert.equal(completed.at(-1).params.turn.status, 'completed');
+  assert.ok(completed.at(-1).params.turn.items.some(item => item.type === 'agentMessage' && item.phase === 'final_answer'));
+});
+
+test('a wake continuation without a user echo still becomes a turn and accepts its result', async t => {
+  const h = await running(t);
+  h.child.send(result(h.turn.id));
+  h.child.send({ type: 'system', subtype: 'task_notification', task_id: 'task-2', status: 'completed', summary: 'done' });
+  h.child.send({ type: 'assistant', message: { id: 'msg-a', content: [{ type: 'text', text: 'Продолжаю после подагента.' }] } });
+  assert.equal(h.events.filter(e => e.method === 'turn/started').length, 2);
+  h.child.send(result('eeeeeeee-1111-2222-3333-444444444444'));
+  const completed = h.events.filter(e => e.method === 'turn/completed').at(-1);
+  assert.equal(completed.params.turn.status, 'completed');
+  assert.ok(completed.params.turn.items.some(item => item.type === 'agentMessage' && item.text.includes('Продолжаю')));
+});
+
+test('stray frames after completion without a background wake never open a turn', async t => {
+  const h = await running(t);
+  h.child.send(result(h.turn.id));
+  h.child.send({ type: 'user', uuid: 'dddddddd-1111-2222-3333-444444444444', message: { role: 'user', content: [{ type: 'text', text: 'replayed history line' }] } });
+  h.child.send({ type: 'assistant', message: { id: 'msg-replay', content: [{ type: 'text', text: 'replayed answer' }] } });
+  assert.equal(h.events.filter(e => e.method === 'turn/started').length, 1);
+  assert.equal(h.events.filter(e => e.method === 'turn/completed').length, 1);
+});

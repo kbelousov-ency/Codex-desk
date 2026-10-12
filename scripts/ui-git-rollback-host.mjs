@@ -31,7 +31,7 @@ Object.assign(gitEnv, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: emptyGitCon
 const exec = promisify(execFile);
 async function git(cwd, ...args) {
   assert.ok([projectA, projectB].includes(cwd), 'Fixture Git writes never target the source checkout');
-  const { stdout } = await exec('git', ['-c', 'user.name=Codex Desk Fixture', '-c', 'user.email=fixture@example.invalid', ...args], {
+  const { stdout } = await exec('git', ['-c', 'user.name=Кузьмич Fixture', '-c', 'user.email=fixture@example.invalid', ...args], {
     cwd, env: gitEnv, encoding: 'utf8', windowsHide: true, timeout: 15_000,
   });
   return stdout;

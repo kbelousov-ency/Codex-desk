@@ -6,15 +6,17 @@ import path from 'node:path';
 import { checkedPath, removeChecked, verifyRelease, withReleaseLock } from './release-utils.mjs';
 import { createInstallerBranding } from './installer-branding.mjs';
 import { installerFilename } from './release-version.mjs';
+import { applicationIconName, applicationIdentity } from '../electron/app-identity.mjs';
 
 // Default distributes approved Release bytes; --nightly produces an isolated
 // review installer. Neither mode compiles renderer or promotes a release.
 const root = process.cwd();
 try {
   const args = process.argv.slice(2);
-  if (args.length > 1 || (args.length === 1 && args[0] !== '--nightly')) throw new Error('Допустим только --nightly для пробного установщика. Без аргументов используется утверждённый release/stable.');
-  const channel = args[0] === '--nightly' ? 'nightly' : 'stable';
-  const label = channel === 'nightly' ? 'Codex Desk Nightly' : 'Codex Desk';
+  if (args.length > 1 || (args.length === 1 && !['--nightly', '--experimental3'].includes(args[0]))) throw new Error('Допустимы только --nightly и --experimental3 для пробного установщика. Без аргументов используется утверждённый release/stable.');
+  const channel = args[0] === '--nightly' ? 'nightly' : args[0] === '--experimental3' ? 'experimental3' : 'stable';
+  const label = applicationIdentity(channel).name;
+  const icon = path.join(root, 'electron', applicationIconName(channel));
   await withReleaseLock(root, async () => {
     let source = path.join(root, 'release', channel);
     let queuedBuildId;
@@ -43,22 +45,22 @@ try {
     await verifyRelease(root, snapshot, channel);
     const sourcePackage = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
     await writeFile(path.join(metadata, 'package.json'), JSON.stringify({
-      name: channel === 'nightly' ? `${sourcePackage.name}-nightly` : sourcePackage.name, version: approved.version, description: sourcePackage.description,
-      main: 'electron/main.mjs', author: 'Codex Desk contributors',
+      name: channel === 'nightly' ? `${sourcePackage.name}-nightly` : channel === 'experimental3' ? `${sourcePackage.name}-experimental3` : sourcePackage.name, version: approved.version, description: sourcePackage.description,
+      main: 'electron/main.mjs', author: 'Кузьмич contributors',
       homepage: 'https://github.com/kbelousov-ency/Codex-desk',
     }));
     const filename = installerFilename(approved.version, channel);
-    const branding = await createInstallerBranding(root, path.join(work, 'branding'));
+    const branding = await createInstallerBranding(root, path.join(work, 'branding'), channel === 'stable' ? label : 'Кузьмич', icon);
     // Keep the approved executable filename while giving the candidate its own
     // installation folder. Preserve the original Release default for upgrades.
     const include = path.join(work, 'installer.nsh');
-    await writeFile(include, `!undef APP_FILENAME\n!define APP_FILENAME "${channel === 'nightly' ? 'Codex Desk Nightly' : 'codex-desk'}"\n!include "${path.join(root, 'scripts', 'installer.nsh')}"\n`);
+    await writeFile(include, `!undef APP_FILENAME\n!define APP_FILENAME "${channel === 'nightly' ? 'Codex Desk Nightly' : channel === 'experimental3' ? 'Kuzmich' : 'codex-desk'}"\n!ifdef SETUP_ARGS\n!undef SETUP_ARGS\n!endif\n!define SETUP_ARGS "${channel === 'experimental3' ? '--setup' : ''}"\n${channel === 'experimental3' ? '!define APP_WELCOME_TEXT "Установим Кузьмич. При первом запуске войдите в Portal один раз в окне приложения — Кузьмич сам настроит подключение Codex и Claude."\n' : ''}!include "${path.join(root, 'scripts', 'installer.nsh')}"\n`);
     const config = {
       extends: null,
-      appId: `local.codex.desk.${channel}`, productName: label, executableName: 'Codex Desk',
+      appId: `local.codex.desk.${channel}`, productName: label, executableName: channel === 'stable' ? 'Codex Desk' : 'Kuzmich',
       directories: { app: metadata, output, buildResources: path.join(root, 'electron') },
       electronVersion: JSON.parse(await readFile(path.join(root, 'node_modules/electron/package.json'), 'utf8')).version,
-      win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: path.join(root, 'electron/icon.ico'), signAndEditExecutable: false, signExecutable: false },
+      win: { target: [{ target: 'nsis', arch: ['x64'] }], icon: icon, signAndEditExecutable: false, signExecutable: false },
       nsis: {
         oneClick: false, perMachine: false, allowElevation: false, packElevateHelper: false,
         allowToChangeInstallationDirectory: false,
@@ -66,7 +68,7 @@ try {
         runAfterFinish: true, deleteAppDataOnUninstall: false, differentialPackage: false,
         displayLanguageSelector: false, installerLanguages: ['ru_RU', 'en_US'], language: '1049',
         artifactName: filename, uninstallDisplayName: label,
-        installerIcon: path.join(root, 'electron/icon.ico'), uninstallerIcon: path.join(root, 'electron/icon.ico'),
+        installerIcon: icon, uninstallerIcon: icon,
         ...branding, include,
       },
       publish: null,
@@ -88,8 +90,8 @@ try {
     for await (const chunk of createReadStream(path.join(output, filename))) hash.update(chunk);
     const sha256 = hash.digest('hex');
     const size = (await lstat(path.join(output, filename))).size;
-    const delivery = channel === 'nightly' ? path.join(root, 'artifacts', 'installer-nightly') : path.join(root, 'release', 'installer');
-    const next = channel === 'nightly' ? path.join(root, 'artifacts', '.installer-nightly-incoming') : path.join(root, 'release', '.installer-incoming');
+    const delivery = channel === 'nightly' ? path.join(root, 'artifacts', 'installer-nightly') : channel === 'experimental3' ? path.join(root, 'artifacts', 'installer-experimental3') : path.join(root, 'release', 'installer');
+    const next = channel === 'nightly' ? path.join(root, 'artifacts', '.installer-nightly-incoming') : channel === 'experimental3' ? path.join(root, 'artifacts', '.installer-experimental3-incoming') : path.join(root, 'release', '.installer-incoming');
     await removeChecked(root, next);
     await mkdir(next);
     await cp(path.join(output, filename), path.join(next, filename));
@@ -108,7 +110,7 @@ try {
       'Авторизация, ключи и настройки автора в установщик не включены.',
       'Мастер можно повторно открыть в настройках приложения.', '',
       'Установка без прав администратора. Удаление доступно в параметрах Windows → Приложения.',
-      'При обновлении закройте установленный Codex Desk и запустите новый установщик.',
+      'При обновлении закройте Кузьмича и запустите новый установщик.',
       `Этот же exe подходит для первой установки и обновления ${channel === 'nightly' ? 'установленного Nightly. Пробный установщик не обновляет Release' : 'существующего Release'}.`,
       'Настройки, история Codex и вложения при удалении программы сохраняются.', '',
       'Установщик пока не подписан сертификатом издателя; Windows может показать предупреждение.',

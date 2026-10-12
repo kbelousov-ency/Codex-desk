@@ -16,7 +16,7 @@ async function fixture(t, overrides = {}) {
   const state = { busy: false, prepares: 0, quits: 0, notices: [] };
   const options = {
     releaseRoot,
-    executable: path.join(releaseRoot, 'nightly', 'Codex Desk.exe'),
+    executable: path.join(releaseRoot, 'nightly', 'Kuzmich.exe'),
     userData: path.join(releaseRoot, 'profile'),
     cwd: releaseRoot,
     buildId,
@@ -290,7 +290,7 @@ test('crashed registration is replaced atomically and live PID registration rema
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-nightly-owner-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const filename = path.join(root, '.nightly-instance.json');
-  const options = { releaseRoot: root, executable: path.join(root, 'nightly', 'Codex Desk.exe'), userData: root, cwd: root, buildId, getBusy: () => false, prepare: async () => true, quit: () => {} };
+  const options = { releaseRoot: root, executable: path.join(root, 'nightly', 'Kuzmich.exe'), userData: root, cwd: root, buildId, getBusy: () => false, prepare: async () => true, quit: () => {} };
   await writeFile(filename, JSON.stringify({ version: 1, pid: process.pid, token: 'other-live-process' }));
   await assert.rejects(createNightlyUpdate(options), /unavailable/);
   assert.equal(JSON.parse(await readFile(filename, 'utf8')).token, 'other-live-process');

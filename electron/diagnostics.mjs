@@ -18,7 +18,7 @@ const LEVELS = new Set(['debug', 'info', 'warn', 'error']);
 const EVENTS = new Set([
   'app.start', 'app.ready', 'app.quit', 'app.quitRequested', 'app.previousAbnormal', 'app.fatal', 'app.unhandled', 'app.childGone', 'app.profile', 'app.shellIcon',
   'window.created', 'window.closed', 'window.loadFailed', 'window.unresponsive',
-  'window.rendererGone', 'window.preloadError', 'window.openFailed',
+  'window.rendererGone', 'window.recovery', 'window.preloadError', 'window.openFailed',
   'session.created', 'session.disposed', 'ipc.start', 'ipc.complete', 'ipc.failed',
   'renderer.error', 'diagnostics.run', 'diagnostics.exported', 'diagnostics.exportFailed', 'update.failed',
   'notification.failed',
@@ -221,6 +221,8 @@ function safeData(data) {
   if (['SIGTERM', 'SIGKILL', 'SIGINT', 'SIGABRT', 'SIGSEGV', 'SIGHUP', 'SIGBREAK', 'SIGQUIT'].includes(signal)) result.signal = signal;
   const kind = field(data, 'kind');
   if (['error', 'unhandledrejection', 'react'].includes(kind)) result.kind = kind;
+  const action = field(data, 'action');
+  if (['reload', 'close'].includes(action)) result.action = action;
   const phase = field(data, 'phase');
   if (RUN_STATE_PHASES.has(phase)) result.phase = phase;
   const previousPhase = field(data, 'previousPhase');

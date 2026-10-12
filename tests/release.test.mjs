@@ -15,7 +15,7 @@ async function fixture(t) {
   return root;
 }
 
-async function binary(root, tag) {
+async function binary(root, tag, branding = {}) {
   const source = path.join(root, `source-${tag}`);
   const app = path.join(root, `app-${tag}`);
   await mkdir(path.join(source, 'resources'), { recursive: true });
@@ -23,20 +23,20 @@ async function binary(root, tag) {
   await writeFile(path.join(source, 'Codex Desk.exe'), `fake executable ${tag}`);
   await writeFile(path.join(source, 'resources', 'dependency.bin'), `dependency ${tag}`);
   await writeFile(path.join(app, 'package.json'), JSON.stringify({ version: '0.1.0' }));
-  await writeFile(path.join(app, 'electron', 'build-info.json'), JSON.stringify({ buildId: tag.repeat(64), builtAt: '2026-09-18T00:00:00.000Z', version: '0.1.0' }));
+  await writeFile(path.join(app, 'electron', 'build-info.json'), JSON.stringify({ buildId: tag.repeat(64), builtAt: '2026-09-18T00:00:00.000Z', version: '0.1.0', ...branding }));
   await asar.createPackage(app, path.join(source, 'resources', 'app.asar'));
   return source;
 }
 
-async function build(root, tag) {
-  const source = await binary(root, tag);
+async function build(root, tag, branding = {}) {
+  const source = await binary(root, tag, branding);
   await publishNightly(root, source, { guard });
   return verifyRelease(root, path.join(root, 'release', 'nightly'), 'nightly');
 }
 
-async function queueBuild(root, tag) {
+async function queueBuild(root, tag, branding = {}) {
   const installed = await verifyRelease(root, path.join(root, 'release', 'nightly'), 'nightly');
-  await queueNightlyUpdate(root, await binary(root, tag), {
+  await queueNightlyUpdate(root, await binary(root, tag, branding), {
     version: 1, updateProtocol: 2, pid: 987654321,
     pipe: `\\\\.\\pipe\\codex-desk-nightly-987654321-${'a'.repeat(32)}`, token: 'b'.repeat(64), buildId: installed.buildId,
     executable: path.join(root, 'release', 'nightly', 'Codex Desk.exe'), userData: path.join(root, 'profile'), cwd: root,
@@ -59,6 +59,69 @@ test('Nightly updates one fixed directory; promotion preserves every application
   await promoteRelease(root, { guard });
   assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable-previous'))).buildId, second.buildId);
   assert.deepEqual((await readdir(path.join(root, 'release'))).sort(), ['nightly', 'stable', 'stable-previous']);
+});
+
+test('explicit Release-compatible branding promotes exact bytes without converting the candidate', async t => {
+  const root = await fixture(t);
+  const branding = { productName: 'Кузьмич', iconName: 'kuzmich.ico' };
+  const candidate = await build(root, 'a', branding);
+  assert.equal(candidate.productName, branding.productName);
+  assert.equal(candidate.iconName, branding.iconName);
+  const before = await fileChecksums(root, path.join(root, 'release', 'nightly'));
+  await promoteRelease(root, { guard });
+  assert.deepEqual(await fileChecksums(root, path.join(root, 'release', 'stable')), before);
+  assert.deepEqual(await fileChecksums(root, path.join(root, 'release', 'nightly')), before);
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable'), 'stable')).productName, 'Кузьмич');
+});
+
+test('Kuzmich Nightly promotion is blocked before touching stable, previous or incoming', async t => {
+  const root = await fixture(t);
+  await build(root, 'a'); await promoteRelease(root, { guard });
+  await build(root, 'b'); await promoteRelease(root, { guard });
+  await build(root, 'c', { productName: 'Кузьмич Nightly', iconName: 'kuzmich.ico' });
+  const incoming = path.join(root, 'release', '.stable-incoming');
+  await mkdir(incoming); await writeFile(path.join(incoming, 'sentinel'), 'do not touch');
+  const before = await fileChecksums(root, path.join(root, 'release'), new Set());
+  await assert.rejects(promoteRelease(root, { guard }), /Бренд сборки несовместим.*Exact-byte/);
+  assert.deepEqual(await fileChecksums(root, path.join(root, 'release'), new Set()), before);
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable'), 'stable')).buildId, 'b'.repeat(64));
+});
+
+test('a branded queued candidate cannot bypass promotion protection through a compatible installed Nightly', async t => {
+  const root = await fixture(t);
+  await build(root, 'a'); await promoteRelease(root, { guard });
+  const queue = await queueBuild(root, 'b', { productName: 'Кузьмич Nightly', iconName: 'kuzmich.ico' });
+  const beforeRelease = await fileChecksums(root, path.join(root, 'release'), new Set());
+  const beforeQueue = await fileChecksums(root, queue, new Set());
+  await assert.rejects(promoteRelease(root, { guard }), /Бренд сборки несовместим/);
+  assert.deepEqual(await fileChecksums(root, path.join(root, 'release'), new Set()), beforeRelease);
+  assert.deepEqual(await fileChecksums(root, queue, new Set()), beforeQueue);
+});
+
+test('manifest branding cannot be omitted or forged to hide branded ASAR metadata', async t => {
+  const root = await fixture(t);
+  await build(root, 'a'); await promoteRelease(root, { guard });
+  const candidate = await build(root, 'b', { productName: 'Кузьмич Nightly', iconName: 'kuzmich.ico' });
+  const filename = path.join(root, 'release', 'nightly', 'release-manifest.json');
+  for (const mode of ['omit', 'forge']) {
+    const manifest = structuredClone(candidate);
+    if (mode === 'omit') { delete manifest.productName; delete manifest.iconName; }
+    else { manifest.productName = 'Codex Desk'; manifest.iconName = 'icon.ico'; }
+    await writeFile(filename, JSON.stringify(manifest));
+    await assert.rejects(promoteRelease(root, { guard }), /Метаданные сборки не совпадают/);
+  }
+  await writeFile(filename, JSON.stringify(candidate));
+  await writeFile(path.join(root, 'release', 'nightly', 'resources', 'channel.json'), JSON.stringify({ channel: 'stable' }));
+  await assert.rejects(verifyRelease(root, path.join(root, 'release', 'nightly'), 'stable'), /Бренд сборки несовместим/);
+  assert.equal((await verifyRelease(root, path.join(root, 'release', 'stable'), 'stable')).buildId, 'a'.repeat(64));
+});
+
+test('a Kuzmich PE icon is rejected even when its declared ProductName is Release-compatible', async t => {
+  const root = await fixture(t);
+  await build(root, 'a', { productName: 'Codex Desk', iconName: 'kuzmich.ico' });
+  const before = await fileChecksums(root, path.join(root, 'release'), new Set());
+  await assert.rejects(promoteRelease(root, { guard }), /Бренд сборки несовместим/);
+  assert.deepEqual(await fileChecksums(root, path.join(root, 'release'), new Set()), before);
 });
 
 test('promotion uses the verified queued candidate while leaving the running Nightly and update queue intact', async t => {

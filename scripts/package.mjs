@@ -3,20 +3,23 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-import { checkedTree, fileChecksums, publishNightly, removeChecked, withReleaseLock } from './release-utils.mjs';
+import { checkedTree, fileChecksums, publishChannel, removeChecked, withReleaseLock } from './release-utils.mjs';
 import { assertNoPendingUpdate, findNightlyInstance, launchUpdateHelper, queueNightlyUpdate } from './nightly-update.mjs';
 
 import { assertReleaseVersion } from './release-version.mjs';
 import { parseReleaseNotes } from '../electron/release-notes.mjs';
+import { applicationBuildIdentity } from '../electron/app-identity.mjs';
 
-// Only Nightly is built from source. Release is promoted from these exact bytes.
+// Review channels are built from source. Only Release-compatible bytes can be promoted.
 const root = process.cwd();
 let queuedBuildId;
 try {
-  if (process.argv.length > 2) throw new Error('Сборка всегда обновляет release/nightly. Произвольный каталог вывода больше не поддерживается.');
+  if (process.argv.length > 2 && process.argv[2] !== '--experimental3') throw new Error('Допустим только флаг --experimental3.');
+  const channel = process.argv[2] === '--experimental3' ? 'experimental3' : 'nightly';
+  const branding = applicationBuildIdentity(channel);
   await withReleaseLock(root, async () => {
     await assertNoPendingUpdate(root);
-    await findNightlyInstance(root);
+    if (channel === 'nightly') await findNightlyInstance(root);
     const manifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
     assertReleaseVersion(manifest.version);
     const work = path.join(root, 'artifacts', 'channel-build');
@@ -51,23 +54,27 @@ try {
       dependencies: { '@iarna/toml': manifest.dependencies['@iarna/toml'], '@anthropic-ai/claude-agent-sdk': manifest.dependencies['@anthropic-ai/claude-agent-sdk'] },
     }, null, 2));
     const checksums = await fileChecksums(root, stage, new Set(['electron/build-info.json']));
-    const buildId = createHash('sha256').update(JSON.stringify(checksums)).digest('hex');
-    await writeFile(path.join(stage, 'electron', 'build-info.json'), JSON.stringify({ buildId, builtAt: new Date().toISOString(), version: manifest.version }, null, 2));
+    const buildId = createHash('sha256').update(JSON.stringify({ files: checksums, branding })).digest('hex');
+    await writeFile(path.join(stage, 'electron', 'build-info.json'), JSON.stringify({ buildId, builtAt: new Date().toISOString(), version: manifest.version, productName: branding.productName, iconName: branding.iconName }, null, 2));
     await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [
         path.join(root, 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js'),
         '--win', '--dir', `--config.directories.app=${stage}`, `--config.directories.output=${output}`,
+        `--config.productName=${branding.productName}`,
+        `--config.executableName=${branding.executableName}`,
+        `--config.win.icon=electron/${branding.iconName}`,
       ], { cwd: root, stdio: 'inherit', windowsHide: true });
       child.once('error', reject);
       child.once('exit', code => code === 0 ? resolve() : reject(new Error(`electron-builder завершился с кодом ${code}.`)));
     });
-    const instance = await findNightlyInstance(root);
+    const instance = channel === 'nightly' ? await findNightlyInstance(root) : null;
     if (instance) {
       await queueNightlyUpdate(root, path.join(output, 'win-unpacked'), instance);
       queuedBuildId = buildId;
     } else {
-      await publishNightly(root, path.join(output, 'win-unpacked'));
-      console.log(`NIGHTLY обновлён: release/nightly/Codex Desk.exe\nСборка: ${buildId.slice(0, 12)}. RELEASE не изменён.`);
+      await publishChannel(root, path.join(output, 'win-unpacked'), channel);
+      const executableName = channel === 'stable' ? 'Codex Desk.exe' : 'Kuzmich.exe';
+      console.log(`Канал ${channel} обновлён: release/${channel}/${executableName}\nСборка: ${buildId.slice(0, 12)}. RELEASE не изменён.`);
     }
     await removeChecked(root, work);
   });

@@ -216,6 +216,125 @@ test('a conflicting explicit Codex config never reaches model catalog or account
   assert.equal(f.events.at(-1).data.state, 'error');
 });
 
+/** One tab that starts on Codex and is offered the saved Claude profile, with the host-side save closure of main.mjs. */
+function providerFixture({ stored, claudeProfile, stopWait } = {}) {
+  const clients = [], resolved = [], persisted = [], events = [], requested = [];
+  const create = kind => options => {
+    const client = new FakeClient({ ...options, kind });
+    const request = client.request.bind(client);
+    client.request = (method, params) => {
+      if (method === 'thread/start') { client.calls.push({ method, params }); return Promise.resolve({ thread: { id: `${kind === 'claude' ? 'claude:' : ''}${terminalThreadId}`, status: { type: 'idle' }, turns: [] } }); }
+      return request(method, params);
+    };
+    client.stopAndWait = async () => { client.stop(); if (stopWait) await stopWait(); };
+    clients.push(client); return client;
+  };
+  const session = new WindowSession({
+    settings: { provider: 'codex', cwd: 'project-a', executable: 'codex-cli', model: 'codex-model', effort: 'high', access: 'danger-full-access', connectionSource: 'account' },
+    resolveDirectory: async value => value, resolveExecutable: async value => value || 'found-codex', resolveClaudeExecutable: async value => value || 'found-claude',
+    createClient: create('codex'), createClaudeClient: create('claude'),
+    codexEnvironment: async settings => { resolved.push({ ...settings }); return { env: { AGENT: 'codex' }, modelProvider: 'openai', configOverrides: ['model_provider="openai"'] }; },
+    claudeEnvironment: async settings => {
+      resolved.push({ ...settings });
+      if (claudeProfile) return claudeProfile(settings);
+      return { env: { AGENT: 'claude', SECRET: 'host-secret' }, inheritEnv: false, settingsOverrides: { env: { AGENT: 'claude' } } };
+    },
+    providerDefaults: async provider => { requested.push(provider); return { provider, ...(stored || { model: 'claude-model', effort: 'medium', access: 'danger-full-access', executable: 'claude-cli', connectionSource: 'inherited', cwd: 'stored-project' }) }; },
+    // Mirrors main.mjs: the profile written to is the one in force when the patch is saved.
+    persistSettings: async patch => { persisted.push({ provider: session.settings.provider || 'codex', patch }); },
+    send: (type, data) => events.push({ type, data }),
+  });
+  return { session, clients, resolved, persisted, events, requested };
+}
+
+test('an empty dialogue changes agent in place: the process is stopped and the new agent brings its own settings', async () => {
+  const f = providerFixture();
+  await f.session.start();
+  assert.equal(f.clients[0].options.kind, 'codex');
+  await f.session.setSettings({ provider: 'claude' });
+  assert.deepEqual(f.requested, ['claude']);
+  assert.equal(f.clients[0].stops, 1, 'the Codex process is stopped and waited for');
+  assert.equal(f.session.client, null);
+  assert.equal(f.session.bootstrap, null);
+  assert.equal(f.session.switchingSource, false);
+  // Model, effort and source are the saved Claude ones; full access is not inherited; the folder stays.
+  assert.deepEqual(f.session.getSettings(), { provider: 'claude', cwd: 'project-a', executable: 'claude-cli', model: 'claude-model', effort: 'medium', access: 'workspace-write', connectionSource: 'inherited' });
+  const boot = await f.session.start();
+  assert.equal(boot.provider, 'claude');
+  assert.equal(f.clients[1].options.kind, 'claude');
+  assert.equal(f.clients[1].options.executable, 'claude-cli');
+  assert.equal(f.clients[1].options.env.AGENT, 'claude');
+  assert.deepEqual(f.resolved.map(settings => settings.provider), ['codex', 'claude'], 'the validated profile is reused by the reconnect');
+  assert.ok(!JSON.stringify(boot).includes('host-secret'));
+  // The save closure follows the tab: patches after the switch belong to the Claude profile.
+  assert.deepEqual(f.persisted, [{ provider: 'codex', patch: { cwd: 'project-a' } }, { provider: 'claude', patch: { cwd: 'project-a' } }]);
+  await f.session.setSettings({ model: 'picked-in-tab' });
+  assert.deepEqual(f.persisted.at(-1), { provider: 'claude', patch: { model: 'picked-in-tab' } });
+});
+
+test('a dialogue with messages keeps opening a separate tab for the other agent', async () => {
+  const f = providerFixture();
+  await f.session.start();
+  await f.session.request('thread/start', { input: ['first message'] });
+  assert.equal(f.session.currentThreadId, terminalThreadId, 'the thread is remembered by the host');
+  assert.throws(() => f.session.setSettings({ provider: 'claude' }), /Смена агента открывает отдельный диалог\./);
+  assert.equal(f.session.settings.provider, 'codex');
+  assert.equal(f.clients[0].stops, 0);
+  assert.equal(f.session.switchingSource, false);
+  assert.deepEqual(f.requested, []);
+  // A tab without the saved profiles of other agents also keeps the previous behaviour.
+  const plain = fixture();
+  await plain.session.start();
+  assert.throws(() => plain.session.setSettings({ provider: 'claude' }), /Смена агента открывает отдельный диалог\./);
+  assert.equal(plain.session.settings.provider, undefined);
+});
+
+test('agent changes cannot interrupt work, approvals, boots, compaction or a terminal', async () => {
+  for (const block of ['pendingBoots', 'pendingMutations', 'requests', 'activeThreadTurns', 'compactingThreads', 'terminal']) {
+    const f = providerFixture();
+    await f.session.start();
+    if (block === 'requests' || block === 'activeThreadTurns') f.session[block].set('busy', 'request');
+    else if (block === 'compactingThreads') f.session[block].add('busy');
+    else f.session[block] = block === 'terminal' ? {} : 1;
+    assert.throws(() => f.session.setSettings({ provider: 'claude' }), /Дождитесь|терминале/);
+    assert.equal(f.session.settings.provider, 'codex');
+    assert.equal(f.clients[0].stops, 0);
+    assert.deepEqual(f.requested, []);
+  }
+});
+
+test('a rejected new-agent profile preserves the live client, the agent and its settings', async () => {
+  const f = providerFixture({ claudeProfile: () => { throw new Error('Подключите роутер Claude'); } });
+  await f.session.start();
+  const previous = f.session.client;
+  await assert.rejects(f.session.setSettings({ provider: 'claude' }), /Подключите роутер Claude/);
+  assert.strictEqual(f.session.client, previous);
+  assert.equal(previous.stops, 0);
+  assert.equal(f.session.settings.provider, 'codex');
+  assert.equal(f.session.settings.model, 'codex-model');
+  assert.equal(f.session.switchingSource, false);
+  assert.equal(f.events.some(event => event.type === 'status' && event.data.state === 'error'), false, 'a preflight failure leaves a genuinely ready connection');
+  // The same tab stays usable on its own agent.
+  await f.session.setSettings({ model: 'codex-model-2' });
+  assert.deepEqual(f.persisted.at(-1), { provider: 'codex', patch: { model: 'codex-model-2' } });
+});
+
+test('a failed shutdown during an agent change reports disconnection and keeps the folder of the tab', async () => {
+  let exited = false;
+  const f = providerFixture({ stopWait: async () => { if (!exited) throw new Error('still stopping'); } });
+  await f.session.start();
+  await assert.rejects(f.session.setSettings({ provider: 'claude' }), /still stopping/);
+  assert.equal(f.events.at(-1).type, 'status');
+  assert.equal(f.events.at(-1).data.state, 'error');
+  assert.match(f.events.at(-1).data.message, /сменить агента/);
+  assert.equal(f.session.settings.provider, 'codex');
+  assert.strictEqual(f.session.sourceStoppingClient, f.clients[0]);
+  exited = true;
+  await f.session.start();
+  assert.equal(f.clients[1].options.kind, 'codex');
+  assert.equal(f.session.sourceStoppingClient, null);
+});
+
 test('two sessions run concurrent turns with isolated events, cwd, approvals and interruption', async () => {
   const a = fixture();
   const b = fixture({ cwd: 'project-b', executable: 'codex-b' });

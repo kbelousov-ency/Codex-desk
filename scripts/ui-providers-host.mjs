@@ -101,8 +101,29 @@ try {
   await rememberCurrent(codex);
   await draft().fill('Черновик Codex сохраняется отдельно');
 
+  // An empty dialogue changes agent in the same tab: the saved profile of the new agent, the same folder,
+  // the unsent draft kept and nothing of the previous agent carried over.
   await choose('Агент', 'claude'); await ready('claude');
+  assert.equal(await activeId(), codexId, 'an empty dialogue changes agent in place');
+  assert.equal(await page.getByRole('tab').count(), 1);
+  assert.equal(await draft().inputValue(), 'Черновик Codex сохраняется отдельно');
+  const switched = await bootstrap(codexId);
+  assert.equal(switched.provider, 'claude');
+  assert.ok(sameDirectory(switched.cwd, project));
+  assert.equal(switched.settings.model, undefined, 'Codex model does not seed the agent changed in place');
+  assert.equal(switched.settings.effort, undefined);
+  assert.equal(switched.settings.executable, undefined);
+  assert.match(path.basename(switched.executable), /^claude(?:\.exe)?$/i);
+  // Back to Codex in the same tab, with its own saved model; the second agent then gets its own tab.
+  await choose('Агент', 'codex'); await ready('codex');
+  assert.equal(await page.getByRole('tab').count(), 1);
+  assert.equal(await selector('Модель').getAttribute('data-value'), codex.model);
+  checks.push('empty dialogue changes agent in place both ways: one tab, kept folder and draft, per-agent saved settings');
+  await page.getByRole('button', { name: 'Открыть новый диалог', exact: true }).click();
+  await until(async () => await page.getByRole('tab').count() === 2 && await activeId() !== codexId, 'the second tab opens and becomes active');
   const claudeId = await activeId();
+  await ready('codex');
+  await choose('Агент', 'claude'); await ready('claude');
   const claude = await bootstrap(claudeId);
   assert.notEqual(claudeId, codexId);
   assert.equal(claude.provider, 'claude');
@@ -119,7 +140,7 @@ try {
   assert.equal(await page.getByRole('tab').count(), 2);
   assert.equal(claude.capabilities.steer, true);
   assert.equal(claude.capabilities.compact, true);
-  assert.equal(claude.capabilities.archive, false);
+  assert.equal(claude.capabilities.archive, true, 'the shell-owned archive is available for Claude too');
   assert.equal(claude.capabilities.usage, true);
   assert.ok(claude.usage && typeof claude.usage.available === 'boolean', 'usage/read answers through the real CLI without a model turn');
   assert.equal(claude.capabilities.terminal, true);

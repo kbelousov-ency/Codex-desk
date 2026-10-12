@@ -107,7 +107,7 @@ export class ReleaseNotesService {
         releases = collectReleaseChanges(this.releases, previousVersion, currentVersion);
       }
     }
-    if (!releases.length) releases = [{ version: currentVersion, items: ['Обновление Codex Desk установлено. Подробные заметки для этой версии пока недоступны.'] }];
+    if (!releases.length) releases = [{ version: currentVersion, items: ['Обновление Кузьмича установлено. Подробные заметки для этой версии пока недоступны.'] }];
     return { currentVersion, previousVersion, releases, shouldShow };
   }
 

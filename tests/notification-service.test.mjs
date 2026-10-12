@@ -67,7 +67,7 @@ test('focused active tab is silent while background tab and unfocused window rec
   f.focus(false); await f.notify({ eventId: 'turn-2' }); assert.equal(f.toasts.length, 2);
   await f.service.setSettings({ sound: true });
   await f.notify({ kind: 'approval', eventId: 'permission-1', title: '' });
-  assert.deepEqual(f.toasts[2].options, { title: 'Нужно разрешение', body: 'Codex Desk', silent: false });
+  assert.deepEqual(f.toasts[2].options, { title: 'Нужно разрешение', body: 'Кузьмич', silent: false });
 });
 
 test('click activates the matching session before restoring and focusing its owning window', async () => {

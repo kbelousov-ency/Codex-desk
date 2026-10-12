@@ -1,3 +1,5 @@
+
+.markdown-code-actions{display:inline-flex;align-items:center;gap:6px}
 /* A familiar left/right conversation without narrowing code or changing its content. */
 .conversation .message{display:flex;flex-direction:column;align-items:flex-start;min-width:0;margin-bottom:18px}
 .conversation .message-label{gap:7px;min-height:22px;margin-bottom:5px;width:100%;font-size:10px}
@@ -31,4 +33,12 @@
 .conversation .work-log{margin-left:0;max-width:94%}
 .conversation .work-log[open]>.work-log-summary{top:var(--chat-search-offset,0px)}
 .conversation .message-content>.markdown,.conversation .message-content>.user-text{line-height:1.6}
+.message-context-menu{position:fixed;z-index:120;padding:4px;border:1px solid #49594e;border-radius:7px;background:#202923;box-shadow:0 8px 25px #0008;color:#dce8df;min-width:205px}
+.message-context-menu button{display:block;width:100%;padding:7px 10px;border-radius:4px;text-align:left;font-size:11px}
+.message-context-menu button:hover,.message-context-menu button:focus-visible{background:#34473a;color:#f0f7f1}
+.markdown-code-block{margin:14px 0;border:1px solid #303c32;border-radius:8px;background:#121714;overflow:hidden}
+.markdown-code-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 9px;border-bottom:1px solid #303c32;color:#83988a;font-size:9px;letter-spacing:.3px}
+.markdown-code-block pre{margin:0;border:0;border-radius:0}
+.markdown-code-copy{display:inline-flex;align-items:center;gap:4px;padding:3px 6px;border:1px solid #435448;border-radius:4px;color:#b6cdbb;font-size:9px}
+.markdown-code-copy:hover,.markdown-code-copy:focus-visible{background:#2e4034;color:#e2efe4}
 @media(max-width:700px){.conversation .assistant-message,.conversation .work-log{max-width:100%}.conversation .user-message{max-width:90%}.conversation .message-content,.conversation .user-message .message-content{padding:9px 11px}}

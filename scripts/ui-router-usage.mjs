@@ -1,213 +1,110 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { mkdir, readFile } from 'node:fs/promises';
-import { extname, resolve, sep } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
+import { activeView, fixtureServer, installFixture, limitsDialog, ready, sampleSnapshot, updateSnapshot } from './router-usage-fixture.mjs';
 
-// Production renderer with an isolated Codex bridge fixture. The fixture only
-// serves router usage data; it never starts Codex or sends a model request.
-const root = resolve('dist');
-const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
-const server = createServer(async (request, response) => {
-  const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-  const file = resolve(root, `.${pathname === '/' ? '/index.html' : pathname}`);
-  if (!file.startsWith(`${root}${sep}`)) { response.writeHead(403).end(); return; }
-  try {
-    const body = await readFile(file);
-    response.writeHead(200, { 'Content-Type': mime[extname(file)] || 'application/octet-stream' }).end(body);
-  } catch { response.writeHead(404).end(); }
-});
-
-await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const server = await fixtureServer();
 await mkdir('artifacts', { recursive: true });
-let browser;
-let page;
+let browser, page;
+const credits = value => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
 try {
   browser = await chromium.launch({ channel: 'msedge', headless: true });
-  page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-  page.setDefaultTimeout(10000);
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
-  await page.addInitScript(() => {
-    const cwd = 'C:/Fixtures/ROUTER';
-    const model = { id: 'fixture-router-model', model: 'fixture-router-model', displayName: 'Fixture Router', inputModalities: ['text'], defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'Fixture' }] };
-    const snapshot = {
-      available: true,
-      fetchedAt: '2026-09-22T10:00:00.000Z',
-      overview: { email: 'fixture@example.test', last_24h: { credits: 9999, requests: 20, failures: 0 } },
-      limits: [{ key: 'coder-fixture', available: true, tier: 'TierA', state: 'ACTIVE', reset_at: '2026-09-28T03:00:00Z', limit_credits: 100, used_credits: 20, remaining_credits: 80, used_percent: 20 }],
-    };
-    const router = window.__router = { current: snapshot, calls: 0 };
-    const listeners = new Set();
-    const settings = { cwd, model: model.id, effort: 'high', access: 'workspace-write' };
-    const bridge = {
-      async start() {
-        return { initialize: {}, cwd, models: [model], executable: 'C:/Fixtures/codex.exe', account: { account: null, requiresOpenaiAuth: false }, provider: 'codex', capabilities: { compact: true, steer: true, terminal: false, mcp: false, archive: true, usage: false }, config: { model: model.id, model_reasoning_effort: 'high', model_provider: 'router' } };
-      },
-      async getSettings() { return { ...settings }; },
-      async setSettings(patch) { Object.assign(settings, patch); },
-      async getRouterUsage() { router.calls += 1; return structuredClone(router.current); },
-      async request(method, params = {}) {
-        if (method === 'thread/list') return { data: [], nextCursor: null };
-        if (method === 'thread/start') return { thread: { id: 'router-thread', cwd, turns: [] }, model: params.model };
-        if (method === 'turn/start') return { turn: { id: 'fixture-turn', status: 'inProgress', items: [] } };
-        throw new Error(`Unexpected fixture request ${method}`);
-      },
-      async respond() {},
-      onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-      async listFiles(path = '') { return { path, entries: [], nextCursor: null }; },
-      async chooseDirectory() { return cwd; },
-      async chooseExecutable() { return null; },
-      async openPath() {},
-      async showPathMenu() {},
-      async saveImages(images) { return images; },
-      async readAttachment() { return null; },
-    };
-    window.codex = {
-      ...bridge,
-      async getWorkspace() { return { projects: [cwd], sessions: [{ id: 'router-session', cwd, provider: 'codex' }] }; },
-      async listProjectThreads() { return { data: [], nextCursor: null }; },
-      async createSession() { return { id: 'router-session', cwd, provider: 'codex' }; },
-      async closeSession() {},
-      forSession() { return bridge; },
-    };
-  });
-  await page.goto(`http://127.0.0.1:${server.address().port}`);
-  const view = () => page.locator('.session-view:visible');
-  const trigger = () => view().locator('.router-usage-trigger');
-  const dialog = () => page.getByRole('dialog', { name: 'Статистика роутера', exact: true });
-  const flush = () => page.waitForTimeout(100);
-  const field = (name) => dialog().locator(`[data-limit-field="${name}"] dd`);
-  const setSnapshot = snapshot => page.evaluate(value => { window.__router.current = value; }, snapshot);
-
-  await view().getByRole('combobox', { name: 'Модель', exact: true }).waitFor();
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, timezoneId: 'Europe/Moscow' });
+  page = await context.newPage(); page.setDefaultTimeout(10000);
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await installFixture(page, { secondTab: true });
+  await page.goto(server.url); await ready(page);
+  await page.waitForFunction(() => window.__limits.first.requests.some(value => value?.threadId === window.__limits.first.thread.id));
+  const trigger = () => activeView(page).locator('.router-usage-trigger');
+  const dialog = () => limitsDialog(page);
+  const field = name => dialog().locator(`[data-limit-field="${name}"]`);
+  const spend = name => dialog().locator(`[data-spend="${name}"] strong`);
   await trigger().waitFor();
-  await page.waitForFunction(() => document.querySelector('.router-usage-trigger')?.disabled === false);
-  await page.waitForFunction(() => window.__router.calls > 0);
-  await page.waitForFunction(() => document.querySelector('.router-usage-trigger')?.getAttribute('aria-label') === 'Роутер · 20%');
-  assert.equal(await trigger().getAttribute('aria-label'), 'Роутер · 20%', 'Configured router provider exposes the usage trigger');
-
-  await trigger().click();
-  await dialog().waitFor();
+  await page.waitForFunction(() => document.querySelector('.session-view:not([hidden]) .router-usage-trigger')?.getAttribute('aria-label') === 'Лимит · 80% осталось');
+  await trigger().click(); await dialog().waitFor();
   assert.equal(await dialog().locator('[data-router-limit]').count(), 1);
-  assert.equal(await field('used').innerText(), '20');
-  assert.equal(await field('percent').innerText(), '20%');
-  assert.equal(await field('total').innerText(), '100');
-  assert.equal(await field('remaining').innerText(), '80');
-  assert.match(await field('reset').innerText(), /2026|03:00/, 'Reset timestamp is shown');
-  assert.match(await dialog().innerText(), /fixture@example\.test/);
-  assert.match(await dialog().innerText(), /9[\s\u00a0]?999\s*кредитов/, 'last_24h credits remain separate from the current limit usage');
-  assert.match(await dialog().innerText(), /Запросы за 24 часа[\s\S]*20/);
-  assert.doesNotMatch(await dialog().innerText(), /9[\s\u00a0]?999\s*\s*\/\s*100/, 'Daily credits never replace used_credits');
+  assert.equal(await field('remaining').innerText(), credits(25600));
+  assert.equal(await field('total').innerText(), credits(32000));
+  assert.equal(await field('percent').innerText(), '80%');
+  assert.match(await field('reset').innerText(), /19.*окт|19\.10/);
+  assert.match(await field('reset').innerText(), /06:00/);
+  assert.equal(await spend('session').innerText(), credits(125.5));
+  assert.equal(await spend('today').innerText(), credits(345.67));
+  assert.equal(await dialog().locator('[data-router-band]').count(), 0, 'Codex hides Fable even if a malformed snapshot includes it');
+  assert.doesNotMatch(await dialog().innerText(), /Подробнее|fixture@|fixture-secret|TierA|FREE_POOL|За 24 часа|9[\s\u00a0]999/);
+  assert.match(await dialog().locator('.router-credit-freshness').innerText(), /Обновлено/);
+  const box = await dialog().boundingBox(); assert.ok(box && Math.abs(box.width - 340) < 2 && box.height < 430, 'The common card is compact');
+  await page.screenshot({ path: 'artifacts/router-usage-compact.png' });
+  assert.equal(await dialog().locator('[data-spend="session"] small').innerText(), 'Текущий диалог');
+  assert.ok(await page.evaluate(() => window.__limits.first.requests.every(value => value && Object.hasOwn(value, 'threadId')) && window.__limits.first.requests.at(-1).threadId === window.__limits.first.thread.id), 'UI explicitly scopes the resumed session request to its native thread ID');
 
-  // The ledger records the full period spend even when the other usage fields disagree.
-  const periodLimit = { key: 'coder-fixture', available: true, tier: 'TierA', state: 'ACTIVE', reset_at: '2026-09-28T03:00:00Z', limit_credits: 37000, used_credits: 4243.93, remaining_credits: 32756.07, used_percent: 11.47 };
-  const credits = value => new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(value);
+  const period = { key: 'active-fixture', available: true, tier: 'TierA', state: 'ACTIVE', reset_at: '2026-10-19T03:00:00Z', limit_credits: 37000, used_credits: 4243.93, remaining_credits: 32756.07, used_percent: 11.47 };
   for (const scenario of [
-    { name: 'Ledger spend wins over disagreeing usage fields', patch: { ledger_used_credits: 18658 }, expected: { used: credits(18658), total: credits(37000), remaining: credits(18342), percent: '50,4%' } },
-    { name: 'Zero ledger spend is data, not a fallback trigger', patch: { ledger_used_credits: 0 }, expected: { used: '0', total: credits(37000), remaining: credits(37000), percent: '0%' } },
-    { name: 'Ledger without a quota does not reuse a stale remaining amount or percent', patch: { ledger_used_credits: 18658, limit_credits: null }, expected: { used: credits(18658), total: '—', remaining: '—', percent: '—' } },
-    { name: 'A zero quota cannot produce a percentage', patch: { ledger_used_credits: 18658, limit_credits: 0 }, expected: { used: credits(18658), total: '0', remaining: '0', percent: '—' } },
-    { name: 'Overspending cannot make the remaining amount negative', patch: { ledger_used_credits: 40000 }, expected: { used: credits(40000), total: credits(37000), remaining: '0', percent: '108,1%' } },
-    { name: 'Null ledger retains the reported usage fields', patch: { ledger_used_credits: null }, expected: { used: credits(4243.93), total: credits(37000), remaining: credits(32756.07), percent: '11,5%' } },
+    { name: 'ledger priority', patch: { ledger_used_credits: 18658 }, remaining: 18342, total: 37000, percent: '49,6%' },
+    { name: 'zero ledger is data', patch: { ledger_used_credits: 0 }, remaining: 37000, total: 37000, percent: '100%' },
+    { name: 'ledger without quota', patch: { ledger_used_credits: 18658, limit_credits: null }, remaining: null, total: null, percent: '—' },
+    { name: 'zero quota has no percent', patch: { ledger_used_credits: 18658, limit_credits: 0 }, remaining: 0, total: 0, percent: '—' },
+    { name: 'overspend clamps remaining', patch: { ledger_used_credits: 40000 }, remaining: 0, total: 37000, percent: '0%' },
+    { name: 'null ledger retains reported values', patch: { ledger_used_credits: null }, remaining: 32756.07, total: 37000, percent: '88,5%' },
   ]) {
-    await setSnapshot({ available: true, fetchedAt: '2026-09-24T10:00:00.000Z', overview: { email: 'fixture@example.test', last_24h: { credits: 9999, requests: 20, failures: 0 } }, limits: [{ ...periodLimit, ...scenario.patch }] });
-    await dialog().getByRole('button', { name: 'Обновить статистику роутера', exact: true }).click();
-    await page.waitForFunction(expected => Object.entries(expected).every(([name, value]) => document.querySelector(`[data-limit-field="${name}"] dd`)?.textContent === value), scenario.expected);
-    for (const [name, value] of Object.entries(scenario.expected)) assert.equal(await field(name).innerText(), value, `${scenario.name}: ${name}`);
-    const expectedTrigger = scenario.expected.percent === '—' ? `Роутер · ${credits(9999)} кр./сут` : `Роутер · ${scenario.expected.percent}`;
-    assert.equal(await trigger().getAttribute('aria-label'), expectedTrigger, `${scenario.name}: trigger uses the same percentage as the card`);
+    await updateSnapshot(page, { ...sampleSnapshot(), limits: [{ ...period, ...scenario.patch }] });
+    assert.equal(await field('remaining').innerText(), scenario.remaining === null ? '—' : credits(scenario.remaining), scenario.name);
+    assert.equal(await field('total').innerText(), scenario.total === null ? '—' : credits(scenario.total), scenario.name);
+    assert.equal(await field('percent').innerText(), scenario.percent, scenario.name);
+    assert.equal(await trigger().getAttribute('aria-label'), scenario.percent === '—' ? 'Лимит' : `Лимит · ${scenario.percent} осталось`, scenario.name);
   }
-
-  // FREE_POOL entries must not hide the one available period quota, regardless of ordering.
-  const activeLimit = { ...periodLimit, limit_credits: 32000, ledger_used_credits: 8284.012071 };
-  const freePoolLimit = { key: 'free-pool-fixture', available: false, tier: null, state: 'FREE_POOL', reset_at: null, limit_credits: null, used_credits: null, remaining_credits: null, used_percent: null, ledger_used_credits: null };
-  for (const limits of [[activeLimit, freePoolLimit], [freePoolLimit, activeLimit]]) {
-    await setSnapshot({ available: true, fetchedAt: '2026-09-30T10:00:00.000Z', overview: { last_24h: { credits: 4073.63 } }, limits });
-    await dialog().getByRole('button', { name: 'Обновить статистику роутера', exact: true }).click();
-    await page.waitForFunction(firstKey => document.querySelectorAll('[data-router-limit]').length === 2
-      && document.querySelector('[data-router-limit] h3')?.textContent === firstKey
-      && document.querySelector('.router-usage-trigger')?.getAttribute('aria-label') === 'Роутер · 25,9%', limits[0].key);
-    assert.equal(await trigger().getAttribute('aria-label'), 'Роутер · 25,9%', 'The available quota uses ledger spend while the unavailable FREE_POOL remains separate');
-    assert.equal(await dialog().locator('[data-router-limit]').count(), 2, 'Both the active key and FREE_POOL card remain visible');
-    const activeCard = dialog().getByRole('region', { name: `Лимит: ${activeLimit.key}`, exact: true });
-    const freePoolCard = dialog().getByRole('region', { name: `Лимит: ${freePoolLimit.key}`, exact: true });
-    assert.equal(await activeCard.locator('[data-limit-field="used"] dd').innerText(), credits(8284.012071));
-    assert.equal(await activeCard.locator('[data-limit-field="total"] dd').innerText(), credits(32000));
-    assert.equal(await activeCard.locator('[data-limit-field="percent"] dd').innerText(), '25,9%');
-    assert.equal(await freePoolCard.locator('[data-limit-field="percent"] dd').innerText(), '—');
-    assert.match(await freePoolCard.innerText(), /Лимит этого ключа недоступен\./);
-    if (limits[0] === activeLimit) await page.screenshot({ path: 'artifacts/router-active-limit.png' });
+  const active = { ...period, limit_credits: 32000, ledger_used_credits: 8284.012071 };
+  const free = { key: 'free-pool-fixture', available: false, tier: null, state: 'FREE_POOL', limit_credits: null, used_credits: null, remaining_credits: null };
+  for (const limits of [[active, free], [free, active]]) {
+    await updateSnapshot(page, { ...sampleSnapshot(), limits });
+    assert.equal(await field('percent').innerText(), '74,1%');
+    assert.equal(await field('remaining').innerText(), credits(23715.987929));
+    assert.equal(await dialog().locator('[data-router-limit]').count(), 1);
+    assert.doesNotMatch(await dialog().innerText(), /FREE_POOL|free-pool-fixture/);
   }
-
-  for (const scenario of [
-    { name: 'An unavailable key cannot supply the badge percentage even if its numbers are present', limits: [{ ...activeLimit, available: false }] },
-    { name: 'Unknown availability is retained, so two possible quotas cannot supply a combined percentage', limits: [activeLimit, { ...periodLimit, key: 'unknown-fixture', available: null }] },
-  ]) {
-    await setSnapshot({ available: true, fetchedAt: '2026-09-30T10:01:00.000Z', overview: { last_24h: { credits: 4073.63 } }, limits: scenario.limits });
-    await dialog().getByRole('button', { name: 'Обновить статистику роутера', exact: true }).click();
-    await page.waitForFunction(({ count, label }) => document.querySelectorAll('[data-router-limit]').length === count
-      && document.querySelector('.router-usage-trigger')?.getAttribute('aria-label') === label,
-    { count: scenario.limits.length, label: `Роутер · ${credits(4073.63)} кр./сут` });
-    assert.equal(await trigger().getAttribute('aria-label'), `Роутер · ${credits(4073.63)} кр./сут`, scenario.name);
-    assert.equal(await dialog().locator('[data-router-limit]').count(), scenario.limits.length, 'Availability does not remove detailed cards');
+  for (const limits of [[{ ...active, available: false }], [active, { ...period, key: 'unknown', available: null }]]) {
+    await updateSnapshot(page, { ...sampleSnapshot(), limits });
+    assert.equal(await trigger().getAttribute('aria-label'), 'Лимит', 'Unavailable/multiple quotas never create a combined percentage');
+    assert.equal(await field('remaining').innerText(), '—'); assert.equal(await field('total').innerText(), '—');
   }
+  await updateSnapshot(page, { ...sampleSnapshot(), limits: [{ name: 'Codex', left: 75, limitCredits: null, usedCredits: null, remainingCredits: null, resetAt: null }], spend: { session: { credits: 0 }, today: { credits: null, partial: true, reason: 'Coverage unavailable', since: '2026-10-11T21:00:00Z' } } });
+  assert.equal(await field('percent').innerText(), '75%', 'Known percentage does not invent unknown credit amounts');
+  assert.equal(await field('remaining').innerText(), '—'); assert.equal(await field('total').innerText(), '—'); assert.equal(await field('reset').innerText(), '—');
+  assert.equal(await spend('session').innerText(), '0', 'Measured zero remains a number');
+  assert.equal(await spend('today').innerText(), '—', 'Unknown spend is never zero');
+  await updateSnapshot(page, { ...sampleSnapshot(), spend: { session: { credits: 5, partial: true, reason: 'Child session unavailable' }, today: { credits: 12, partial: true, since: '2026-10-12T08:00:00Z' } } });
+  assert.equal(await spend('session').innerText(), '5'); assert.equal(await spend('today').innerText(), '12');
+  for (const period of ['session', 'today']) assert.match(await dialog().locator(`[data-spend="${period}"]`).innerText(), /частич/i, 'Partial coverage stays visible');
+  assert.doesNotMatch(await dialog().innerText(), /NaN|Infinity|undefined/);
+  await updateSnapshot(page, { ...sampleSnapshot(), limits: [], limitReason: 'Fixture limit timeout' });
+  assert.match(await dialog().innerText(), /Fixture limit timeout/);
+  assert.equal(await spend('today').innerText(), credits(345.67), 'Quota failure preserves independently fetched spend');
+  await updateSnapshot(page, sampleSnapshot());
 
-  // Numeric zero is data; null means unavailable and is rendered as an em dash.
-  await setSnapshot({ available: true, fetchedAt: '2026-09-22T10:01:00.000Z', overview: { email: 'fixture@example.test', last_24h: { credits: 0, requests: 0, failures: 0 } }, limits: [{ key: 'coder-fixture', available: true, tier: 'TierA', state: 'ACTIVE', reset_at: null, limit_credits: null, used_credits: 0, remaining_credits: 0 }] });
-  const callsBeforeZero = await page.evaluate(() => window.__router.calls);
-  await dialog().getByRole('button', { name: 'Обновить статистику роутера', exact: true }).click();
-  await page.waitForFunction(before => window.__router.calls > before, callsBeforeZero);
-  assert.equal(await field('used').innerText(), '0');
-  assert.equal(await field('total').innerText(), '—');
-  assert.equal(await field('remaining').innerText(), '0');
-  assert.equal(await field('percent').innerText(), '—');
-  assert.equal(await field('reset').innerText(), '—');
-  assert.equal(await trigger().getAttribute('aria-label'), 'Роутер · 0 кр./сут', 'Without a published quota the trigger shows the measured daily spend, not «—»');
-  const zeroText = await dialog().innerText();
-  assert.match(zeroText, /Недостаточно данных для расчёта процента лимита\./, 'The popover explains why the percentage is missing');
-  assert.match(zeroText, /За 24 часа[\s\S]*0\s*кредитов/, 'A measured zero daily credit value remains visible');
-  assert.match(zeroText, /Запросы за 24 часа[\s\S]*0/, 'A measured zero request count remains visible');
-  assert.match(zeroText, /Ошибки за 24 часа[\s\S]*0/, 'A measured zero failure count remains visible');
-  assert.doesNotMatch(zeroText, /NaN|Infinity|undefined/);
-
-  // Two keys are shown separately; the trigger must not sum them.
-  await setSnapshot({ available: true, fetchedAt: '2026-09-22T10:02:00.000Z', overview: { email: 'fixture@example.test', last_24h: { credits: 9999, requests: 20, failures: 0 } }, limits: [
-    { key: 'coder-fixture', available: true, tier: 'TierA', state: 'ACTIVE', reset_at: '2026-09-28T03:00:00Z', limit_credits: 100, used_credits: 20, remaining_credits: 80 },
-    { key: 'review-fixture', available: true, tier: 'TierB', state: 'ACTIVE', reset_at: '2026-09-29T03:00:00Z', limit_credits: 50, used_credits: 7, remaining_credits: 43 },
-  ] });
-  await dialog().getByRole('button', { name: 'Обновить статистику роутера', exact: true }).click();
-  await page.waitForFunction(() => document.querySelectorAll('[data-router-limit]').length === 2);
-  assert.match(await trigger().getAttribute('aria-label'), /^Роутер · 9[\s  ]999 кр\.\/сут$/, 'Multiple keys show the daily spend, never a summed-up percentage');
-  assert.equal(await dialog().locator('[data-router-limit]').count(), 2);
-  assert.equal(await dialog().locator('[data-router-limit]').nth(0).locator('[data-limit-field="used"] dd').innerText(), '20');
-  assert.equal(await dialog().locator('[data-router-limit]').nth(1).locator('[data-limit-field="used"] dd').innerText(), '7');
-  assert.equal(await dialog().locator('[data-router-limit]').nth(1).locator('[data-limit-field="percent"] dd').innerText(), '14%');
-
-  // A limit endpoint failure retains independently fetched daily overview data.
-  await setSnapshot({ available: true, fetchedAt: '2026-09-22T10:03:00.000Z', limitReason: 'fixture limit timeout', overview: { email: 'fixture@example.test', last_24h: { credits: 9999, requests: 20, failures: 0 } }, limits: [] });
-  await dialog().getByRole('button', { name: 'Обновить статистику роутера', exact: true }).click();
-  await page.waitForFunction(() => document.querySelector('[role="dialog"]')?.innerText.includes('fixture limit timeout'));
-  assert.match(await dialog().innerText(), /Не удалось обновить лимиты: fixture limit timeout/);
-  assert.match(await dialog().innerText(), /9[\s\u00a0]?999\s*кредитов/);
-
-  await page.keyboard.press('Escape');
+  // An old request must not win after switching away and back to the tab.
+  await page.evaluate(() => { window.__limits.first.defer = true; window.__limits.first.current = { ...window.__limits.first.current, spend: { session: { credits: 999 }, today: { credits: 999 } } }; });
+  await dialog().getByRole('button', { name: 'Обновить лимиты', exact: true }).click();
+  await page.waitForFunction(() => Boolean(window.__limits.first.pending));
+  await page.locator('.session-tab[data-session-id="limits-b"]').getByRole('tab').click();
   await dialog().waitFor({ state: 'hidden' });
-  assert.equal(await trigger().evaluate(node => node === document.activeElement), true, 'Escape closes the dialog and restores trigger focus');
-
+  await page.evaluate(value => { window.__limits.first.current = value; }, sampleSnapshot());
+  await page.locator('.session-tab[data-session-id="limits-a"]').getByRole('tab').click();
+  await trigger().click(); await dialog().waitFor();
+  await page.waitForFunction(() => document.querySelector('[data-spend="session"] strong')?.textContent?.includes('125'));
+  await page.evaluate(() => window.__limits.first.pending()); await page.waitForTimeout(100);
+  assert.equal(await spend('session').innerText(), credits(125.5), 'A late response cannot overwrite the fresh activation');
+  await page.keyboard.press('Escape'); await dialog().waitFor({ state: 'hidden' });
+  assert.equal(await trigger().evaluate(node => node === document.activeElement), true);
   for (const size of [{ width: 940, height: 700 }, { width: 650, height: 700 }]) {
-    await page.setViewportSize(size); await flush();
-    await trigger().click(); await dialog().waitFor();
-    const box = await dialog().boundingBox();
-    assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= size.width + 1 && box.y + box.height <= size.height + 1, `Router usage dialog fits ${size.width}px viewport`);
+    await page.setViewportSize(size); await trigger().click(); await dialog().waitFor();
+    const bounds = await dialog().boundingBox();
+    assert.ok(bounds && bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= size.width + 1 && bounds.y + bounds.height <= size.height + 1, `Card fits ${size.width}px`);
+    assert.equal(await dialog().evaluate(node => node.scrollHeight <= node.clientHeight + 1), true, 'Normal card needs no internal scrollbar');
     await page.keyboard.press('Escape'); await dialog().waitFor({ state: 'hidden' });
   }
   assert.deepEqual(errors, []);
-  console.log('PASS: router usage appears only for model_provider=router; ledger spend priority, zero/null ledger and quotas, usage fallback, overspending, daily overview, available quota with FREE_POOL in both orders, unavailable and unknown availability, multiple keys, partial limit errors, refresh, Escape focus and narrow viewports are covered. Fixture bridge only; no real token or model request.');
+  console.log('PASS: compact credit limits; remaining percentage; ledger precedence; zero/unknown/overspend; free pool; ambiguous quotas; partial spend; stale-response isolation; Escape and narrow viewports. Fixture only; no CLI/model requests.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/router-usage-failure.png' }); console.error(await page.locator('body').innerText()); }
   throw error;
-} finally {
-  await browser?.close();
-  await new Promise(resolve => server.close(resolve));
-}
+} finally { await browser?.close(); await server.close(); }

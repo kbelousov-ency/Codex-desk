@@ -1,4 +1,7 @@
 ; Match the product palette. Native navigation controls keep Windows behaviour.
+!ifndef SETUP_ARGS
+  !define SETUP_ARGS ""
+!endif
 !define MUI_BGCOLOR "181A1C"
 !define MUI_TEXTCOLOR "E3E5E5"
 !define MUI_INSTFILESPAGE_COLORS "B6D8CC 141618"
@@ -10,7 +13,7 @@
 !macro deskCurrentUser
   ${If} ${isForAllUsers}
     ${IfNot} ${Silent}
-      MessageBox MB_OK|MB_ICONINFORMATION "Codex Desk устанавливается только для текущего пользователя. Запустите установщик без параметра /allusers."
+      MessageBox MB_OK|MB_ICONINFORMATION "Кузьмич устанавливается только для текущего пользователя. Запустите установщик без параметра /allusers."
     ${EndIf}
     SetErrorLevel 2
     Quit
@@ -37,22 +40,30 @@
 !macro customWelcomePage
   !define MUI_WELCOMEPAGE_TITLE_3LINES
   !define MUI_WELCOMEPAGE_TITLE "Добро пожаловать в ${PRODUCT_NAME}"
-  !define MUI_WELCOMEPAGE_TEXT "Установим приложение и подготовим рабочее пространство для ваших проектов.$\r$\n$\r$\nПри первом запуске мастер поможет выбрать Codex и Claude, установить нужные CLI, применить конфигурацию Codex и войти в аккаунт.$\r$\n$\r$\nПриложение устанавливается для текущего пользователя."
+  !ifdef APP_WELCOME_TEXT
+    !define MUI_WELCOMEPAGE_TEXT "${APP_WELCOME_TEXT}"
+  !else
+    !define MUI_WELCOMEPAGE_TEXT "Установим приложение и подготовим рабочее пространство для ваших проектов.$\r$\n$\r$\nПри первом запуске мастер поможет выбрать Codex и Claude, установить нужные CLI, применить конфигурацию Codex и войти в аккаунт.$\r$\n$\r$\nПриложение устанавливается для текущего пользователя."
+  !endif
   !insertmacro MUI_PAGE_WELCOME
 !macroend
 
 !macro customFinishPage
   Function DeskStartApp
     ${If} ${isUpdated}
-      StrCpy $1 "--updated"
+      StrCpy $1 "${SETUP_ARGS} --updated"
     ${Else}
-      StrCpy $1 ""
+      StrCpy $1 "${SETUP_ARGS}"
     ${EndIf}
     ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
   FunctionEnd
   !define MUI_FINISHPAGE_TITLE "${PRODUCT_NAME} установлен"
   !define MUI_FINISHPAGE_TITLE_3LINES
-  !define MUI_FINISHPAGE_TEXT "Откройте приложение, чтобы начать работу.$\r$\n$\r$\nМастер первоначальной настройки проверит агентов и предложит следующие шаги. Позже его можно открыть снова в настройках."
+  !if "${APP_FILENAME}" == "Kuzmich"
+    !define MUI_FINISHPAGE_TEXT "Откройте Кузьмич и войдите в Portal один раз в окне приложения — остальное Кузьмич настроит автоматически.$\r$\n$\r$\nМастер настройки можно открыть снова позже в настройках."
+  !else
+    !define MUI_FINISHPAGE_TEXT "Откройте приложение, чтобы начать работу.$\r$\n$\r$\nМастер первоначальной настройки проверит агентов и предложит следующие шаги. Позже его можно открыть снова в настройках."
+  !endif
   !define MUI_FINISHPAGE_RUN
   !define MUI_FINISHPAGE_RUN_TEXT "Открыть ${PRODUCT_NAME}"
   !define MUI_FINISHPAGE_RUN_FUNCTION "DeskStartApp"
@@ -89,9 +100,9 @@
   ${If} $0 != 0
     ${IfNot} ${Silent}
       ${If} $0 == 1
-        MessageBox MB_OK|MB_ICONEXCLAMATION "Закройте установленный Codex Desk и повторите действие. Приложение не будет закрыто автоматически."
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Закройте Кузьмича и повторите действие. Приложение не будет закрыто автоматически."
       ${Else}
-        MessageBox MB_OK|MB_ICONEXCLAMATION "Не удалось проверить, закрыт ли установленный Codex Desk. Закройте приложение и повторите действие."
+        MessageBox MB_OK|MB_ICONEXCLAMATION "Не удалось проверить, закрыт ли Кузьмич. Закройте приложение и повторите действие."
       ${EndIf}
     ${EndIf}
     Pop $2
