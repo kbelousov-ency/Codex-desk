@@ -4,15 +4,15 @@ import { createPortal } from 'react-dom';
 import { Archive, ArchiveRestore, EllipsisVertical, GitFork, Pencil, Trash2 } from 'lucide-react';
 import type { ThreadAction } from './types';
 import './archive.css';
-
 export type { ThreadAction } from './types';
 
-export default function ThreadMenu({ title, threadId, archived = false, active = true, disabled = false, onAction }: {
+export default function ThreadMenu({ title, threadId, archived = false, active = true, disabled = false, allowFork = true, onAction }: {
   title: string;
   threadId: string;
   archived?: boolean;
   active?: boolean;
   disabled?: boolean;
+  allowFork?: boolean;
   onAction(action: ThreadAction): void;
 }) {
   const [open, setOpen] = useState(false);
@@ -24,7 +24,7 @@ export default function ThreadMenu({ title, threadId, archived = false, active =
   const visible = open && active && !disabled;
   const actions = archived
     ? [{ action: 'delete' as const, label: 'Удалить', icon: Trash2 }, { action: 'restore' as const, label: 'Восстановить', icon: ArchiveRestore }]
-    : [{ action: 'rename' as const, label: 'Переименовать', icon: Pencil }, { action: 'fork' as const, label: 'Ответвить', icon: GitFork }, { action: 'archive' as const, label: 'В архив', icon: Archive }, { action: 'delete' as const, label: 'Удалить', icon: Trash2 }];
+    : [{ action: 'rename' as const, label: 'Переименовать', icon: Pencil }, ...(allowFork ? [{ action: 'fork' as const, label: 'Ответвить', icon: GitFork }] : []), { action: 'archive' as const, label: 'В архив', icon: Archive }, { action: 'delete' as const, label: 'Удалить', icon: Trash2 }];
   const close = (focus = false) => { setOpen(false); if (focus) trigger.current?.focus(); };
   const show = (last = false) => {
     if (!active || disabled) return;

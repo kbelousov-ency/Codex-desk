@@ -9,6 +9,8 @@ export function assertReleaseVersion(version) {
 
 export function installerFilename(version, channel = 'stable') {
   assertReleaseVersion(version);
-  if (!['stable', 'nightly'].includes(channel)) throw new Error('Неверный канал установщика.');
-  return `Codex-Desk${channel === 'nightly' ? '-Nightly' : ''}-Setup-${version}.exe`;
+  if (!['stable', 'nightly', 'experimental3'].includes(channel)) throw new Error('Неверный канал установщика.');
+  if (channel === 'experimental3') return `Kuzmich-Setup-${version}.exe`;
+  const suffix = channel === 'nightly' ? '-Nightly' : '';
+  return `Codex-Desk${suffix}-Setup-${version}.exe`;
 }

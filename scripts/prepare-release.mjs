@@ -24,7 +24,7 @@ export function releaseNotes(changelog, version) {
   const section = sections[index];
   const body = changelog.slice(section.index + section[0].length, sections[index + 1]?.index).trim();
   if (!body) throw new Error(`Раздел CHANGELOG.md для ${version} пуст.`);
-  return `# Codex Desk ${version}\n\n${body}\n`;
+  return `# Кузьмич ${version}\n\n${body}\n`;
 }
 
 // This prepares local review files only. Approval, git tag and GitHub publication

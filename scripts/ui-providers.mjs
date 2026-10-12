@@ -45,7 +45,14 @@ try {
       state.bridge = {
         async start() { calls.push({ id, provider, method: 'start', authBusy: claude && fixture.auth.loginInProgress }); if (claude && fixture.auth.loginInProgress) { for (const listener of state.listeners) listener({ type: 'auth', data: { state: 'opened' } }); throw new Error('Дождитесь завершения входа в Claude'); } if (state.fail) throw new Error('Claude CLI не найден'); return { initialize: {}, cwd, provider, capabilities: { compact: true, steer: true, terminal: true, mcp: !claude, archive: true, usage: claude }, models: [{ id: settings.model, model: settings.model, displayName: claude ? 'Claude Sonnet' : 'GPT-6-Astra', inputModalities: ['text', 'image'], supportedReasoningEfforts: (claude ? ['low', 'medium', 'high'] : ['high', 'ultra']).map(reasoningEffort => ({ reasoningEffort })), defaultReasoningEffort: 'high' }], executable: claude ? 'C:/CLI/claude.exe' : 'C:/CLI/codex.exe', account: null, config: { model: settings.model, model_reasoning_effort: settings.effort } }; },
         async getSettings() { return { ...settings }; },
-        async setSettings(patch) { calls.push({ id, method: 'setSettings', patch: { ...patch } }); Object.assign(settings, patch); },
+        // Every session of this fixture stays with its own agent: it answers like the host does for a
+        // dialogue that already owns a thread, so the renderer opens a separate tab. The in-place change
+        // of an empty dialogue is covered by scripts/ui-provider-switch.mjs.
+        async setSettings(patch) {
+          calls.push({ id, method: 'setSettings', patch: { ...patch } });
+          if (patch.provider && patch.provider !== provider) throw new Error('Смена агента открывает отдельный диалог.');
+          Object.assign(settings, patch);
+        },
         async getClaudeAuthStatus() {
           calls.push({ id, provider, method: 'getClaudeAuthStatus' });
           if (fixture.authStatusError) throw new Error(fixture.authStatusError);

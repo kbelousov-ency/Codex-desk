@@ -50,7 +50,7 @@ test('startup is shared and initializes before ready using a hidden shell-free p
     cwd: 'C:/project with spaces', windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
   }]);
   assert.deepEqual(h.frames.map((frame) => frame.method), ['initialize', 'initialized']);
-  assert.deepEqual(h.frames[0].params.clientInfo, { name: 'codex_desk', title: 'Codex Desk', version: '0.1.0' });
+  assert.deepEqual(h.frames[0].params.clientInfo, { name: 'codex_desk', title: 'Кузьмич', version: '0.1.0' });
   assert.equal(h.frames[0].params.capabilities.experimentalApi, true);
   assert.deepEqual(states, ['starting', 'ready']);
 });

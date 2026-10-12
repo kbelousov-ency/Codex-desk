@@ -94,7 +94,7 @@ export class ClaudeClient extends EventEmitter {
     this._session = null; this._startPromise = null; this._active = null; this._thread = null; this._relaunch = null;
     // A stopped transport may still own a live native process until exit/close.
     this._processes = new Set();
-    this._mutation = false; this._generation = 0; this.state = 'stopped'; this.capabilities = CLAUDE_CAPABILITIES;
+    this._mutation = false; this._generation = 0; this._wakePending = false; this.state = 'stopped'; this.capabilities = CLAUDE_CAPABILITIES;
   }
 
   start() {
@@ -397,9 +397,10 @@ export class ClaudeClient extends EventEmitter {
   }
 
   /** Registers a new in-progress turn on the open thread and announces it. */
-  _beginTurn({ id = randomUUID(), sourceInput, steers = new Map(), compaction = false }) {
+  _beginTurn({ id = randomUUID(), sourceInput, steers = new Map(), compaction = false, auto = false }) {
+    this._wakePending = false;
     const turn = { id, status: 'inProgress', items: [], startedAt: Math.floor(Date.now() / 1000) };
-    this._active = { ...turn, items: new Map(), sourceInput, steers, completedMessages: new Set(), latestText: null, compaction };
+    this._active = { ...turn, items: new Map(), sourceInput, steers, completedMessages: new Set(), latestText: null, compaction, auto };
     this._thread.turns ||= []; this._thread.turns.push(turn); this._thread.status = { type: 'active' };
     this._notify('turn/started', { threadId: this._thread.id, turn });
     return turn;
@@ -531,9 +532,24 @@ export class ClaudeClient extends EventEmitter {
     }
 
     if ((!frame.session_id || frame.session_id === session.id) && claudeTaskItem(frame)) { this._taskFrame(frame); return; }
-    // Resume replays are already read from native history. Never attach them to a new turn.
-    if (!this._active) return;
     if (frame.session_id && frame.session_id !== session.id) return;
+    // The CLI wakes itself after a finished background task and runs a follow-up turn without
+    // stdin input: an injected <task-notification> user frame, then assistant frames and result.
+    // Open a turn for that continuation instead of dropping it (measured live 2026-10-11).
+    // Resume replays are already read from native history and arrive before anything was sent
+    // in this process, so they still never open a turn.
+    if (!this._active && this._thread && session.sent && !frame.parent_tool_use_id) {
+      const text = frame.type === 'user' ? textContent(frame.message?.content) : '';
+      if (text.trim() && (this._wakePending || text.includes('<task-notification>'))) {
+        const summary = /<summary>([^<]{1,500})<[/]summary>/.exec(text)?.[1].trim();
+        const turn = this._beginTurn({ ...(UUID.test(frame.uuid || '') ? { id: frame.uuid } : {}),
+          sourceInput: [{ type: 'text', text: summary ? `Фоновая задача завершена: ${summary}` : text }], auto: true });
+        this._userEcho({ uuid: turn.id });
+        return;
+      }
+      if (this._wakePending && (frame.type === 'assistant' || frame.type === 'stream_event')) this._beginTurn({ sourceInput: null, auto: true });
+    }
+    if (!this._active) return;
     if (frame.type === 'stream_event' && !frame.parent_tool_use_id) this._stream(session, frame.event);
     else if (frame.type === 'assistant' && !frame.parent_tool_use_id) this._assistant(frame);
     else if (frame.type === 'user' && !frame.parent_tool_use_id) {
@@ -558,6 +574,8 @@ export class ClaudeClient extends EventEmitter {
   _taskFrame(frame) {
     const task = claudeTaskItem(frame);
     if (!task || !this._thread) return;
+    // A task finished while no turn is active: the CLI's own follow-up turn comes next.
+    if (!this._active && task.status !== 'running') this._wakePending = true;
     const turn = this._thread.turns?.findLast(turn => turn.items?.some(item => item.id === task.id || item.id === task.toolUseId))
       || this._thread.turns?.at(-1);
     if (!turn) return;
@@ -677,7 +695,7 @@ export class ClaudeClient extends EventEmitter {
   _result(frame) {
     const a = this._active; if (!a) return;
     const consumed = new Set([frame.user_message_uuid, ...(Array.isArray(frame.user_message_uuids) ? frame.user_message_uuids : [])].filter(Boolean));
-    if (consumed.size && !consumed.has(a.id) && ![...a.steers.keys()].some(id => consumed.has(id))) return;
+    if (consumed.size && !a.auto && !consumed.has(a.id) && ![...a.steers.keys()].some(id => consumed.has(id))) return;
     // A steer that reached the CLI after the final model round is not folded into
     // this turn; the CLI runs it as the next turn without further input.
     const pending = [...a.steers].filter(([id]) => consumed.size && !consumed.has(id));
@@ -733,7 +751,7 @@ export class ClaudeClient extends EventEmitter {
     const id = frame.request_id, request = frame.request;
     if (typeof id !== 'string' || !request || session.requests.has(id)) return;
     if (request.subtype !== 'can_use_tool' || !this._active) {
-      this._write(session, { type: 'control_response', response: { subtype: 'error', request_id: id, error: 'This Claude Desk operation is not supported.' } }).catch(() => {}); return;
+      this._write(session, { type: 'control_response', response: { subtype: 'error', request_id: id, error: 'This Кузьмич operation is not supported.' } }).catch(() => {}); return;
     }
     const name = request.tool_name, input = request.input || {};
     // Some tool cards require a dedicated interaction, not a yes/no approval.

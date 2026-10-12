@@ -13,7 +13,7 @@ foreach ($deskChannel in @('stable','nightly')) {
 $deadline = [DateTime]::UtcNow.AddDays(7)
 do {
   $runningPaths = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'Codex Desk.exe' } | ForEach-Object {
-    if (-not $_.ExecutablePath) { throw 'Cannot determine the path of a running Codex Desk. No cleanup performed.' }
+    if (-not $_.ExecutablePath) { throw 'Cannot determine the path of a running Kuzmich. No cleanup performed.' }
     [IO.Path]::GetFullPath($_.ExecutablePath)
   })
   $pending = @()

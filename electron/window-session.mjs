@@ -45,20 +45,22 @@ const threadUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 allowedMethods.add('message/status');
 readOnlyMethods.add('message/status');
 
-export function cleanSettings(patch) {
+export function cleanSettings(patch, routerOnly = false) {
   const clean = {};
   for (const key of ['cwd', 'model', 'effort', 'access', 'executable']) {
     if (typeof patch?.[key] === 'string' && patch[key].length < 4096) clean[key] = patch[key];
   }
   if (patch?.provider === 'codex' || patch?.provider === 'claude') clean.provider = patch.provider;
-  if (['inherited', 'account', 'router'].includes(patch?.connectionSource)) clean.connectionSource = patch.connectionSource;
+  if (['inherited', 'account', 'router'].includes(patch?.connectionSource)) clean.connectionSource = routerOnly ? 'router' : patch.connectionSource;
+  if (routerOnly) clean.connectionSource = 'router';
   return clean;
 }
 
 /** Shared defaults on disk; existing sessions keep their own snapshot on reconnect. */
 export class SettingsStore {
-  constructor(filename) {
+  constructor(filename, { routerOnly = false } = {}) {
     this.filename = filename;
+    this.routerOnly = routerOnly;
     this.queue = Promise.resolve();
   }
 
@@ -70,7 +72,7 @@ export class SettingsStore {
     }
     catch (error) {
       if (error.code === 'ENOENT') return {};
-      throw new Error('Не удалось прочитать настройки Codex Desk.');
+      throw new Error('Не удалось прочитать настройки Кузьмича.');
     }
   }
 
@@ -82,7 +84,7 @@ export class SettingsStore {
   }
 
   update(patch) {
-    const clean = cleanSettings(patch);
+    const clean = cleanSettings(patch, this.routerOnly);
     return this._update(previous => ({ ...previous, ...clean }));
   }
 
@@ -91,12 +93,12 @@ export class SettingsStore {
     if (!['codex', 'claude'].includes(provider)) throw new Error('Неизвестный агент.');
     // Legacy top-level values belong to Codex. They never seed Claude defaults.
     const profile = current.providers?.[provider];
-    return { ...cleanSettings(profile || (provider === 'codex' ? current : {})), ...(current.cwd ? { cwd: current.cwd } : {}), provider };
+    return { ...cleanSettings(profile || (provider === 'codex' ? current : {}), this.routerOnly), ...(current.cwd ? { cwd: current.cwd } : {}), provider };
   }
 
   updateProvider(provider, patch) {
     if (!['codex', 'claude'].includes(provider)) throw new Error('Неизвестный агент.');
-    const clean = cleanSettings(patch); delete clean.provider;
+    const clean = cleanSettings(patch, this.routerOnly); delete clean.provider;
     return this._update(previous => {
       const priorProfile = cleanSettings(previous.providers?.[provider] || (provider === 'codex' ? previous : {}));
       delete priorProfile.provider;
@@ -180,8 +182,9 @@ export class WindowSession {
     resolveExecutable = findCodex, fallbackCwd = process.cwd(), launchTerminal = launchSessionTerminal, threadActions = null,
     diagnostics = null, diagnosticContext = {}, createClaudeClient = options => new ClaudeClient(options), resolveClaudeExecutable = findClaude, attachmentsDirectory, claudeHistory, claudeAuth = null,
     claudeEnvironment = async () => ({}), claudeGate = null, codexEnvironment = async () => ({}),
-    approvalCatalog = null } = {}) {
-    this.settings = cleanSettings(settings);
+    approvalCatalog = null, routerOnly = false, providerDefaults = null } = {}) {
+    this.routerOnly = Boolean(routerOnly);
+    this.settings = cleanSettings(settings, this.routerOnly);
     // Standing approvals the user already agreed to; null simply means every card still stands.
     this.approvalCatalog = approvalCatalog;
     // Host-managed variables for Claude CLI processes (long-lived OAuth token) and the shared start gate.
@@ -192,6 +195,8 @@ export class WindowSession {
     this.switchingSource = false;
     this.sourceStoppingClient = null;
     this.claudeGate = claudeGate;
+    // Saved settings of the other agent, read when this tab changes agent in place.
+    this.providerDefaults = providerDefaults;
     this.persistSettings = persistSettings;
     this.send = send;
     this.onCwd = onCwd;
@@ -248,9 +253,10 @@ export class WindowSession {
   setSettings(patch) {
     this.assertActive();
     this.assertLocalControl();
-    const clean = cleanSettings(patch);
-    if (clean.provider && clean.provider !== (this.settings.provider || 'codex')) throw new Error('Смена агента открывает отдельный диалог.');
+    const clean = cleanSettings(patch, this.routerOnly);
     if (patch?.connectionSource !== undefined && !['inherited', 'account', 'router'].includes(patch.connectionSource)) throw new Error('Неизвестный источник подключения.');
+    // An agent change takes the other agent's own saved settings, so a source in the same patch is ignored.
+    if (clean.provider && clean.provider !== (this.settings.provider || 'codex')) return this._startProviderSwitch(clean.provider);
     if (clean.connectionSource && clean.connectionSource !== (this.settings.connectionSource || 'inherited')) {
       if (this.pendingBoots || this.pendingMutations || this.requests.size || this.activeThreadTurns.size || this.compactingThreads.size) throw new Error('Дождитесь завершения работы и подтверждений перед переключением источника.');
       this.threadActions?.assertAllowed(this.currentThreadId);
@@ -262,17 +268,53 @@ export class WindowSession {
     return this.persistSettings(clean);
   }
 
+  /**
+   * Change the agent of an EMPTY dialogue in place. A started thread belongs to the agent that owns its
+   * history and cannot move, so that case keeps opening a separate tab with the same message as before.
+   */
+  _startProviderSwitch(provider) {
+    if (this.currentThreadId != null || !this.providerDefaults) throw new Error('Смена агента открывает отдельный диалог.');
+    if (this.pendingBoots || this.pendingMutations || this.requests.size || this.activeThreadTurns.size || this.compactingThreads.size) throw new Error('Дождитесь завершения работы и подтверждений перед сменой агента.');
+    this.threadActions?.assertAllowed(this.currentThreadId);
+    // Reserve synchronously so a queued send cannot race with environment validation.
+    this.switchingSource = true;
+    return this._switchRunningClient({
+      prepare: async () => {
+        // Model, reasoning effort, access and source come from the new agent's own profile; only the folder stays.
+        const stored = cleanSettings(await this.providerDefaults(provider), this.routerOnly);
+        const cwd = this.currentCwd || this.settings.cwd;
+        const next = { ...stored, provider, ...(cwd ? { cwd } : {}) };
+        // Full access is never inherited into a Claude tab, exactly as when a new one is created.
+        if (provider === 'claude' && next.access === 'danger-full-access') next.access = 'workspace-write';
+        return next;
+      },
+      // Nothing to save: the values were just read from the store, and the following boot persists the folder.
+      failure: 'Не удалось сменить агента. Переподключите диалог и повторите.',
+    });
+  }
+
   async _connectionProfile(settings) {
     if (settings.provider === 'claude') return claudeConnectionProfile(await this.claudeEnvironment({ ...settings }));
     const profile = await this.codexEnvironment({ ...settings });
     return profile && typeof profile === 'object' && !Array.isArray(profile) ? profile : {};
   }
 
-  async _switchConnectionSource(clean) {
+  _switchConnectionSource(clean) {
+    return this._switchRunningClient({ prepare: () => ({ ...this.settings, ...clean }), persisted: clean,
+      failure: 'Не удалось переключить источник подключения. Переподключите диалог и повторите.' });
+  }
+
+  /**
+   * One pipeline for every in-place switch of this tab's running client: settle the next settings, validate
+   * the credentials, only then detach and stop the working process, save and adopt. `switchingSource` has to
+   * be reserved by the caller before its first await.
+   */
+  async _switchRunningClient({ prepare, persisted = null, failure }) {
     const generation = this.generation;
-    const next = { ...this.settings, ...clean };
     let detached = false;
     try {
+      const next = await prepare();
+      this.assertActive(generation);
       // Validate credentials before detaching the working process; no model request is made.
       const profile = await this._connectionProfile(next);
       this.assertActive(generation);
@@ -284,15 +326,17 @@ export class WindowSession {
       if (previous) await previous.stopAndWait();
       this.assertActive(generation);
       this.sourceStoppingClient = null;
-      await this.persistSettings(clean);
-      this.assertActive(generation);
+      if (persisted) {
+        await this.persistSettings(persisted);
+        this.assertActive(generation);
+      }
       this.settings = next;
       this.connectionProfile = null;
       this.preparedConnectionProfile = { provider: next.provider || 'codex', source: next.connectionSource, cwd: next.cwd, executable: next.executable, profile };
     } catch (error) {
       // Old-client events are intentionally ignored after detaching it. Surface
       // a failed shutdown/save so the renderer cannot keep a stale ready state.
-      if (detached && !this.disposed && generation === this.generation) this.send('status', { state: 'error', message: 'Не удалось переключить источник подключения. Переподключите диалог и повторите.' });
+      if (detached && !this.disposed && generation === this.generation) this.send('status', { state: 'error', message: failure });
       throw error;
     } finally { this.switchingSource = false; }
   }
@@ -428,14 +472,17 @@ export class WindowSession {
         validatedConfig || owned.request('config/read', { cwd, includeLayers: false }),
       ]);
       checkCurrent();
+      // An inherited Claude tab is routed by the CLI's own settings file, which reports no
+      // model_provider; the profile marker is the only evidence the tab talks to the router.
       const routerSource = this.settings.connectionSource === 'router'
         || connection?.modelProvider === 'router'
+        || Boolean(connection?.inheritedRouter)
         || configResponse.config?.model_provider === 'router';
       const visibleModels = augmentRouterModels(models, provider, routerSource ? 'router' : this.settings.connectionSource);
       await this.setSettings({ cwd });
       checkCurrent();
       const cliVersion = provider === 'claude' ? (typeof initialize?.version === 'string' ? initialize.version : undefined) : codexVersionFrom(initialize?.userAgent);
-      this.bootstrap = { initialize, models: visibleModels, account, config: publicConfig(configResponse.config), cwd, executable: nextExecutable, provider, ...(cliVersion ? { cliVersion } : {}),
+      this.bootstrap = { initialize, models: visibleModels, account, config: publicConfig(configResponse.config), cwd, executable: nextExecutable, provider, ...(cliVersion ? { cliVersion } : {}), ...(routerSource ? { routerSource: true } : {}),
         capabilities: provider === 'claude' ? { ...CLAUDE_CAPABILITIES } : { compact: true, steer: true, terminal: true, mcp: true, archive: true, usage: false } };
       return this.bootstrap;
     } catch (error) {
@@ -455,7 +502,7 @@ export class WindowSession {
   async request(method, params = {}) {
     this.assertActive();
     if (this.switchingSource) throw new Error('Дождитесь переключения источника подключения.');
-    if (!allowedMethods.has(method)) throw new Error('Этот метод недоступен в Codex Desk.');
+    if (!allowedMethods.has(method)) throw new Error('Этот метод недоступен в Кузьмиче.');
     if (params.threadId && (this.settings.provider === 'claude') !== String(params.threadId).startsWith('claude:')) throw new Error('Диалог принадлежит другому агенту.');
     const mutation = !readOnlyMethods.has(method);
     if (mutation) {

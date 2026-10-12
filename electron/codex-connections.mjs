@@ -46,7 +46,7 @@ export function buildCodexConnectionProfile({ source = 'inherited', processEnv =
   if (!['account', 'router'].includes(source)) throw new Error('Неизвестный источник подключения.');
   const env = { ...processEnv };
   for (const key of Object.keys(env)) if (['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'CODEX_DESK_ROUTER_TOKEN'].includes(key.toUpperCase())) delete env[key];
-  // These native names remain resolvable by a normal `codex resume` outside Desk.
+  // These native names remain resolvable by a normal `codex resume` Кузьмич.
   // Never inject a new provider table: Codex persists its name in the transcript.
   const modelProvider = source === 'router' ? 'router' : 'openai';
   let expectedConnection = { source: 'account' };

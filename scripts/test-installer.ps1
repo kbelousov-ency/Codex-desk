@@ -1,4 +1,4 @@
-param(
+﻿param(
   [string]$Installer = '',
   [switch]$Cleanup,
   [switch]$Update,
@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 $deskRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $artifactRoot = [IO.Path]::GetFullPath((Join-Path $deskRoot 'artifacts'))
 $channel = if ($Nightly) { 'nightly' } else { 'stable' }
-$productLabel = if ($Nightly) { 'Codex Desk Nightly' } else { 'Codex Desk' }
+$productLabel = if ($Nightly) { 'Кузьмич Nightly' } else { 'Кузьмич' }
 $installerGuid = if ($Nightly) { 'f3d5f7cf-6c7d-5a59-bdfc-1ab813ae4778' } else { 'c9b20eca-5a9a-5a4d-9498-438701eb97b0' }
 $updaterDirectory = if ($Nightly) { 'codex-desk-nightly-updater' } else { 'codex-desk-updater' }
 $installKey = 'Software\' + $installerGuid
@@ -61,7 +61,7 @@ function Assert-NoInstalledProduct([string]$TestInstallPath = '') {
           if ($null -ne $key) {
             try {
               if (-not $TestInstallPath -or $scope -ne [Microsoft.Win32.RegistryHive]::CurrentUser) {
-                throw 'A Codex Desk installation already exists. Test refused before mutation.'
+                throw 'A Kuzmich installation already exists. Test refused before mutation.'
               }
               if ($name -eq $installKey) {
                 $registeredPath = [string]$key.GetValue('InstallLocation')
@@ -82,9 +82,9 @@ function Assert-NoInstalledProduct([string]$TestInstallPath = '') {
               $key = $uninstall.OpenSubKey($name)
               if ($null -eq $key) { continue }
               try {
-                if ([string]$key.GetValue('DisplayName') -match '^Codex Desk(?:\s|$)') {
+                if ([string]$key.GetValue('DisplayName') -match '^(?:Codex Desk|Кузьмич)(?:\s|$)') {
                   if (-not $TestInstallPath -or $scope -ne [Microsoft.Win32.RegistryHive]::CurrentUser -or $name -ne $installerGuid) {
-                    throw 'An existing Codex Desk product was found. Test refused before mutation.'
+                    throw 'An existing Kuzmich product was found. Test refused before mutation.'
                   }
                 }
               } finally { $key.Dispose() }
@@ -207,7 +207,7 @@ if ($Cleanup -or $Update) {
   if ($location -and [IO.Path]::GetFullPath($location).TrimEnd('\') -ne $installPath) { throw 'Registry belongs to another installation. Test refused.' }
   Assert-NoInstalledProduct $installPath
   foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name = 'Codex Desk.exe'")) {
-    if (-not $process.ExecutablePath) { throw 'Cannot identify a running Codex Desk. Test refused.' }
+    if (-not $process.ExecutablePath) { throw 'Cannot identify a running Kuzmich. Test refused.' }
     if ([IO.Path]::GetFullPath($process.ExecutablePath).StartsWith($installPath + '\', [StringComparison]::OrdinalIgnoreCase)) {
       throw 'Close the test app before update or cleanup. No process will be terminated.'
     }

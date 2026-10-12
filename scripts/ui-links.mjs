@@ -77,7 +77,7 @@ try {
   const actions = id => page.evaluate(id => window.__links.sessions[id].actions, id);
   const cases = [
     ['Посмотреть интерфейс', 'E:/My projects/CodexDesk/artifacts/x.png'],
-    ['Актуальный Codex Desk.exe', '/E:/My projects/CodexDesk/release/win-unpacked/Codex Desk.exe'],
+    ['Актуальный Кузьмич.exe', '/E:/My projects/CodexDesk/release/win-unpacked/Codex Desk.exe'],
     ['Относительный файл', 'docs/My%20Report.md'],
     ['Файл с кириллицей', 'file:///E:/%D0%9F%D1%80%D0%BE%D0%B5%D0%BA%D1%82/%D0%A4%D0%B0%D0%B9%D0%BB.txt'],
     ['Строка исходника', '/E:/My projects/CodexDesk/src/App.tsx:48'],

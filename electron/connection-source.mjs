@@ -1,8 +1,9 @@
-import { mkdtemp, writeFile, unlink, rmdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, unlink, rmdir, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 export const CONNECTION_SOURCES = new Set(['inherited', 'account', 'router']);
+const MAX_CLAUDE_SETTINGS_BYTES = 512 * 1024;
 
 // Only connection credentials/routing are overridden. Instructions, tools, permissions,
 // CLAUDE_CONFIG_DIR and the native transcript directory retain their normal scope.
@@ -16,10 +17,30 @@ const providerKeys = ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAU
 const modelFamilies = new Set(['opus', 'fable', 'sonnet', 'haiku']);
 const modelEnvironmentKeys = ['ANTHROPIC_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', ...[...modelFamilies].flatMap(family => [`ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`, `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL_NAME`])];
 
+/** An inherited tab is routed by the CLI's own settings file, not by Кузьмич: the credentials live in
+ * `env` there and never reach the launch environment. Read them read-only so usage can be reported
+ * for that tab, the same way the Codex provider table is read. Returns null when the CLI is personal. */
+export async function readInheritedClaudeRouter({ env = process.env, read = readFile } = {}) {
+  try {
+    const directory = env.CLAUDE_CONFIG_DIR || path.join(env.USERPROFILE || os.homedir(), '.claude');
+    const bytes = await read(path.join(directory, 'settings.json'));
+    if (Buffer.byteLength(bytes) > MAX_CLAUDE_SETTINGS_BYTES) return null;
+    const values = JSON.parse(bytes.toString('utf8'))?.env;
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return null;
+    const apiKey = [values.ANTHROPIC_AUTH_TOKEN, values.ANTHROPIC_API_KEY]
+      .find(value => typeof value === 'string' && value.trim() && value.length <= 8192 && !/[\x00-\x20\x7f]/.test(value));
+    if (!apiKey || typeof values.ANTHROPIC_BASE_URL !== 'string' || values.ANTHROPIC_BASE_URL.length > 2048) return null;
+    const url = new URL(values.ANTHROPIC_BASE_URL);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return null;
+    return { baseUrl: url.href.replace(/\/$/, ''), apiKey };
+  } catch { return null; }
+}
+
 /** Resolve one process's source; never mutate process.env, CLI settings or credential files. */
-export function buildClaudeConnectionProfile({ source = 'inherited', processEnv = process.env, accountEnv = {}, router } = {}) {
+export function buildClaudeConnectionProfile({ source = 'inherited', processEnv = process.env, accountEnv = {}, router, inheritedRouter } = {}) {
   if (!CONNECTION_SOURCES.has(source)) throw new Error('Неизвестный источник подключения.');
-  if (source === 'inherited') return { env: { ...processEnv, ...accountEnv }, inheritEnv: false };
+  // The marker only records that the inherited CLI is already routed; its environment stays untouched.
+  if (source === 'inherited') return { env: { ...processEnv, ...accountEnv }, inheritEnv: false, ...(inheritedRouter ? { inheritedRouter } : {}) };
   const overrides = Object.fromEntries([...credentialKeys.map(key => [key, '']), ...modelEnvironmentKeys.map(key => [key, '']), ...providerKeys.map(key => [key, '0'])]);
   if (source === 'account') {
     overrides.ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
@@ -55,7 +76,7 @@ export function claudeConnectionProfile(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   if (value.inheritEnv === false) {
     if (!value.env || typeof value.env !== 'object' || Array.isArray(value.env)) throw new Error('Некорректное окружение Claude.');
-    return { env: { ...value.env }, inheritEnv: false, ...(value.settingsOverrides ? { settingsOverrides: value.settingsOverrides } : {}), ...(value.settingsFile ? { settingsFile: value.settingsFile } : {}) };
+    return { env: { ...value.env }, inheritEnv: false, ...(value.settingsOverrides ? { settingsOverrides: value.settingsOverrides } : {}), ...(value.settingsFile ? { settingsFile: value.settingsFile } : {}), ...(value.inheritedRouter ? { inheritedRouter: value.inheritedRouter } : {}) };
   }
   return Object.keys(value).length ? { env: { ...value } } : {};
 }

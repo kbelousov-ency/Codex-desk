@@ -223,7 +223,7 @@ export class CodexClient extends EventEmitter {
       });
 
       const result = await this.request('initialize', {
-        clientInfo: { name: 'codex_desk', title: 'Codex Desk', version: '0.1.0' },
+        clientInfo: { name: 'codex_desk', title: 'Кузьмич', version: '0.1.0' },
         capabilities: { experimentalApi: true, requestAttestation: false },
       });
       await this._write(session, { method: 'initialized' });

@@ -83,13 +83,13 @@ export function ReleaseNotesDialog({ control, onClose }: ReleaseNotesDialogProps
   };
   const state = control.state;
   const currentVersion = state?.currentVersion || '';
-  const range = state?.previousVersion && state.previousVersion !== currentVersion ? `${state.previousVersion} → ${currentVersion}` : currentVersion ? `Версия ${currentVersion}` : 'Изменения Codex Desk';
+  const range = state?.previousVersion && state.previousVersion !== currentVersion ? `${state.previousVersion} → ${currentVersion}` : currentVersion ? `Версия ${currentVersion}` : 'Изменения Кузьмича';
   const releases = state?.releases || [];
   const busy = acknowledging;
 
   return <div className="modal-backdrop release-notes-backdrop" onClick={event => { if (event.target === event.currentTarget && !busy) onClose(); }}>
     <section className="settings-modal release-notes-dialog" role="dialog" aria-modal="true" aria-labelledby="release-notes-title" ref={dialog}>
-      <div className="modal-header"><div><div className="eyebrow"><Sparkles size={12} aria-hidden="true" /> CODEX DESK</div><h2 id="release-notes-title">Что нового?</h2><p className="release-notes-range">{range}</p></div><button type="button" className="icon-button" aria-label="Закрыть страницу «Что нового?»" data-tooltip="Закрыть" ref={closeButton} disabled={busy} onClick={onClose}><X size={18} /></button></div>
+      <div className="modal-header"><div><div className="eyebrow"><Sparkles size={12} aria-hidden="true" /> КУЗЬМИЧ</div><h2 id="release-notes-title">Что нового?</h2><p className="release-notes-range">{range}</p></div><button type="button" className="icon-button" aria-label="Закрыть страницу «Что нового?»" data-tooltip="Закрыть" ref={closeButton} disabled={busy} onClick={onClose}><X size={18} /></button></div>
       <div className="settings-content release-notes-content">
         {control.loading && <p className="release-notes-status" role="status"><LoaderCircle className="spin" size={15} /> Загружаем изменения релиза…</p>}
         {!control.loading && control.error && <p className="release-notes-error" role="alert">{control.error}</p>}
@@ -99,7 +99,7 @@ export function ReleaseNotesDialog({ control, onClose }: ReleaseNotesDialogProps
             <h3>Версия {release.version}</h3>
             {release.items.length ? <ul>{release.items.map((item, index) => <li key={`${release.version}-${index}`}>{item}</li>)}</ul> : <p className="release-notes-empty">Для этой версии нет отдельных заметок.</p>}
           </section>)}
-          {!releases.length && <div className="release-notes-fallback"><Check size={17} aria-hidden="true" /><p>Codex Desk{currentVersion ? ` ${currentVersion}` : ''} установлен. Подробные заметки для этой версии пока не добавлены.</p></div>}
+          {!releases.length && <div className="release-notes-fallback"><Check size={17} aria-hidden="true" /><p>Кузьмич{currentVersion ? ` ${currentVersion}` : ''} установлен. Подробные заметки для этой версии пока не добавлены.</p></div>}
         </>}
         {acknowledgeError && <p className="release-notes-error" role="alert">{acknowledgeError}</p>}
       </div>

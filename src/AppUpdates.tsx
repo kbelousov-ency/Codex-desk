@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Download, LoaderCircle, RefreshCw, X } from 'lucide-react';
-import { BuildDetails, useBuildInfo } from './BuildInfo';
+import { BuildDetails, useBuildInfo, useProductName } from './BuildInfo';
 import type { AppUpdateStatus } from './types';
 import './app-updates.css';
 
@@ -71,11 +71,12 @@ export function useAppUpdates() {
 type UpdateControl = ReturnType<typeof useAppUpdates>;
 
 export function AppUpdateBanner({ control, onDetails }: { control: UpdateControl; onDetails(): void }) {
+  const productName = useProductName();
   const { status, pending, failure } = control;
   if (!control.bannerVisible || !status) return null;
   return <aside className="app-update-banner" aria-label="Доступно обновление приложения">
     <Download size={17} aria-hidden="true" />
-    <div className="app-update-banner-copy" role="status"><strong>Доступен Codex Desk {status.latestVersion}</strong><span>{failure ? failure.message : control.downloadOpened ? 'Загрузка открыта в браузере. Запустите скачанный установщик.' : 'Новая версия готова к скачиванию.'}</span></div>
+    <div className="app-update-banner-copy" role="status"><strong>Доступен {productName} {status.latestVersion}</strong><span>{failure ? failure.message : control.downloadOpened ? 'Загрузка открыта в браузере. Запустите скачанный установщик.' : 'Новая версия готова к скачиванию.'}</span></div>
     <div className="app-update-banner-actions">
       <button type="button" className="primary-button" disabled={Boolean(pending)} onClick={control.download}><Download size={13} /> Скачать обновление</button>
       <button type="button" className="text-button" onClick={onDetails}>Подробнее</button>
@@ -100,6 +101,7 @@ function statusText(status: AppUpdateStatus) {
 }
 
 export function AppUpdateDialog({ control, onClose }: { control: UpdateControl; onClose(): void }) {
+  const productName = useProductName();
   const { status, pending, failure } = control;
   const dialog = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
@@ -124,7 +126,7 @@ export function AppUpdateDialog({ control, onClose }: { control: UpdateControl; 
   const local = status && status.channel !== 'stable';
   return <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="settings-modal app-update-dialog" role="dialog" aria-modal="true" aria-labelledby="app-updates-title" ref={dialog}>
-      <div className="modal-header"><div><div className="eyebrow"><RefreshCw size={12} aria-hidden="true" /> CODEX DESK</div><h2 id="app-updates-title">Обновления приложения</h2></div><button type="button" className="icon-button" aria-label="Закрыть обновления приложения" data-tooltip="Закрыть" ref={closeButton} onClick={onClose}><X size={18} /></button></div>
+      <div className="modal-header"><div><div className="eyebrow"><RefreshCw size={12} aria-hidden="true" /> {productName.toUpperCase()}</div><h2 id="app-updates-title">Обновления приложения</h2></div><button type="button" className="icon-button" aria-label="Закрыть обновления приложения" data-tooltip="Закрыть" ref={closeButton} onClick={onClose}><X size={18} /></button></div>
       <div className="settings-content">
         <BuildDetails />
         {!status && !failure && <p className="app-update-status" role="status"><LoaderCircle className="spin" size={15} /> Загружаем сведения об обновлениях…</p>}

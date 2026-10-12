@@ -119,6 +119,13 @@ try {
   await page.getByRole('heading', { name: 'Настроим ваше рабочее место' }).waitFor();
   await page.getByRole('checkbox', { name: 'Установить Codex CLI', exact: true }).waitFor();
   assert.equal(await page.getByRole('checkbox', { name: 'Установить Codex CLI', exact: true }).isDisabled(), true);
+  // Тема «Кузьмича» живёт на data-атрибуте корня: в обычных каналах его нет, а цвета и
+  // шрифт остаются прежними. Эта проверка ловит правило темы, случайно оставленное без области.
+  assert.deepEqual(await page.evaluate(() => {
+    const button = document.querySelector('.setup-button.is-primary');
+    const style = getComputedStyle(button);
+    return [document.documentElement.dataset.theme ?? '(none)', style.backgroundColor, style.fontFamily.split(',')[0], getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()];
+  }), ['(none)', 'rgb(182, 210, 191)', '"Segoe UI Variable"', '#b6d8cc']);
   await page.screenshot({ path: 'artifacts/setup-agents.png' });
   await page.setViewportSize({ width: 800, height: 600 });
   await page.screenshot({ path: 'artifacts/setup-agents-compact.png' });
@@ -203,7 +210,7 @@ try {
   await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
   await page.getByRole('heading', { name: 'Настройка сохранена' }).waitFor();
   assert.equal(await page.getByRole('radio').count(), 0);
-  await page.getByRole('button', { name: 'Открыть Codex Desk', exact: true }).click();
+  await page.getByRole('button', { name: 'Открыть Кузьмич', exact: true }).click();
   assert.deepEqual(await page.evaluate(() => window.__setup.calls.filter(call => call.method === 'complete')), [{ method: 'complete', options: { deferred: false } }]);
   assert.equal(await page.evaluate(() => window.__setup.calls.some(call => ['authStatus', 'install', 'applyConfig'].includes(call.method))), false);
 
@@ -223,7 +230,7 @@ try {
     await page.getByRole('button', { name: 'Оставить текущую', exact: true }).click();
     await page.getByRole('button', { name: 'Войти позже', exact: true }).click();
     await page.getByRole('heading', { name: 'Память ваших проектов' }).waitFor();
-    await page.getByText('Настройка правил доступна в установленном приложении Codex Desk.', { exact: true }).waitFor();
+    await page.getByText('Настройка правил доступна в установленном приложении Кузьмич.', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Продолжить', exact: true }).click();
     await page.getByText('Агент для новых диалогов', { exact: true }).waitFor();
     assert.equal(await page.getByRole('radio', { name: 'Claude', exact: true }).isChecked(), true);
@@ -365,7 +372,7 @@ try {
   await page.waitForFunction(() => window.__setup.calls.some(call => call.method === 'cancelPortalConfig' && call.flowId === 'flow-1'));
   assert.equal(await page.evaluate(() => window.__setup.calls.some(call => call.method === 'pollPortalConfig')), false);
   assert.deepEqual(errors, []);
-  console.log('Setup wizard browser checks passed: installation, browser confirmation/pending/reopen/denial/restart, explicit portal apply, cancellation/navigation/late replies, file import, auth polling, memory rules, responsive layout and default agent. No real CLI, portal or model calls.');
+  console.log('Setup wizard browser checks passed: installation, browser confirmation/pending/reopen/denial/restart, explicit portal apply, cancellation/navigation/late replies, file import, auth polling, memory rules, responsive layout, default agent and the untouched default palette (no Kuzmich theme attribute). No real CLI, portal or model calls.');
 } finally {
   await browser?.close();
   await server.close();

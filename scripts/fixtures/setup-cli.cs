@@ -13,6 +13,13 @@ public class SetupCliFixture {
         Console.InputEncoding = new UTF8Encoding(false); Console.OutputEncoding = new UTF8Encoding(false);
         string provider = Path.GetFileNameWithoutExtension(Environment.GetCommandLineArgs()[0]).ToLowerInvariant();
         File.AppendAllText(Path.Combine(root, "calls.jsonl"), Json.Serialize(new { provider = provider, args = args }) + "\n");
+        // Account isolation supplies native Claude settings before its command.
+        // Keep the original argv in the audit log; accept only an existing file.
+        if (provider == "claude" && args.Length >= 2 && args[0] == "--settings") {
+            if (!Path.IsPathRooted(args[1]) || !File.Exists(args[1])) return 2;
+            string[] command = new string[args.Length - 2];
+            Array.Copy(args, 2, command, 0, command.Length); args = command;
+        }
         if (args.Length == 1 && args[0] == "--version") {
             Console.WriteLine(provider == "claude" ? "2.1.278 (Claude Code)" : "codex-cli 0.154.0"); return 0;
         }

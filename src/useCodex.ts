@@ -72,6 +72,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [config, setConfig] = useState<any>(null);
   const [executable, setExecutable] = useState('');
   const [cliVersion, setCliVersion] = useState('');
+  // The tab talks to the router: either by explicit source, or because the inherited CLI is already routed.
+  const [routerSource, setRouterSource] = useState(false);
   const [sources, setSources] = useState<SettingSources>({ model: 'default', effort: 'default', access: 'default' });
   const [history, setHistory] = useState<Thread[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
@@ -108,6 +110,9 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [cacheGeneration, setCacheGeneration] = useState(0);
   const [cacheTurnCompleted, setCacheTurnCompleted] = useState(0);
   const [queueCompletion, setQueueCompletion] = useState(0);
+  // Accepted live completions only, including failed/interrupted turns. A disconnect,
+  // history load or busy=false is not evidence that deferred tab closing is safe.
+  const [completedTurnRevision, setCompletedTurnRevision] = useState(0);
   const [queuePause, setQueuePause] = useState({ revision: 0, reason: '' });
   const [steering, setSteering] = useState(false);
   const [pendingMessage, setPendingMessage] = useState<PendingMessage | null>(options?.restorePendingMessage || null);
@@ -345,7 +350,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     }
     invalidateCache(); updateConnection('connecting'); setError(''); setRetry(null);
     try {
-      if (!bridge) throw new Error('Откройте Codex Desk как приложение: npm start. Подключение к Codex доступно в окне Electron.');
+      if (!bridge) throw new Error('Откройте Кузьмич как приложение: npm start. Подключение к Codex доступно в окне Electron.');
       const saved = await bridge.getSettings();
       settingsRef.current = saved;
       setConnectionSource(saved.connectionSource || 'inherited');
@@ -360,6 +365,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       const visibleModels = (Array.isArray(result.models) ? result.models : (result.models as any)?.data || []).filter((m: Model) => !m.hidden);
       setModels(visibleModels); setConfig(effective); setExecutable(result.executable);
       setCliVersion(typeof result.cliVersion === 'string' ? result.cliVersion : '');
+      setRouterSource(Boolean(result.routerSource));
       setAccount(result.account?.account ?? result.account);
       const restored = restoreSettingsRef.current;
       setModel(restored?.model ?? (saved.model || effective.model || visibleModels.find((m: Model) => m.isDefault)?.model || ''));
@@ -487,6 +493,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         if (compactionRef.current) {
           const operation = matchCompactionTurn(turnId);
           if (!operation) return;
+          setCompletedTurnRevision(value => value + 1);
           observeTurn(p.turn);
           finishCompaction(operation, p.turn.status === 'interrupted' ? 'interrupted' : p.turn.status === 'completed' && !p.turn.error ? 'completed' : 'failed', p.turn.error?.message);
           void refreshHistory();
@@ -497,6 +504,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         // A completion snapshot alone does not prove new work during attachment.
         // The loaded latest turn must win over replayed completions of older turns.
         if (resumingRef.current && !activeRef.current && !cacheTurnRef.current.observed) return;
+        setCompletedTurnRevision(value => value + 1);
         clearRetryOnResponse(p.threadId, turnId);
         observeTurn(p.turn);
         lifecycleRef.current++;
@@ -524,7 +532,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         }
         cacheTurnRef.current.id = turnId;
         turnRef.current = null; activeRef.current = false; setBusy(false);
-        pendingRequestIdsRef.current.clear(); setRequests([]);
+        // A finished turn does not resolve an outstanding server request. Keep the
+        // question/approval until respond or serverRequest/resolved, just like the transport.
         if (p.turn.error) setError(p.turn.error.message || `${agentName(providerRef.current)} завершил работу с ошибкой.`);
         if (p.turn.status === 'interrupted' && threadRef.current) {
           updateInterrupted({ threadId: threadRef.current.id, turnId }); setNotice(STOPPED_NOTICE);
@@ -867,6 +876,36 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       if (restored) setNotice(`Источник: ${next === 'router' ? 'Роутер' : next === 'account' ? 'Личный аккаунт' : 'Настройки CLI'}. Следующее сообщение использует это подключение.`);
     } catch (cause) { setError(errorText(cause)); }
     finally { sourceChangingRef.current = false; setSourceChanging(false); }
+  };
+
+  /**
+   * Change the agent of this tab without opening another one, and report whether that happened. Only an
+   * empty dialogue qualifies: the host refuses as soon as a thread has been started, because its history
+   * belongs to the agent that owns it. A refusal is not an error here — the caller opens a separate tab,
+   * exactly as before — but a new agent that fails to connect keeps its own message in this tab.
+   */
+  const selectProvider = async (value: AgentProvider) => {
+    if (!['codex', 'claude'].includes(value) || value === providerRef.current || sourceChangingRef.current) return false;
+    // A tab that is still connecting is not busy with the user's work: a start right after the one that made
+    // this tab ready would otherwise open another tab instead of changing the agent here.
+    for (let waited = 0; connectingRef.current && waited < 50; waited += 1) await new Promise(resolve => setTimeout(resolve, 100));
+    if (threadRef.current || activeRef.current || connectingRef.current || loadingRef.current || terminalRef.current || authRef.current || pendingRequestIdsRef.current.size || pendingMessageRef.current) return false;
+    sourceChangingRef.current = true; setSourceChanging(true);
+    try {
+      await bridge.setSettings({ provider: value });
+    } catch { sourceChangingRef.current = false; setSourceChanging(false); return false; }
+    setError('');
+    pauseQueue('Агент изменён. Проверьте диалог перед продолжением очереди.');
+    try {
+      // Model, effort and access are the new agent's own; this tab keeps nothing from the previous one.
+      restoreSettingsRef.current = undefined;
+      // The previous agent's prompt cache says nothing about this connection.
+      invalidateCache();
+      await connect(undefined, { refreshModels: true });
+      if (connectionRef.current === 'ready') setNotice(`Агент: ${agentName(value)}. Настройки, модели и история взяты из него.`);
+    } catch (cause) { setError(errorText(cause)); }
+    finally { sourceChangingRef.current = false; setSourceChanging(false); }
+    return true;
   };
 
   restoreAuthRef.current = async data => {
@@ -1227,11 +1266,11 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   };
 
   return {
-    connection, provider, capabilities, cwd, models, model, effort, access, account, config, executable, cliVersion, sources, history, historyCursor, historyLoading,
+    connection, provider, capabilities, cwd, models, model, effort, access, account, config, executable, cliVersion, routerSource, sources, history, historyCursor, historyLoading,
     thread, threadReady, items, turnWork, itemCursor, busy, compacting, terminalOpen, authInProgress, loading, error, retry, dismissRetry: () => setRetry(null), notice,
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
-    cacheActivityAt, cacheGeneration, cacheTurnCompleted, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage, agentDetails, agentDetailsLoading, refreshAgentDetails,
-    connect, reconnect, connectionSource, sourceChanging, modelUnavailable, selectConnectionSource, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
+    cacheActivityAt, cacheGeneration, cacheTurnCompleted, completedTurnRevision, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage, agentDetails, agentDetailsLoading, refreshAgentDetails,
+    connect, reconnect, connectionSource, sourceChanging, modelUnavailable, selectConnectionSource, selectProvider, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
     resume, loadEarlier, readFullHistory, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice, pendingMessage, reconcileMessage, reconcileQueuedMessage,
   };
 }

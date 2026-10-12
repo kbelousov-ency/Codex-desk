@@ -1,0 +1,48 @@
+/* Compact executor navigation; shared palette values fall back to the design-system colors. */
+.conversation-toolbar-stack{display:flex;flex-direction:column;min-width:0;border-bottom:1px solid var(--line)}
+.conversation-toolbar-stack>.topbar{border-bottom:0}
+.child-tabs-row{--executor-bg:#171a19;--executor-surface:#232826;--executor-selected:#303a34;--executor-border:#3a413d;--executor-text:#d5e0d8;--executor-secondary:#aab4ad;--executor-muted:#929d96;--executor-icon:#82968a;--executor-accent:#9bb6a4;--executor-warning:#efc97c;--executor-warning-bg:#efc97c18;display:flex;align-items:center;gap:4px;min-width:0;min-height:38px;height:38px;padding:4px 12px 0;background:var(--executor-bg);border-bottom:1px solid var(--executor-border);overflow-x:auto;overflow-y:hidden;scrollbar-width:thin}
+.child-tabs-caption{flex:0 0 auto;padding:0 8px 0 1px;color:var(--executor-muted);font-size:11px;font-weight:600;letter-spacing:.2px;white-space:nowrap}
+.child-tab-wrap{display:flex;align-items:center;flex:0 0 auto;min-width:0;max-width:240px;height:28px;border-radius:4px 4px 0 0;color:var(--executor-secondary)}
+.child-tab-wrap:hover{background:var(--executor-surface);color:var(--executor-text)}
+.child-tab-wrap.active{background:var(--executor-selected);color:var(--executor-text);box-shadow:inset 0 -2px 0 var(--executor-accent)}
+.child-tab{display:flex;align-items:center;gap:6px;min-width:0;flex:1;height:100%;padding:0 6px 0 9px;border:0;border-radius:inherit;background:transparent;color:inherit;font-size:11px;white-space:nowrap;cursor:pointer}
+.child-tab-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.child-tab>svg{flex:0 0 auto;color:var(--executor-icon)}
+.child-tab-wrap.active .child-tab>svg{color:var(--executor-accent)}
+.child-tab-wrap.has-unread .child-tab-label{color:var(--executor-text)}
+.child-tab .child-tab-state.closed{background:var(--executor-muted)}
+.child-tab .child-tab-state.tab-state.question{display:grid;place-items:center;width:14px;height:14px;border:1px solid var(--executor-warning);border-radius:3px;background:var(--executor-warning-bg);color:var(--executor-warning);box-shadow:none;font-size:10px;font-weight:700;line-height:1}
+.child-tab .child-tab-unread{margin-left:0}
+.child-tab-close{flex:0 0 auto;width:20px;height:20px;display:grid;place-items:center;margin:0 5px 0 0;border:0;border-radius:3px;background:transparent;color:var(--executor-icon);cursor:pointer}
+.child-tab-close:hover{background:var(--executor-selected);color:var(--executor-text)}
+.child-tab-close.close-when-complete{color:var(--executor-muted);background:var(--executor-surface)}
+.child-tab-close.close-when-complete:hover{color:var(--executor-accent)}
+.child-tab-close:disabled{opacity:.5;cursor:default}
+.child-tab:focus-visible,.child-tab-close:focus-visible,.child-tab-create:focus-visible{outline:1px solid var(--executor-accent);outline-offset:-2px}
+.child-tab-create{margin-left:auto;color:var(--executor-accent);border:1px solid var(--executor-border);border-radius:4px;height:26px;padding:0 10px;flex:0 0 auto}
+.child-tab-create:hover{background:var(--executor-selected);border-color:var(--executor-icon);color:var(--executor-text)}
+.child-tab-create:disabled{opacity:.45}
+.child-tab-create>svg{color:var(--executor-accent)}
+.child-count-badge{flex:0 0 auto!important;min-width:14px;padding:0 4px;border-radius:8px;background:var(--kz-surface-muted,#303a34);color:var(--accent,#9bb6a4);font-size:9px;line-height:15px;text-align:center;font-variant-numeric:tabular-nums}
+/* The parent keeps the active surface, while its softer stripe identifies an open executor. */
+.session-tab.child-active{background:#252d29;border-color:#42564b;color:#d3e4d9;box-shadow:inset 0 2px #82968a}
+.session-executor-badge{display:inline-flex;align-items:center;gap:3px;flex:0 0 auto;max-width:60px;padding:2px 4px;border:1px solid var(--kz-accent-muted,#82968a);border-radius:3px;background:var(--kz-surface-muted,#303a34);color:var(--accent,#9bb6a4);font-size:9px;line-height:12px;white-space:nowrap}
+.session-executor-badge>svg{flex:0 0 auto}
+.session-executor-badge>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.session-executor-badge.waiting{background:#efc97c18;border-color:#efc97c;color:#efc97c}
+/* A working executor is visible from any tab; the unread dot survives a background result. */
+.session-executor-badge.running{background:#9bb6a418;border-color:var(--accent,#9bb6a4);color:var(--accent,#9bb6a4)}
+.session-executor-badge .tab-unread{width:5px;height:5px;background:currentColor;box-shadow:none}
+/* Breadcrumb of an executor: the parent conversation it was created from. */
+.breadcrumb-parent{display:inline-flex;align-items:center;max-width:170px;padding:2px 5px;border-radius:4px;color:var(--accent,#9bb6a4);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.breadcrumb-parent:hover,.breadcrumb-parent:focus-visible{background:var(--kz-surface-muted,#303a34);color:var(--text,#d5e0d8)}
+.executor-tab-menu{min-width:206px}
+.executor-close-modal .confirm-actions{flex-wrap:wrap}
+[data-theme=kuzmich] .child-tabs-row{--executor-bg:var(--bg);--executor-surface:var(--kz-surface);--executor-selected:var(--kz-surface-muted);--executor-border:var(--line);--executor-text:var(--text);--executor-secondary:var(--kz-text-secondary);--executor-muted:var(--muted);--executor-icon:var(--kz-accent-muted);--executor-accent:var(--accent);--executor-warning:#c9bfa2;--executor-warning-bg:#c9bfa218}
+[data-theme=kuzmich] .session-tab.child-active{background:#262c29;border-color:#47514b;color:var(--text);box-shadow:inset 0 2px var(--kz-accent-muted)}
+[data-theme=kuzmich] .session-executor-badge{background:var(--kz-surface-muted);border-color:var(--kz-accent-muted);color:var(--accent)}
+[data-theme=kuzmich] .session-executor-badge.waiting{background:#c9bfa218;border-color:#c9bfa2;color:#c9bfa2}
+[data-theme=kuzmich] .session-executor-badge.running{background:#9bb6a414;border-color:var(--accent);color:var(--accent)}
+@media(prefers-reduced-motion:reduce){.child-tab>.spin,.session-executor-badge>.spin{animation:none}}
+@media(max-width:700px){.child-tabs-row{padding-left:8px;padding-right:8px}.child-tab-wrap{max-width:190px}.child-tab-create{margin-left:0}.child-tab-create>span{display:none}.breadcrumb-parent{max-width:110px}}

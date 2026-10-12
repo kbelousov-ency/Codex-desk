@@ -28,3 +28,13 @@ test('an absent flag equals an explicit false', () => {
   const withoutFiles = { ...base(), changedFiles: undefined };
   assert.equal(sameSessionSummary(withoutFiles, { ...base(), changedFiles: [] }), true);
 });
+
+test('executor waiting kind and accepted completion survive summary deduplication', () => {
+  const waiting = { ...base(), pending: 1, pendingKind: 'question', completedTurnRevision: 2 };
+  assert.equal(sameSessionSummary(waiting, { ...waiting }), true);
+  // Switching from a question to approval may leave the number of requests unchanged.
+  assert.equal(sameSessionSummary(waiting, { ...waiting, pendingKind: 'approval' }), false);
+  // A completion must be visible even when both snapshots are already idle.
+  const idle = { ...base(), busy: false, completedTurnRevision: 2 };
+  assert.equal(sameSessionSummary(idle, { ...idle, completedTurnRevision: 3 }), false);
+});

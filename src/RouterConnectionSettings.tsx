@@ -43,7 +43,7 @@ export default function RouterConnectionSettings({ bridge, disabled, onConnected
       setInfo(result); setPreview(null);
       setNotice('Подключение сохранено. Переключаем текущий диалог на роутер…');
       await onConnected();
-      setNotice('Подключение сохранено. Источник и модель для следующего сообщения показаны под полем ввода.');
+      setNotice('Подключение сохранено. Источник доступен в настройках агента, модель — под полем ввода.');
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось сохранить подключение.'); }
     finally { pending.current = false; setBusy(''); }
   };
@@ -51,7 +51,7 @@ export default function RouterConnectionSettings({ bridge, disabled, onConnected
   return <section className="claude-auth-settings" aria-label="Роутер Claude">
     <h3><Plug size={14} aria-hidden="true" /> Роутер Claude</h3>
     <div className="claude-auth-status" role="status">{info?.configured && <CircleCheck size={14} aria-hidden="true" />}<span>{info?.configured ? 'Подключение сохранено' : 'Роутер не подключён'}{info?.baseUrl && <small>{info.baseUrl}</small>}</span></div>
-    <p>Войдите на портал и нажмите «Подключить Claude». Desk получит настройки и сохранит ключ в зашифрованном виде. Личный аккаунт останется доступен в выборе источника.</p>
+    <p>Войдите на портал и нажмите «Подключить Claude». Кузьмич получит настройки и сохранит ключ в зашифрованном виде. Личный аккаунт останется доступен в выборе источника.</p>
     {info?.error && <p className="inline-error" role="alert">{info.error}</p>}
     {error && <p className="inline-error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
@@ -64,7 +64,7 @@ export default function RouterConnectionSettings({ bridge, disabled, onConnected
     {preview && <div className="claude-token">
       <h4>Подключение готово к сохранению</h4>
       <p>{preview.providerName || 'Роутер'} · {preview.baseUrl}</p>
-      <p>Настройки действуют в Desk. Для текущего диалога будет выбран источник «Роутер».</p>
+      <p>Настройки действуют в Кузьмич. Для текущего диалога будет выбран источник «Роутер».</p>
       <button className="primary-button" type="button" disabled={disabled || Boolean(busy)} onClick={() => void apply()}>Сохранить и использовать</button>
     </div>}
     {(busy === 'portal' || busy === 'file' || preview) && <button className="secondary-button" type="button" disabled={busy === 'save'} onClick={() => void cancel()}>Отменить подключение</button>}

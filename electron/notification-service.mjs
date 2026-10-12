@@ -142,7 +142,7 @@ export class NotificationService {
     let entry;
     try {
       const notification = new this.Notification({
-        title: payload.kind === 'question' && session.settings?.provider === 'claude' ? 'Claude Code ждёт ответа' : HEADINGS[payload.kind], body: payload.title || 'Codex Desk', silent: !settings.sound,
+        title: payload.kind === 'question' && session.settings?.provider === 'claude' ? 'Claude Code ждёт ответа' : HEADINGS[payload.kind], body: payload.title || 'Кузьмич', silent: !settings.sound,
         ...(this.icon ? { icon: this.icon } : {}),
       });
       entry = { notification, key, sessionId: payload.sessionId, kind: payload.kind };

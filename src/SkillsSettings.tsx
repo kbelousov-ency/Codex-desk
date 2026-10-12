@@ -82,7 +82,7 @@ export default function SkillsSettings({ provider, cwd, active = true }: { provi
       </button>)}
     </div>
     <div className="skills-panel" role="tabpanel" id={`skills-panel-${selected}`} aria-labelledby={`skills-tab-${selected}`}>
-      {!bridge ? <p className="skills-unavailable" role="status">Список навыков доступен в установленном приложении Codex Desk.</p> : <>
+      {!bridge ? <p className="skills-unavailable" role="status">Список навыков доступен в установленном приложении Кузьмич.</p> : <>
         <div className="skills-toolbar">
           <input type="search" value={query} placeholder="Поиск по названию и описанию" aria-label="Поиск по навыкам" onChange={event => setQuery(event.target.value)} />
           <button type="button" className="secondary-button" disabled={state?.loading} onClick={() => void refresh(selected)}><RefreshCw size={13} />{state?.loading ? 'Читаем…' : 'Обновить'}</button>

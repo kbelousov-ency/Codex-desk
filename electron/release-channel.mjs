@@ -3,8 +3,8 @@ import { lstat, mkdir, open, readFile, link, unlink } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
-const channels = new Set(['stable', 'nightly', 'development']);
-const profileNames = { stable: 'Codex Desk', nightly: 'Codex Desk Nightly', development: 'Codex Desk Development' };
+const channels = new Set(['stable', 'nightly', 'experimental3', 'development']);
+const profileNames = { stable: 'Codex Desk', nightly: 'Codex Desk Nightly', experimental3: 'Kuzmich Experimental 3', development: 'Codex Desk Development' };
 const initialProfileFiles = ['settings.json', 'workspace.json'];
 const markerName = '.nightly-profile-initialized.json';
 const maxProfileBytes = 1024 * 1024;
@@ -35,13 +35,13 @@ export function resolveReleaseChannel({ isPackaged, resourcesPath, buildInfo = {
       const metadata = lstatSync(filename);
       if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 1024) throw new Error('Invalid marker');
       const manifest = JSON.parse(readFileSync(filename, 'utf8'));
-      if (!plainObject(manifest) || Object.keys(manifest).length !== 1 || !['stable', 'nightly'].includes(manifest.channel)) throw new Error('Invalid marker');
+      if (!plainObject(manifest) || Object.keys(manifest).length !== 1 || !['stable', 'nightly', 'experimental3'].includes(manifest.channel)) throw new Error('Invalid marker');
       channel = manifest.channel;
     } catch {
-      throw new Error('Не удалось определить канал сборки Codex Desk: файл resources/channel.json отсутствует или повреждён. Восстановите папку приложения из полной сборки.');
+      throw new Error('Не удалось определить канал сборки Кузьмича: файл resources/channel.json отсутствует или повреждён. Восстановите папку приложения из полной сборки.');
     }
     if (!plainObject(buildInfo) || !validVersion(buildInfo.version) || !validBuildId(buildInfo.buildId) || !validBuiltAt(buildInfo.builtAt)) {
-      throw new Error('Метаданные сборки Codex Desk отсутствуют или повреждены. Восстановите папку приложения из полной сборки.');
+      throw new Error('Метаданные сборки Кузьмича отсутствуют или повреждены. Восстановите папку приложения из полной сборки.');
     }
   }
   // Only these bounded, public values may reach the renderer and diagnostics.
@@ -54,21 +54,21 @@ export function resolveReleaseChannel({ isPackaged, resourcesPath, buildInfo = {
 }
 
 export function resolveChannelPaths({ appData, channel, dataDirOverride }) {
-  if (!channels.has(channel)) throw new Error('Неизвестный канал Codex Desk.');
+  if (!channels.has(channel)) throw new Error('Неизвестный канал Кузьмича.');
   if (dataDirOverride !== undefined && dataDirOverride !== null && dataDirOverride !== '') {
-    if (typeof dataDirOverride !== 'string') throw new Error('Некорректная папка данных Codex Desk.');
+    if (typeof dataDirOverride !== 'string') throw new Error('Некорректная папка данных Кузьмича.');
     const userData = path.resolve(dataDirOverride);
     // Disposable test profiles never consult or populate the real profile.
     return Object.freeze({ userData, attachmentsDirectory: path.join(userData, 'attachments') });
   }
-  if (typeof appData !== 'string' || !path.isAbsolute(appData)) throw new Error('Некорректная папка данных Codex Desk.');
+  if (typeof appData !== 'string' || !path.isAbsolute(appData)) throw new Error('Некорректная папка данных Кузьмича.');
   const legacyDataDirectory = path.join(appData, profileNames.stable);
   return Object.freeze({
     userData: path.join(appData, profileNames[channel]),
     // Codex owns shared history with absolute image paths. Keeping this existing
     // image directory lets both channels display old and newly attached images.
     attachmentsDirectory: path.join(legacyDataDirectory, 'attachments'),
-    ...(channel === 'nightly' ? { legacyDataDirectory } : {}),
+    ...(channel === 'nightly' || channel === 'experimental3' ? { legacyDataDirectory, profileMarkerName: channel === 'experimental3' ? '.experimental3-profile-initialized.json' : markerName } : {}),
   });
 }
 
@@ -126,7 +126,7 @@ async function createFileOnce(filename, bytes) {
   }
 }
 
-/** Seed Nightly defaults once. Authorisation, Codex config and Chromium stay untouched. */
+/** Seed isolated channel defaults once. Authorisation, Codex config and Chromium stay untouched. */
 export async function initializeChannelProfile(paths) {
   if (!paths.legacyDataDirectory) return { status: 'skipped', copied: [], issues: [] };
   const copied = [];
@@ -134,7 +134,7 @@ export async function initializeChannelProfile(paths) {
   try {
     if (samePath(paths.userData, paths.legacyDataDirectory)) throw new Error('unsafe-directory');
     await requirePlainDirectory(paths.userData, true);
-    const marker = path.join(paths.userData, markerName);
+    const marker = path.join(paths.userData, paths.profileMarkerName || markerName);
     const existingMarker = await maybeStat(marker);
     if (existingMarker) {
       if (!existingMarker.isFile() || existingMarker.isSymbolicLink()) throw new Error('invalid-marker');

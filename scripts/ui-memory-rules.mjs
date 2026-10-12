@@ -57,7 +57,7 @@ try {
     const fixture = window.__memory = { calls: [], busy: [], closeCalls: 0, failRead: scenario === 'read-error', failWrite: false, hold: false, release: null, states: {} };
     for (const provider of ['codex', 'claude']) fixture.states[provider] = {
       provider, enabled: provider === 'claude', revision: `revision-${provider}-0`,
-      conflict: scenario === 'conflict' && provider === 'codex' ? 'Раздел Codex Desk изменён вручную. Проверьте файл.' : null,
+      conflict: scenario === 'conflict' && provider === 'codex' ? 'Раздел Кузьмича изменён вручную. Проверьте файл.' : null,
       instructionPath: `C:\\Fixture\\.${provider}\\${provider === 'codex' ? 'AGENTS.md' : 'CLAUDE.md'}`,
       procedurePath: `C:\\Fixture\\.${provider}\\reference\\memory-compact.md`,
       rulesText: `# Правила ${provider}\nСохраняйте решения и причины.\nНе запускайте полное сжатие каждый сеанс.`,
@@ -123,11 +123,11 @@ try {
   await codex.getByRole('button', { name: 'Проверить правила Codex снова', exact: true }).click();
   await codex.getByRole('button', { name: 'Включить для Codex', exact: true }).waitFor();
   await page.goto(`${url}?scenario=conflict`);
-  await codex.getByRole('alert').filter({ hasText: 'Раздел Codex Desk изменён' }).waitFor();
+  await codex.getByRole('alert').filter({ hasText: 'Раздел Кузьмича изменён' }).waitFor();
   assert.equal(await codex.getByRole('button', { name: 'Включить для Codex', exact: true }).isDisabled(), true);
   assert.equal(await page.evaluate(() => window.__memory.calls.some(call => call.method === 'apply')), false);
   await page.goto(`${url}?scenario=unavailable`);
-  await page.getByText('Настройка правил доступна в установленном приложении Codex Desk.', { exact: true }).waitFor();
+  await page.getByText('Настройка правил доступна в установленном приложении Кузьмич.', { exact: true }).waitFor();
   assert.equal(await page.locator('[data-memory-provider]').count(), 0);
   // The same production dialog must keep a memory write alive and block dismissal.
   await page.setViewportSize({ width: 940, height: 700 });

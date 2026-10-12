@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Archive, LoaderCircle, RefreshCw, RotateCcw, Search, Terminal } from 'lucide-react';
+import { Archive, LoaderCircle, RefreshCw, RotateCcw, Search } from 'lucide-react';
 import type { Item, ScrollAnchor, Thread, TurnWork } from './types';
 import type { WorkspaceControls } from './App';
 import { BridgeContext } from './BridgeContext';
-import { BuildBadge } from './BuildInfo';
+import { BuildBadge, ProductBrand } from './BuildInfo';
+import ProductLogo from './ProductLogo';
 import ProjectSidebar from './ProjectSidebar';
 import ChatSearch from './ChatSearch';
 import UpdateNotice from './UpdateNotice';
@@ -82,7 +83,7 @@ export default function ArchiveView({ thread, active, initialScrollTop, initialS
   };
   return <BridgeContext.Provider value={readonlyBridge}><div className="app-shell panel-hidden archive-view">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-mark"><Terminal size={19} strokeWidth={2.4} /></div><span>codex<span className="brand-light"> desk</span></span><BuildBadge /></div>
+      <div className="brand"><ProductLogo /><ProductBrand /><BuildBadge /></div>
       <ProjectSidebar controls={workspace} active={active} />
       <div className="sidebar-bottom"><div className="local-engine"><Archive size={12} /><span>Архив {agentName}</span></div></div>
     </aside>

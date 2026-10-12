@@ -5,7 +5,7 @@ import { extname, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 
 // Production renderer with isolated per-tab bridges. No CLI, account, portal or model calls.
-const root = resolve('dist');
+const root = resolve(process.env.CODEX_DESK_TEST_RENDERER || 'dist');
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
 const server = createServer(async (request, response) => {
   const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
@@ -95,6 +95,7 @@ try {
         async getClaudeAuthStatus() { return { loggedIn: true }; },
         async getClaudeToken() { return { configured: true, encryptionAvailable: true }; },
         async listFiles() { return { path: '', entries: [], nextCursor: null }; },
+        async getMcpConfig() { return { configPath: 'C:/Fixtures/Sources/config.toml', servers: [] }; },
         async readAttachment() { return null; },
         onEvent(listener) { state.listeners.add(listener); return () => state.listeners.delete(listener); },
       };
@@ -113,11 +114,18 @@ try {
   const view = () => page.locator('.session-view:visible');
   const draft = () => view().locator('.composer textarea');
   const source = () => view().getByRole('combobox', { name: 'Источник', exact: true });
-  const ready = () => page.waitForFunction(() => {
+  const ready = async () => {
+    if (!await view().getByRole('dialog').count()) await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+    await page.waitForFunction(() => {
     const control = document.querySelector('.session-view:not([hidden]) [aria-label="Источник"]');
     return control && !control.disabled;
-  });
-  const activate = async id => { await page.locator(`.session-tab[data-session-id="${id}"]`).getByRole('tab').click(); await ready(); };
+    });
+    assert.equal(await view().locator('.composer [aria-label="Источник"]').count(), 0);
+  };
+  const activate = async id => {
+    if (await view().getByRole('dialog').count()) await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
+    await page.locator(`.session-tab[data-session-id="${id}"]`).getByRole('tab').click(); await ready();
+  };
   const calls = method => page.evaluate(method => window.__sources.calls.filter(call => call.method === method), method);
   const choose = async value => {
     await source().click();
@@ -176,7 +184,7 @@ try {
   assert.equal(await draft().inputValue(), 'Черновик личного аккаунта');
   await page.evaluate(() => { window.__sources.failSource = false; });
 
-  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  if (!await view().getByRole('dialog').count()) await view().getByRole('button', { name: 'Настройки', exact: true }).click();
   const panel = () => view().getByRole('region', { name: 'Роутер Claude', exact: true });
   await panel().getByRole('status').filter({ hasText: 'Подключение сохранено' }).waitFor();
   await panel().getByRole('button', { name: 'Подключить через портал', exact: true }).click();
@@ -200,7 +208,7 @@ try {
   assert.equal((await calls('applyRouterConnection')).length, 0, 'preview alone cannot save');
   await page.screenshot({ path: 'artifacts/connection-portal-preview.png' });
   await panel().getByRole('button', { name: 'Сохранить и использовать', exact: true }).click();
-  await panel().getByText('Подключение сохранено. Источник и модель для следующего сообщения показаны под полем ввода.', { exact: true }).waitFor();
+  await panel().getByText('Подключение сохранено. Источник доступен в настройках агента, модель — под полем ввода.', { exact: true }).waitFor();
   assert.equal((await calls('applyRouterConnection')).length, 1);
   await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await ready();
@@ -221,9 +229,11 @@ try {
   assert.equal((await calls('setSettings')).some(call => call.patch.model === 'fixture-router-sonnet'), false);
   assert.equal(await draft().inputValue(), 'Черновик личного аккаунта');
   await page.screenshot({ path: 'artifacts/connection-model-unavailable.png' });
+  await view().getByRole('button', { name: 'Закрыть настройки', exact: true }).click();
   await chooseModel.click();
   await page.getByRole('listbox', { name: 'Модель', exact: true }).locator('[data-value="fixture-router-sonnet"]').click();
   await chooseModel.waitFor({ state: 'detached' });
+  await ready();
   await page.waitForFunction(() => document.querySelector('.session-view:not([hidden]) [aria-label="Отправить сообщение"]')?.disabled === false);
   assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).getAttribute('data-value'), 'fixture-router-sonnet');
   assert.equal(await source().getAttribute('data-value'), 'router');

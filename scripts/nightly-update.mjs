@@ -14,7 +14,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const pendingMessage = 'Обновление Nightly уже ожидает применения. Закройте Nightly через предложение обновления или вручную; после сбоя повторите node scripts/apply-nightly-update.mjs. Новая сборка не заменяет ожидающую.';
 const queueDirectory = root => path.join(root, 'artifacts', 'nightly-update');
 const candidateDirectory = root => path.join(queueDirectory(root), 'app');
-const executable = root => path.join(root, 'release', 'nightly', 'Codex Desk.exe');
+const executable = root => path.join(root, 'release', 'nightly', 'Kuzmich.exe');
 const samePath = (left, right) => path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
 
 function failureLocation(root, error) {
@@ -50,7 +50,7 @@ async function jsonFile(root, file, limit = 16384) {
 
 export function validateRegistration(root, value) {
   if (!value || value.version !== 1 || (value.updateProtocol !== undefined && value.updateProtocol !== 2) || !Number.isSafeInteger(value.pid) || value.pid <= 0 || value.pid > 0xffffffff || !PIPE.test(value.pipe) || !SHA.test(value.token) || !SHA.test(value.buildId)
-    || typeof value.executable !== 'string' || !path.isAbsolute(value.executable) || !samePath(value.executable, executable(root))
+    || typeof value.executable !== 'string' || !path.isAbsolute(value.executable) || ![executable(root), path.join(root, 'release', 'nightly', 'Codex Desk.exe')].some(expected => samePath(value.executable, expected))
     || !['userData', 'cwd'].every(key => typeof value[key] === 'string' && path.isAbsolute(value[key]) && !value[key].includes('\0'))) {
     throw new Error('Неверная регистрация Nightly. Закройте Nightly и повторите сборку.');
   }

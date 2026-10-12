@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
-import { Archive, ArchiveRestore, Bell, BellRing, BookMarked, Command, FolderPlus, FolderTree, GitBranch, GitFork, History, LoaderCircle, MessageSquare, Pin, PinOff, Plus, RefreshCw, RotateCcw, Sparkles, Terminal, X } from 'lucide-react';
+import { Archive, ArchiveRestore, Bell, BellRing, Bot, BookMarked, Clock3, Command, FolderPlus, FolderTree, GitBranch, GitFork, History, LoaderCircle, MessageSquare, Pin, PinOff, Plus, RefreshCw, RotateCcw, Sparkles, Terminal, X } from 'lucide-react';
 import CommandPalette, { type PaletteCommand } from './CommandPalette';
 import AgentLogo from './AgentLogo';
 import WorktreePanel from './WorktreePanel';
@@ -8,12 +8,17 @@ import App, { type SessionSummary, type WorkspaceControls } from './App';
 import { projectKey, type ProjectHistory } from './ProjectTree';
 import ProjectSidebar from './ProjectSidebar';
 import ArchiveView from './ArchiveView';
-import { BuildBadge } from './BuildInfo';
+import BulkArchiveDialog, { type BulkRunState } from './BulkArchive';
+import { bulkScopeLabel, bulkThreadTitle, planBulkArchive, sameBulkScope, toggleSelection } from './bulk-archive';
+import type { BulkOutcome, BulkRow, BulkScope } from './bulk-archive';
+import { BuildBadge, ProductBrand, useProductNameGenitive } from './BuildInfo';
+import ProductLogo from './ProductLogo';
 import { AppUpdateBanner, AppUpdateDialog, useAppUpdates } from './AppUpdates';
 import { ReleaseNotesDialog, useReleaseNotes } from './ReleaseNotes';
 import { OpenAppUpdatesContext } from './AppUpdateContext';
 import { errorText, folderName } from './useCodex';
-import type { AgentProvider, Attachment, CodexBridge, HistoryTarget, MessageQueueState, PendingMessage, PreservedDraft, ScrollAnchor, SessionAttentionEvent, SessionInfo, Settings, Thread, ThreadAction, UpdateSnapshot, UpdateStatus, UpdateTabSnapshot } from './types';
+import type { AgentProvider, Attachment, CodexBridge, ExecutorAction, ExecutorThread, HistoryTarget, MessageQueueState, PendingMessage, PreservedDraft, ScrollAnchor, SessionAttentionEvent, SessionInfo, Settings, Thread, ThreadAction, ThreadChildLink, UpdateSnapshot, UpdateStatus, UpdateTabSnapshot } from './types';
+import { executorLabelLetter, nextExecutorLabel } from './executor-agents';
 import './nightly-update.css';
 import './workspace-state.css';
 import UpdateNotice, { UpdateNoticeContext } from './UpdateNotice';
@@ -24,7 +29,7 @@ import SetupGate from './SetupGate';
 import { sameSessionSummary } from './session-summary';
 import ParallelActivity from './ParallelActivity';
 
-type Tab = SessionInfo & { bridge?: CodexBridge; initialThread?: Thread; archivedThread?: Thread; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; restoreSettings?: Settings; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; jump?: { itemId: string; turnId?: string; key: number; excerpt?: string }; pinned?: boolean; pendingMessage?: PendingMessage; fork?: { lastTurnId?: string } };
+type Tab = SessionInfo & { bridge?: CodexBridge; initialThread?: Thread; archivedThread?: Thread; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; restoreSettings?: Settings; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; jump?: { itemId: string; turnId?: string; key: number; excerpt?: string }; pinned?: boolean; pendingMessage?: PendingMessage; childOf?: string; childLabel?: string; fork?: { lastTurnId?: string } };
 /** What a closed tab needs to come back: the folder, agent and (if any) the dialog it showed. Processes are not kept. */
 type ClosedTab = { cwd: string; provider?: AgentProvider; title: string; snapshot: UpdateTabSnapshot };
 const MAX_CLOSED_TABS = 10;
@@ -46,6 +51,7 @@ export function setTabPinned<T extends { id: string; pinned?: boolean }>(tabs: T
   return [...rest.slice(0, boundary), updated, ...rest.slice(boundary)];
 }
 const sameFolder = (a: string, b: string) => a.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase() === b.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+const shortExecutorName = (name: string) => executorLabelLetter(name) || Array.from(name.trim()).slice(0, 3).join('');
 
 export default function Workspace() {
   // Keep the existing single-session fixtures useful for renderer regressions.
@@ -54,6 +60,8 @@ export default function Workspace() {
 }
 
 function TabbedWorkspace() {
+  // Оба текста ниже — в родительном падеже: «изменения/новая версия Кузьмича».
+  const productName = useProductNameGenitive();
   const appUpdates = useAppUpdates();
   const releaseNotes = useReleaseNotes();
   const [showAppUpdates, setShowAppUpdates] = useState(false);
@@ -64,10 +72,41 @@ function TabbedWorkspace() {
   const [summaries, setSummaries] = useState<Record<string, SessionSummary>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [histories, setHistories] = useState<Record<string, ProjectHistory>>({});
+  // Dependent (child) conversations are kept apart from the folder history so the history
+  // page, its cursor and the multi-select scope keep their current meaning.
+  const [childHistories, setChildHistories] = useState<Record<string, ProjectHistory>>({});
+  const [childLinks, setChildLinks] = useState<Record<string, ThreadChildLink[]>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const [starting, setStarting] = useState(true);
   const [opening, setOpening] = useState(false);
   const [closing, setClosing] = useState(false);
   const [confirmClose, setConfirmClose] = useState<string | null>(null);
+  // Deliberately not persisted: a restart must never silently close a restored tab.
+  const [deferredClose, setDeferredClose] = useState<Record<string, number>>({});
+  const deferredCloseRef = useRef(deferredClose);
+  const cancelDeferredClose = useCallback((id: string) => {
+    if (!(id in deferredCloseRef.current)) return;
+    const next = { ...deferredCloseRef.current }; delete next[id];
+    deferredCloseRef.current = next; setDeferredClose(next);
+  }, []);
+  /** One deferred closure for a parent tab and its executors: the group closes together, so a
+   * finished parent can never leave a still working executor without its row. `awaited` lists
+   * the members that were working when the wait was armed. Memory only, like `deferredClose`. */
+  const [cascadeClose, setCascadeClose] = useState<{ parentId: string; ids: string[]; awaited: string[] } | null>(null);
+  const cascadeCloseRef = useRef(cascadeClose);
+  const cancelCascadeClose = useCallback(() => {
+    const cascade = cascadeCloseRef.current;
+    if (!cascade) return;
+    cascadeCloseRef.current = null; setCascadeClose(null);
+    for (const id of [cascade.parentId, ...cascade.ids]) cancelDeferredClose(id);
+  }, [cancelDeferredClose]);
+  /** Cancels a pending closure: a member of the group cancels the whole cascade, because waiting
+   * for the rest would close the tab the user has just been asked about. */
+  const cancelCloseWait = useCallback((id: string) => {
+    const cascade = cascadeCloseRef.current;
+    if (cascade && (cascade.parentId === id || cascade.ids.includes(id))) { cancelCascadeClose(); return; }
+    cancelDeferredClose(id);
+  }, [cancelCascadeClose, cancelDeferredClose]);
   const [confirmCloseProject, setConfirmCloseProject] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [saveError, setSaveError] = useState('');
@@ -89,6 +128,12 @@ function TabbedWorkspace() {
   const [actionBusy, setActionBusy] = useState(false);
   const [searchRevision, setSearchRevision] = useState(0);
   const [actionDialog, setActionDialog] = useState<{ action: 'rename' | 'delete'; cwd: string; thread: Thread } | null>(null);
+  const [bulkScope, setBulkScope] = useState<BulkScope | null>(null);
+  const [bulkSelected, setBulkSelected] = useState<string[]>([]);
+  const [bulkRun, setBulkRun] = useState<BulkRunState | null>(null);
+  const bulkRunRef = useRef<BulkRunState | null>(null);
+  bulkRunRef.current = bulkRun;
+  const bulkStop = useRef(false);
   const [newName, setNewName] = useState('');
   const [worktreeDialog, setWorktreeDialog] = useState<{ cwd: string } | null>(null);
   const [worktreeName, setWorktreeName] = useState('');
@@ -102,6 +147,8 @@ function TabbedWorkspace() {
   const closedTabsRef = useRef(closedTabs);
   closedTabsRef.current = closedTabs;
   const closingTab = useRef(false);
+  /** Set while a parent tab and its executors are being closed as one group. */
+  const closingGroup = useRef(false);
   const shortcutActions = useRef({ cycle: (_step: 1 | -1) => {}, restore: () => {} });
   const tabMenuRef = useRef<HTMLDivElement>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
@@ -131,13 +178,22 @@ function TabbedWorkspace() {
   const historyRequests = useRef(new Set<string>());
   const historyRevision = useRef(0);
   const historyRefreshPending = useRef(new Set<string>());
+  const childHistoriesRef = useRef(childHistories);
+  const childLinksRef = useRef(childLinks);
+  const childRequests = useRef(new Set<string>());
+  const childRefreshPending = useRef(new Set<string>());
+  const childLinkRequests = useRef(new Set<string>());
+  /** Executor conversations whose default name has already been written as the dialog title. */
+  const executorRenamed = useRef(new Set<string>());
   const previousSummaries = useRef<Record<string, SessionSummary>>({});
   tabsRef.current = tabs;
   projectsRef.current = projects;
   summariesRef.current = summaries;
   historiesRef.current = histories;
-  const updateState = useRef({ activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings, showAppUpdates, showReleaseNotes, showLibrary, showPalette });
-  updateState.current = { activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, showNotificationSettings, showAppUpdates, showReleaseNotes, showLibrary, showPalette };
+  childHistoriesRef.current = childHistories;
+  childLinksRef.current = childLinks;
+  const updateState = useRef({ activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, bulkRun, showNotificationSettings, showAppUpdates, showReleaseNotes, showLibrary, showPalette });
+  updateState.current = { activeId, starting, opening, closing, confirmClose, confirmCloseProject, actionDialog, bulkRun, showNotificationSettings, showAppUpdates, showReleaseNotes, showLibrary, showPalette };
   useEffect(() => {
     if (starting || releaseNotesAutoOpened.current || !releaseNotes.state?.shouldShow) return;
     releaseNotesAutoOpened.current = true;
@@ -155,11 +211,13 @@ function TabbedWorkspace() {
     });
   }, []);
   const onSessionAttention = useCallback((id: string, event: SessionAttentionEvent, title: string) => {
+    // Cancel immediately, even if request and completion arrive in the same React batch.
+    if (event.kind === 'question' || event.kind === 'approval') cancelCloseWait(id);
     if (workspaceClosing.current || updateRequest.current || !tabsRef.current.some(tab => tab.id === id && !tab.archivedThread)) return;
     if (!focusedWindow.current || updateState.current.activeId !== id) setAttention(previous => ({ ...previous, [id]: event }));
     // Host checks actual native focus independently and suppresses visible-tab toasts.
     void window.codex.notifySession?.({ ...event, sessionId: id, title: title.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 160) }).catch(() => {});
-  }, []);
+  }, [cancelCloseWait]);
   useEffect(() => {
     let subscribed = true;
     let observedFocus = false;
@@ -286,7 +344,7 @@ function TabbedWorkspace() {
       updateRequest.current = requestId;
       const prepare = async () => {
         const current = updateState.current;
-        if (current.starting || current.opening || current.closing || current.confirmClose || current.confirmCloseProject || current.actionDialog || current.showNotificationSettings || current.showAppUpdates || current.showReleaseNotes || current.showLibrary || current.showPalette || actionPending.current || pendingOpen.current) {
+        if (current.starting || current.opening || current.closing || current.confirmClose || current.confirmCloseProject || current.actionDialog || current.bulkRun || current.showNotificationSettings || current.showAppUpdates || current.showReleaseNotes || current.showLibrary || current.showPalette || actionPending.current || pendingOpen.current) {
           await window.codex.completeUpdatePrepare({ requestId, defer: true });
           updateRequest.current = null;
           return;
@@ -412,12 +470,76 @@ function TabbedWorkspace() {
     }
   }, []);
 
+  /** Reads the dependent conversations of a folder. One extra read-only `thread/list` with the
+   * subAgent source kinds; it never touches the folder history page or its cursor. */
+  const loadThreadChildren = useCallback(async (cwd: string, cursor?: string): Promise<void> => {
+    const key = projectKey(cwd);
+    if (!projectsRef.current.some(folder => sameFolder(folder, cwd))) return;
+    // Older browser fixtures have no relationship bridge: relationships simply stay unknown.
+    if (!window.codex.listThreadChildren) return;
+    if (childRequests.current.has(key)) {
+      if (!cursor) childRefreshPending.current.add(key);
+      return;
+    }
+    childRequests.current.add(key);
+    const revision = historyRevision.current;
+    const empty: ProjectHistory = { threads: [], cursor: null, loaded: false, loading: false, error: '' };
+    setChildHistories(previous => ({ ...previous, [key]: { ...(previous[key] || empty), loading: true, error: '' } }));
+    try {
+      const result = await window.codex.listThreadChildren(cwd, cursor);
+      if (!projectsRef.current.some(folder => sameFolder(folder, cwd))) return;
+      if (revision !== historyRevision.current) { childRefreshPending.current.add(key); return; }
+      const threads: Thread[] = (result.data || []).filter((thread: Thread) => !thread.cwd || sameFolder(thread.cwd, cwd));
+      setChildHistories(previous => {
+        const prior = previous[key] || empty;
+        const merged = cursor ? [...prior.threads, ...threads] : threads;
+        return { ...previous, [key]: { threads: [...new Map(merged.map(thread => [thread.id, thread])).values()], cursor: result.nextCursor || null, loaded: true, loading: false, error: '' } };
+      });
+    } catch (e) {
+      if (!projectsRef.current.some(folder => sameFolder(folder, cwd))) return;
+      setChildHistories(previous => ({ ...previous, [key]: { ...(previous[key] || empty), loaded: true, loading: false, error: errorText(e) } }));
+    } finally {
+      childRequests.current.delete(key);
+      if (childRefreshPending.current.delete(key)) void loadThreadChildren(cwd);
+    }
+  }, []);
+
+  /** Keeps the state and the ref in step: `report` writes the ref directly when it records a
+   * fresh link, so a plain `setChildLinks` would be overwritten on the next report. */
+  const updateChildLinks = useCallback((edit: (links: Record<string, ThreadChildLink[]>) => Record<string, ThreadChildLink[]>): void => {
+    childLinksRef.current = edit(childLinksRef.current);
+    setChildLinks(childLinksRef.current);
+  }, []);
+  /** Drops every navigation link that mentions one of `threadIds` as parent or child, so an
+   * archived, deleted or unlinked executor leaves the «Исполнители» row and the tree at once. */
+  const dropChildLinks = useCallback((threadIds: Iterable<string>): void => {
+    const ids = new Set(threadIds);
+    updateChildLinks(previous => {
+      const next: Record<string, ThreadChildLink[]> = {};
+      for (const [key, links] of Object.entries(previous)) next[key] = links.filter(link => !ids.has(link.childThreadId) && !ids.has(link.parentThreadId));
+      return next;
+    });
+  }, [updateChildLinks]);
+  const loadThreadChildLinks = useCallback(async (cwd: string): Promise<void> => {
+    const key = projectKey(cwd);
+    if (!window.codex.listThreadChildLinks || childLinkRequests.current.has(key) || !projectsRef.current.some(folder => sameFolder(folder, cwd))) return;
+    childLinkRequests.current.add(key);
+    try { const links = await window.codex.listThreadChildLinks(cwd); setChildLinks(previous => ({ ...previous, [key]: links || [] })); }
+    catch (e) { setError(errorText(e)); }
+    finally { childLinkRequests.current.delete(key); }
+  }, []);
+
+
   useEffect(() => {
     for (const cwd of projects) {
       const key = projectKey(cwd);
       if (expanded[key] && !historiesRef.current[key]?.loaded && !historyRequests.current.has(key)) void loadProjectHistory(cwd);
+      if (!childLinks[key] && !childLinkRequests.current.has(key)) void loadThreadChildLinks(cwd);
+      // Relationships are read for a folder the user actually opened, or for the whole
+      // «Подагенты» view; a collapsed folder costs no extra request.
+      if (expanded[key] && !childHistoriesRef.current[key]?.loaded && !childRequests.current.has(key)) void loadThreadChildren(cwd);
     }
-  }, [projects, expanded, loadProjectHistory]);
+  }, [projects, expanded, childLinks, loadProjectHistory, loadThreadChildren, loadThreadChildLinks]);
 
   useEffect(() => {
     for (const [id, summary] of Object.entries(summaries)) {
@@ -428,9 +550,11 @@ function TabbedWorkspace() {
       const key = projectKey(summary.cwd);
       if (expanded[key]) void loadProjectHistory(summary.cwd);
       else setHistories(previous => previous[key] ? { ...previous, [key]: { ...previous[key], loaded: false } } : previous);
+      if (expanded[key]) void loadThreadChildren(summary.cwd);
+      else setChildHistories(previous => previous[key] ? { ...previous, [key]: { ...previous[key], loaded: false } } : previous);
     }
     previousSummaries.current = summaries;
-  }, [summaries, expanded, loadProjectHistory]);
+  }, [summaries, expanded, loadProjectHistory, loadThreadChildren]);
 
   const report = useCallback((id: string, summary: SessionSummary) => {
     if (!tabsRef.current.some(tab => tab.id === id)) return;
@@ -440,7 +564,30 @@ function TabbedWorkspace() {
     if (summary.cwd) setTabs(previous => previous.some(tab => tab.id === id && tab.cwd !== summary.cwd)
       ? previous.map(tab => tab.id === id ? { ...tab, cwd: summary.cwd } : tab) : previous);
     if (summary.cwd) setProjects(previous => previous.some(folder => sameFolder(folder, summary.cwd)) ? previous : [...previous, summary.cwd]);
-  }, []);
+    const tab = tabsRef.current.find(item => item.id === id);
+    if (tab?.childOf && summary.threadId && summary.cwd && window.codex.createThreadChildLink) {
+      const key = projectKey(summary.cwd);
+      const known = childLinksRef.current[key] || [];
+      if (!known.some(link => link.childThreadId === summary.threadId)) {
+        const provider = summary.settings.provider || tab.provider || 'codex';
+        const link = { cwd: summary.cwd, parentThreadId: tab.childOf, childThreadId: summary.threadId, provider, model: summary.settings.model || null, effort: summary.settings.effort || null, label: tab.childLabel || null };
+        updateChildLinks(previous => ({ ...previous, [key]: [...known, { id: `pending:${summary.threadId}`, ...link, createdAt: new Date().toISOString() }] }));
+        void window.codex.createThreadChildLink(link).catch(() => {});
+      }
+      // Until the first send the default name «Агент A» lives only as the tab caption. Once the
+      // conversation has an id it becomes its real title through the usual rename, which the agent
+      // refuses while the thread is working — so retry on the next report instead of forcing it.
+      if (tab.childLabel && !executorRenamed.current.has(summary.threadId)
+        && summary.initialized && !summary.busy && !summary.loading && !summary.pending && !summary.terminalOpen) {
+        const { threadId, cwd } = summary;
+        const name = tab.childLabel;
+        executorRenamed.current.add(threadId);
+        void window.codex.manageThread({ action: 'rename', cwd, threadId, name })
+          .then(result => setThreadNames(previous => ({ ...previous, [threadId]: result.thread?.name || name })))
+          .catch(() => executorRenamed.current.delete(threadId));
+      }
+    }
+  }, [updateChildLinks]);
 
   const activate = (id: string) => { updateState.current.activeId = id; setActiveId(id); setError(''); if (focusedWindow.current) clearAttention(id); setShowAttention(false); setTabMenu(null); };
   const loadArchive = async (cursor?: string) => {
@@ -460,7 +607,7 @@ function TabbedWorkspace() {
     else if (jump) setTabs(previous => previous.map(tab => tab.id === id ? { ...tab, jump } : tab));
     activate(id);
   };
-  const open = async (cwd?: string, initialThread?: Thread, requestedProvider?: AgentProvider, jump?: Tab['jump'], options?: { fork?: Tab['fork']; restore?: UpdateTabSnapshot; draft?: string }): Promise<boolean> => {
+  const open = async (cwd?: string, initialThread?: Thread, requestedProvider?: AgentProvider, jump?: Tab['jump'], options?: { fork?: Tab['fork']; restore?: UpdateTabSnapshot; draft?: string; childOf?: string; childLabel?: string }): Promise<boolean> => {
     if (pendingOpen.current || actionPending.current || closingTab.current || workspaceClosing.current || updateRequest.current) return false;
     if (cwd && initialThread && !options?.fork) {
       const existing = tabsRef.current.find(tab => {
@@ -492,7 +639,7 @@ function TabbedWorkspace() {
         if (existing) { await window.codex.closeSession(created.id); created = null; setExpanded(previous => ({ ...previous, [projectKey(existing.cwd)]: true })); activate(existing.id); return true; }
       }
       const restored = options?.restore;
-      const tab: Tab = { ...created, initialThread, bridge: window.codex.forSession(created.id), jump, ...(options?.draft !== undefined ? { draft: options.draft } : {}), ...(options?.fork ? { fork: options.fork } : {}),
+      const tab: Tab = { ...created, initialThread, bridge: window.codex.forSession(created.id), jump, ...(options?.childOf ? { childOf: options.childOf } : {}), ...(options?.childLabel ? { childLabel: options.childLabel } : {}), ...(options?.draft !== undefined ? { draft: options.draft } : {}), ...(options?.fork ? { fork: options.fork } : {}),
         ...(restored ? { draft: restored.draft, attachments: restored.attachments, preservedDraft: restored.preservedDraft, restoreSettings: restored.settings,
           pendingMessage: restored.pendingMessage, queue: restored.queue ? { ...restored.queue, paused: true } : undefined, scrollTop: restored.scrollTop, scrollAnchor: restored.scrollAnchor } : {}) };
       setTabs(previous => restored?.pinned ? setTabPinned([...previous, tab], tab.id, true) : [...previous, tab]); activate(tab.id);
@@ -527,10 +674,36 @@ function TabbedWorkspace() {
       if (created) await window.codex.closeSession(created.id).catch(() => {});
     } finally { pendingOpen.current = false; setOpening(false); }
   };
-  const close = async (id: string) => {
-    if (closingTab.current || actionPending.current || pendingOpen.current) return;
+  const tabThreadId = (tab: Tab) => summariesRef.current[tab.id]?.threadId || tab.initialThread?.id;
+  /** Open executor tabs of a parent tab. A tab is only a parent of its own conversation, so an
+   * executor (`childOf` set) and an archive view never own executors of their own. */
+  const executorTabsOf = (id: string): Tab[] => {
     const tab = tabsRef.current.find(item => item.id === id);
-    if (!tab || summariesRef.current[id]?.terminalOpen) return;
+    if (!tab || tab.childOf || tab.archivedThread) return [];
+    const threadId = tabThreadId(tab);
+    return threadId ? tabsRef.current.filter(item => item.childOf === threadId && !item.archivedThread) : [];
+  };
+  const executorTabName = (id: string) => {
+    const tab = tabsRef.current.find(item => item.id === id);
+    if (!tab) return 'Агент-исполнитель';
+    return tab.childLabel || threadNames[tabThreadId(tab) || ''] || summariesRef.current[tab.id]?.title || 'Агент-исполнитель';
+  };
+  // The upper tab and executor row use the same guard and the same explanation.
+  const closeBlockedReason = (id: string) => {
+    if (summariesRef.current[id]?.terminalOpen) return 'Сначала закройте терминал этого диалога';
+    // Closing a parent closes its executors, so their terminals block it just as its own does.
+    const terminalChild = executorTabsOf(id).find(tab => summariesRef.current[tab.id]?.terminalOpen);
+    if (terminalChild) return `Сначала закройте терминал исполнителя «${executorTabName(terminalChild.id)}»`;
+    if (closingTab.current || closing) return 'Дождитесь закрытия другой вкладки';
+    if (actionPending.current || actionBusy) return 'Дождитесь завершения действия с диалогами';
+    if (pendingOpen.current || opening) return 'Дождитесь открытия диалога';
+    return '';
+  };
+  const close = async (id: string) => {
+    const blocked = closeBlockedReason(id);
+    if (blocked) { setError(blocked); return; }
+    const tab = tabsRef.current.find(item => item.id === id);
+    if (!tab) { setError('Эта вкладка уже закрыта.'); return; }
     // Capture before host disposal can deliver a final status and reset the view.
     const record = closedRecord(tab);
     closingTab.current = true;
@@ -547,9 +720,10 @@ function TabbedWorkspace() {
       setTabs(remaining);
       setActiveId(current => current === id ? remaining[Math.min(before.findIndex(tab => tab.id === id), remaining.length - 1)]?.id || '' : current);
       setSummaries(previous => { const next = { ...previous }; delete next[id]; return next; });
+      clearAttention(id);
       setConfirmClose(null);
     } catch (e) { setError(errorText(e)); }
-    finally { closingTab.current = false; setClosing(false); }
+    finally { cancelDeferredClose(id); closingTab.current = false; setClosing(false); }
   };
   /** Closed tabs retain their UI snapshot, while their CLI process is disposed. */
   const closedRecord = (tab: Tab): ClosedTab => {
@@ -573,7 +747,13 @@ function TabbedWorkspace() {
         const tab: Tab = { id, cwd: record.cwd, archivedThread: snapshot.archivedThread, scrollTop: snapshot.scrollTop, scrollAnchor: snapshot.scrollAnchor };
         setTabs(previous => snapshot.pinned ? setTabPinned([...previous, tab], id, true) : [...previous, tab]); activate(id);
       }
-    } else if (!await open(record.cwd, snapshot.thread, record.provider, undefined, { restore: snapshot })) return;
+    } else {
+      // A closed executor comes back into the row of its parent, not as a separate root tab:
+      // the navigation link survived the closure, so the restored tab belongs under it again.
+      const parentId = snapshot.thread ? childParentOf(snapshot.thread.id) : undefined;
+      const label = snapshot.thread ? childLinkOf(snapshot.thread.id)?.label : null;
+      if (!await open(record.cwd, snapshot.thread, record.provider, undefined, { restore: snapshot, ...(parentId ? { childOf: parentId, ...(label ? { childLabel: label } : {}) } : {}) })) return;
+    }
     closedTabsRef.current = closedTabsRef.current.filter(item => item !== record);
     setClosedTabs(closedTabsRef.current);
   };
@@ -586,12 +766,122 @@ function TabbedWorkspace() {
     activate(next.id);
   };
   shortcutActions.current = { cycle: cycleTab, restore: () => { void restoreClosed(); } };
-  const requestClose = (id: string) => {
-    const state = summaries[id];
-    if (state?.terminalOpen) return;
-    if (state?.busy || state?.loading || state?.pending) setConfirmClose(id);
-    else void close(id);
+  const tabWorking = (id: string) => {
+    const state = summariesRef.current[id];
+    return Boolean(state?.busy || state?.loading || state?.pending || state?.pendingDelivery);
   };
+  /** Closes the executors of a parent tab first and the parent last, so an executor is never left
+   * without the conversation whose row lists it. Stops if the host refused to close a tab. */
+  const closeGroup = async (parentId: string): Promise<boolean> => {
+    closingGroup.current = true;
+    try {
+      for (const child of executorTabsOf(parentId)) {
+        await close(child.id);
+        if (tabsRef.current.some(tab => tab.id === child.id)) return false;
+      }
+      await close(parentId);
+      return !tabsRef.current.some(tab => tab.id === parentId);
+    } finally { closingGroup.current = false; }
+  };
+  /** «Закрыть остальные» closes executor tabs before their parents, so an idle parent can never
+   * leave one of its working executors behind as an orphan. */
+  const closeOthers = async (id: string) => {
+    const closable = (other: Tab) => {
+      const state = summariesRef.current[other.id];
+      return other.id !== id && !other.pinned && !state?.busy && !state?.pending && !state?.loading && !state?.terminalOpen;
+    };
+    for (const other of tabsRef.current.filter(other => other.childOf && closable(other))) await close(other.id);
+    for (const other of tabsRef.current.filter(other => !other.childOf && closable(other))) {
+      if (executorTabsOf(other.id).length) continue;
+      await close(other.id);
+    }
+  };
+  /** Why «Дождаться и закрыть» is unavailable for the whole group. The first id is the parent. */
+  const waitGroupBlocked = (ids: string[]) => {
+    const member = (id: string) => id === ids[0] ? 'диалога' : `исполнителя «${executorTabName(id)}»`;
+    for (const id of ids) {
+      const state = summariesRef.current[id];
+      if (state?.pending) return `Сначала ответьте на вопрос ${member(id)}`;
+      if (state?.pendingDelivery) return `Сначала проверьте неподтверждённую отправку ${member(id)}`;
+    }
+    for (const id of ids) {
+      const state = summariesRef.current[id];
+      if (state?.loading && !state.busy) return `Дождитесь загрузки ${member(id)}`;
+    }
+    return '';
+  };
+  const requestClose = (id: string) => {
+    const blocked = closeBlockedReason(id);
+    if (blocked) { setError(blocked); return; }
+    setError('');
+    const children = executorTabsOf(id);
+    const group = [id, ...children.map(tab => tab.id)];
+    // A parent and its executors are closed as one: confirmation is asked once, for the group.
+    if (group.some(member => member in deferredCloseRef.current || tabWorking(member))) { setConfirmClose(id); return; }
+    void (children.length ? closeGroup(id) : close(id));
+  };
+  const waitAndClose = (id: string) => {
+    const blocked = closeBlockedReason(id);
+    if (blocked) { setError(blocked); return; }
+    const children = executorTabsOf(id);
+    if (children.length) {
+      const group = [id, ...children.map(tab => tab.id)];
+      const waitBlocked = waitGroupBlocked(group);
+      if (waitBlocked) { setError(`${waitBlocked}.`); return; }
+      // Turns may have completed while the confirmation dialog was open.
+      const awaited = group.filter(member => summariesRef.current[member]?.busy);
+      if (!awaited.length) { void closeGroup(id); return; }
+      const next = { ...deferredCloseRef.current };
+      for (const member of group) next[member] = summariesRef.current[member]?.completedTurnRevision || 0;
+      deferredCloseRef.current = next; setDeferredClose(next);
+      cascadeCloseRef.current = { parentId: id, ids: children.map(tab => tab.id), awaited };
+      setCascadeClose(cascadeCloseRef.current);
+      setConfirmClose(null);
+      return;
+    }
+    const state = summariesRef.current[id];
+    if (state?.pending || state?.pendingDelivery) { setError('Сначала ответьте агенту или проверьте неподтверждённую отправку.'); return; }
+    if (!state?.busy && !state?.loading) { void close(id); return; }
+    if (!state?.busy) { setError('Дождитесь загрузки диалога.'); return; }
+    const next = { ...deferredCloseRef.current, [id]: state.completedTurnRevision || 0 };
+    deferredCloseRef.current = next; setDeferredClose(next); setConfirmClose(null);
+  };
+  useEffect(() => {
+    const cascade = cascadeCloseRef.current;
+    // While a group close runs, its remaining members must not be closed a second time.
+    if (closingGroup.current) return;
+    for (const [id, revision] of Object.entries(deferredClose)) {
+      if (!(id in deferredCloseRef.current)) continue;
+      // Members of a cascade are closed together by the effect below, never one by one.
+      if (cascade && (cascade.parentId === id || cascade.ids.includes(id))) continue;
+      const state = summaries[id];
+      if (!tabs.some(tab => tab.id === id) || state?.pending) { cancelDeferredClose(id); continue; }
+      // Keep the completion marker while another tab operation holds the shared guard.
+      if (!state || (state.completedTurnRevision || 0) <= revision || state.busy || state.loading || state.pendingDelivery || closeBlockedReason(id)) continue;
+      void close(id);
+      break;
+    }
+  }, [deferredClose, summaries, tabs, closing, actionBusy, opening]);
+  useEffect(() => {
+    const cascade = cascadeClose;
+    if (!cascade || !cascadeCloseRef.current) return;
+    // Executors opened after the wait was armed count too: the group close would take them along.
+    const members = new Set([cascade.parentId, ...cascade.ids, ...executorTabsOf(cascade.parentId).map(tab => tab.id)]);
+    const group = [...members].filter(id => tabs.some(tab => tab.id === id));
+    if (!group.includes(cascade.parentId)) { cancelCascadeClose(); return; }
+    // A question or a permission request of any member cancels the whole wait: the tabs stay.
+    if (group.some(id => summaries[id]?.pending)) { cancelCascadeClose(); return; }
+    for (const id of group) {
+      const state = summaries[id];
+      if (!state || state.busy || state.loading || state.pendingDelivery) return;
+      const revision = deferredClose[id];
+      // A working member must report an accepted turn/completed; a lost connection is not one.
+      if (cascade.awaited.includes(id) && revision !== undefined && (state.completedTurnRevision || 0) <= revision) return;
+    }
+    if (closeBlockedReason(cascade.parentId)) return;
+    cascadeCloseRef.current = null; setCascadeClose(null);
+    void closeGroup(cascade.parentId);
+  }, [cascadeClose, deferredClose, summaries, tabs, closing, actionBusy, opening]);
   const closeProject = async (cwd: string, force = false) => {
     if (closing || actionPending.current || pendingOpen.current) return;
     actionPending.current = true; setActionBusy(true); setClosing(true); setError('');
@@ -609,7 +899,10 @@ function TabbedWorkspace() {
       const key = projectKey(cwd);
       setExpanded(previous => { const next = { ...previous }; delete next[key]; return next; });
       setHistories(previous => { const next = { ...previous }; delete next[key]; return next; });
+      setChildHistories(previous => { const next = { ...previous }; delete next[key]; return next; });
+      setExpandedGroups(previous => Object.fromEntries(Object.entries(previous).filter(([groupKey]) => !groupKey.startsWith(`${key}|`))));
       historyRefreshPending.current.delete(key);
+      childRefreshPending.current.delete(key);
       setSearchRevision(value => value + 1);
       setConfirmCloseProject(null);
     } catch (e) { setError(errorText(e)); }
@@ -636,6 +929,25 @@ function TabbedWorkspace() {
     const id = state?.threadId || tab.initialThread?.id;
     return id === threadId && (state?.busy || state?.loading || state?.terminalOpen || state?.pendingDelivery || Boolean(state?.pending));
   });
+  /** Keep failed RPCs entirely reversible in the UI. Close local views only after the agent
+   * confirms the operation, including reported descendants. Returns a close error, if any. */
+  const closeAffectedTabs = async (affected: Set<string>): Promise<string> => {
+    let closeError = '';
+    const removed = tabsRef.current.filter(tab => affected.has(tab.archivedThread?.id || summariesRef.current[tab.id]?.threadId || tab.initialThread?.id || ''));
+    for (const tab of removed) if (!tab.archivedThread) {
+      try { await window.codex.closeSession(tab.id); }
+      catch (e) { closeError = `Операция выполнена, но соединение вкладки не закрылось: ${errorText(e)}`; }
+    }
+    const removedIds = new Set(removed.map(tab => tab.id));
+    const remaining = tabsRef.current.filter(tab => !removedIds.has(tab.id));
+    tabsRef.current = remaining;
+    setTabs(remaining);
+    setSummaries(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => !removedIds.has(id))));
+    setActiveId(previous => removedIds.has(previous) ? remaining[0]?.id || '' : previous);
+    setHistories(previous => Object.fromEntries(Object.entries(previous).map(([key, history]) => [key, { ...history, threads: history.threads.filter(item => !affected.has(item.id)) }])));
+    setArchiveThreads(previous => previous.filter(item => !affected.has(item.id)));
+    return closeError;
+  };
   const performAction = async (action: ThreadAction, cwd: string, thread: Thread, name?: string) => {
     if (actionPending.current) return;
     if (threadLocked(thread.id)) { setError('Дождитесь завершения работы диалога и закройте его терминал.'); return; }
@@ -651,21 +963,24 @@ function TabbedWorkspace() {
         const title = result.thread?.name || name!.trim();
         setThreadNames(previous => ({ ...previous, [thread.id]: title }));
         setHistories(previous => Object.fromEntries(Object.entries(previous).map(([key, history]) => [key, { ...history, threads: history.threads.map(item => item.id === thread.id ? { ...item, name: title } : item) }])));
-      } else {
-        // Keep failed RPCs entirely reversible in the UI. Close local views only
-        // after Codex confirms the operation, including reported descendants.
-        const removed = tabsRef.current.filter(tab => affected.has(tab.archivedThread?.id || summariesRef.current[tab.id]?.threadId || tab.initialThread?.id || ''));
-        for (const tab of removed) if (!tab.archivedThread) {
-          try { await window.codex.closeSession(tab.id); }
-          catch (e) { closeError = `Операция выполнена, но соединение вкладки не закрылось: ${errorText(e)}`; }
+        // An executor carries its name in the navigation link as well, so the row and the next
+        // free letter stay in step after a rename. The link is presentation data: a failure here
+        // never reverses the rename the agent already accepted.
+        if (childParentOf(thread.id) && window.codex.manageThreadChildLink) {
+          updateChildLinks(previous => {
+            const next: Record<string, ThreadChildLink[]> = {};
+            for (const [key, links] of Object.entries(previous)) next[key] = links.map(link => link.childThreadId === thread.id ? { ...link, label: title } : link);
+            return next;
+          });
+          await window.codex.manageThreadChildLink({ action: 'relabel', childThreadId: thread.id, label: title }).catch(() => {});
         }
-        const removedIds = new Set(removed.map(tab => tab.id));
-        const remaining = tabsRef.current.filter(tab => !removedIds.has(tab.id));
-        setTabs(remaining);
-        setSummaries(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => !removedIds.has(id))));
-        setActiveId(previous => removedIds.has(previous) ? remaining[0]?.id || '' : previous);
-        setHistories(previous => Object.fromEntries(Object.entries(previous).map(([key, history]) => [key, { ...history, threads: history.threads.filter(item => !affected.has(item.id)) }])));
-        setArchiveThreads(previous => previous.filter(item => !affected.has(item.id)));
+      } else {
+        closeError = await closeAffectedTabs(affected);
+        // The host forgets the links of a deleted conversation; archiving hides it from the
+        // folder just as finally, so drop them here too — otherwise the «Исполнители» row keeps
+        // a nameless ghost of a conversation that is no longer in the folder.
+        if (action === 'archive' && window.codex.manageThreadChildLink) for (const id of affected) await window.codex.manageThreadChildLink({ action: 'unlink', childThreadId: id }).catch(() => {});
+        if (action === 'archive' || action === 'delete') dropChildLinks(affected);
         if (action === 'restore') {
           const folder = result.thread?.cwd || cwd;
           if (folder) {
@@ -677,20 +992,145 @@ function TabbedWorkspace() {
       setActionDialog(null);
       if (closeError) setError(closeError);
       if (cwd) void loadProjectHistory(cwd);
+      if (cwd) void loadThreadChildren(cwd);
       if (action !== 'rename') void loadArchive();
     } catch (e) { setError(errorText(e)); }
     finally { actionPending.current = false; setActionBusy(false); }
   };
-  /** Opens a copy of `thread` as a new tab; the source dialog stays as it is. */
   const forkThread = (cwd: string, thread: Thread, lastTurnId?: string) => {
-    if (pendingOpen.current || actionPending.current) return;
-    if (threadLocked(thread.id)) { setError('Дождитесь завершения работы диалога перед ответвлением.'); return; }
-    const provider: AgentProvider = thread.provider || (thread.id.startsWith('claude:') ? 'claude' : 'codex');
-    void open(cwd, thread, provider, undefined, { fork: lastTurnId ? { lastTurnId } : {} });
+    if (pendingOpen.current || actionPending.current || threadLocked(thread.id)) return;
+    void open(cwd, thread, thread.provider || (thread.id.startsWith('claude:') ? 'claude' : 'codex'), undefined, { fork: lastTurnId ? { lastTurnId } : {} });
+  };
+  const knownThread = (threadId: string, cwd: string): Thread | undefined => {
+    const key = projectKey(cwd);
+    const tab = tabsRef.current.find(item => (summariesRef.current[item.id]?.threadId || item.initialThread?.id) === threadId);
+    const summary = tab && summariesRef.current[tab.id];
+    return (histories[key]?.threads || []).find(thread => thread.id === threadId) || (childHistories[key]?.threads || []).find(thread => thread.id === threadId)
+      || (summary ? { id: threadId, cwd: summary.cwd, name: summary.title, provider: summary.settings.provider || tab?.provider || 'codex' } : tab?.initialThread);
+  };
+  const threadTitle = (threadId: string, cwd = '') => threadNames[threadId] || knownThread(threadId, cwd)?.name || knownThread(threadId, cwd)?.preview;
+  const childLinkOf = (threadId: string) => Object.values(childLinksRef.current).flat().find(link => link.childThreadId === threadId);
+  const childParentOf = (threadId: string) => childLinkOf(threadId)?.parentThreadId;
+  const executorMutationBlockedReason = (thread: ExecutorThread) => {
+    if (preparingUpdate || savingBeforeClose) return 'Дождитесь сохранения рабочего места';
+    if (updateStatus?.state === 'waiting') return 'Приложение ожидает завершения работы перед обновлением';
+    if (confirmCloseProject) return 'Сначала завершите закрытие проекта';
+    if (pendingOpen.current || opening) return 'Дождитесь открытия диалога';
+    if (actionPending.current || actionBusy || closingTab.current || closing) return 'Дождитесь завершения действия с диалогами';
+    if (thread.id.startsWith('session:')) return 'Диалог ещё не создан';
+    if (threadLocked(thread.id)) return 'Сначала завершите работу диалога и закройте его терминал';
+    if (!window.codex.manageThreadChildLink) return 'Управление связями диалогов недоступно';
+    return '';
+  };
+  const childThreadsFor = (parentThreadId: string, cwd?: string): ExecutorThread[] => {
+    const children = new Map<string, ExecutorThread>();
+    for (const link of Object.values(childLinksRef.current).flat()) {
+      if (link.parentThreadId !== parentThreadId || (cwd && !sameFolder(link.cwd, cwd))) continue;
+      children.set(link.childThreadId, { ...knownThread(link.childThreadId, link.cwd), id: link.childThreadId, cwd: link.cwd, provider: link.provider, label: link.label || undefined });
+    }
+    const siblingTabs = tabsRef.current.filter(tab => tab.childOf === parentThreadId && !tab.archivedThread && (!cwd || sameFolder(tab.cwd, cwd)));
+    for (const tab of siblingTabs) {
+      if (tab.childOf !== parentThreadId || tab.archivedThread || (cwd && !sameFolder(tab.cwd, cwd))) continue;
+      const summary = summariesRef.current[tab.id];
+      const id = summary?.threadId || tab.initialThread?.id || `session:${tab.id}`;
+      const fallbackLabel = nextExecutorLabel(siblingTabs.slice(0, siblingTabs.indexOf(tab)).map(item => item.childLabel));
+      const label = children.get(id)?.label || tab.childLabel || fallbackLabel;
+      children.set(id, { ...children.get(id), id, cwd: tab.cwd, provider: summary?.settings.provider || tab.provider || 'codex', name: threadNames[id] || label || summary?.title || tab.initialThread?.name, label, sessionId: tab.id,
+        busy: summary?.busy, pending: summary?.pending, loading: summary?.loading, connection: summary?.connection, terminalOpen: summary?.terminalOpen,
+        pendingKind: summary?.pendingKind, unread: Boolean(attention[tab.id]), attentionKind: attention[tab.id]?.kind,
+        closeWhenComplete: tab.id in deferredClose, closeBlockedReason: closeBlockedReason(tab.id) });
+    }
+    return [...children.values()].map(thread => ({ ...thread, unlinkBlockedReason: executorMutationBlockedReason(thread) }));
+  };
+  const createExecutor = (cwd: string, parentThreadId: string, draft?: string) => {
+    if (pendingOpen.current || actionPending.current || childParentOf(parentThreadId)) return;
+    const parentTab = tabsRef.current.find(tab => (summariesRef.current[tab.id]?.threadId || tab.initialThread?.id) === parentThreadId);
+    const parent = knownThread(parentThreadId, cwd);
+    const provider = (parentTab && summariesRef.current[parentTab.id]?.settings.provider) || parent?.provider || parentTab?.provider || (parentThreadId.startsWith('claude:') ? 'claude' : 'codex');
+    const label = nextExecutorLabel(childThreadsFor(parentThreadId, cwd).map(thread => thread.label || thread.name));
+    void open(cwd, undefined, provider, undefined, { childOf: parentThreadId, childLabel: label, ...(draft !== undefined ? { draft } : {}) });
+  };
+  /** Opens an executor from any entry point: the row of its parent or the project tree. An open
+   * tab is only activated; otherwise the parent is opened first, so the executor always appears
+   * selected in the «Исполнители» row of a visible parent instead of a separate root tab. */
+  const openExecutor = async (cwd: string, thread: ExecutorThread) => {
+    const sessionId = thread.sessionId || tabsRef.current.find(tab => tab.childOf && tabThreadId(tab) === thread.id)?.id;
+    if (sessionId && tabsRef.current.some(tab => tab.id === sessionId)) { activate(sessionId); return; }
+    if (thread.id.startsWith('session:')) return;
+    const parentId = childParentOf(thread.id);
+    if (!parentId) { void open(cwd, thread, thread.provider); return; }
+    const parentOpen = tabsRef.current.some(tab => !tab.childOf && !tab.archivedThread && tabThreadId(tab) === parentId);
+    // The parent keeps the focus only until the executor itself opens right after it.
+    if (!parentOpen && !await openParentThread(cwd, parentId)) return;
+    await open(cwd, thread, thread.provider, undefined, { childOf: parentId, childLabel: thread.label || childLinkOf(thread.id)?.label || thread.name || undefined });
+  };
+  const openParentThread = async (cwd: string, parentThreadId: string) => {
+    const existing = tabsRef.current.find(tab => tabThreadId(tab) === parentThreadId);
+    if (existing) { activate(existing.id); return true; }
+    const parent = knownThread(parentThreadId, cwd) || { id: parentThreadId, cwd, provider: parentThreadId.startsWith('claude:') ? 'claude' as const : 'codex' as const };
+    return open(cwd, parent, parent.provider);
+  };
+  const executorAction = (action: ExecutorAction, cwd: string, thread: ExecutorThread) => {
+    if (action === 'close') { if (thread.sessionId) requestClose(thread.sessionId); else setError('Вкладка уже закрыта. Её запись можно убрать из ряда.'); return; }
+    const blocked = executorMutationBlockedReason(thread);
+    if (blocked) { setError(blocked); return; }
+    if (action !== 'unlink') { threadAction(action, cwd, thread); return; }
+    if (!window.codex.manageThreadChildLink) { setError('Управление связями диалогов недоступно'); return; }
+    actionPending.current = true; setActionBusy(true); setError('');
+    void window.codex.manageThreadChildLink({ action: 'unlink', childThreadId: thread.id }).then(() => {
+      if (thread.sessionId) cancelDeferredClose(thread.sessionId);
+      dropChildLinks([thread.id]);
+      setTabs(previous => previous.map(tab => {
+        if (tab.id !== thread.sessionId && (summariesRef.current[tab.id]?.threadId || tab.initialThread?.id) !== thread.id) return tab;
+        const { childOf, childLabel, ...plain } = tab;
+        return plain;
+      }));
+    }).catch(error => setError(errorText(error))).finally(() => { actionPending.current = false; setActionBusy(false); });
+  };
+  const cancelBulk = () => { if (bulkRunRef.current?.phase === 'running') return; setBulkScope(null); setBulkSelected([]); };
+  const closeBulkRun = () => {
+    const run = bulkRunRef.current;
+    if (!run || run.phase === 'running') return;
+    setBulkRun(null);
+    if (run.phase === 'done') setBulkSelected(previous => previous.filter(id => !run.outcomes.some(outcome => outcome.id === id && outcome.ok)));
+  };
+  const runBulkArchive = async () => {
+    const run = bulkRunRef.current;
+    if (!run || run.phase !== 'confirm' || actionPending.current) return;
+    const outcomes: BulkOutcome[] = [];
+    actionPending.current = true; setActionBusy(true); bulkStop.current = false;
+    setBulkRun({ ...run, phase: 'running' });
+    try {
+      for (const target of run.targets) {
+        if (bulkStop.current) break;
+        setBulkRun({ ...run, phase: 'running', outcomes: [...outcomes], current: target.title });
+        try {
+          if (threadLocked(target.id)) throw new Error('Дождитесь завершения работы диалога и закройте его терминал.');
+          const result = await window.codex.manageThread({ action: 'archive', cwd: target.cwd, threadId: target.id });
+          const affected = new Set([target.id, ...(result.affectedThreadIds || [])]);
+          const closeError = await closeAffectedTabs(affected);
+          if (closeError) setError(closeError);
+          for (const id of affected) await window.codex.manageThreadChildLink?.({ action: 'unlink', childThreadId: id }).catch(() => {});
+          dropChildLinks(affected);
+          historyRevision.current++;
+          setSearchRevision(value => value + 1);
+          outcomes.push({ ...target, ok: true });
+        } catch (error) { outcomes.push({ ...target, ok: false, error: errorText(error) }); }
+        setBulkRun({ ...run, phase: 'running', outcomes: [...outcomes] });
+      }
+      setBulkRun({ ...run, phase: 'done', outcomes, stopped: bulkStop.current });
+      for (const cwd of new Set(run.targets.map(target => target.cwd))) { void loadProjectHistory(cwd); void loadThreadChildren(cwd); }
+      void loadArchive();
+    } finally { actionPending.current = false; setActionBusy(false); }
+  };
+  const requestBulkArchive = (scope: BulkScope, rows: BulkRow[]) => {
+    if (!sameBulkScope(bulkScope, scope) || bulkRunRef.current || actionPending.current) return;
+    const plan = planBulkArchive({ rows, selected: bulkSelected, names: threadNames, locked: threadLocked });
+    if (!plan.targets.length) return;
+    setBulkRun({ phase: 'confirm', scope, scopeLabel: bulkScopeLabel(scope, folderName), targets: plan.targets, blocked: plan.blocked, outcomes: [] });
   };
   const threadAction = (action: ThreadAction, cwd: string, thread: Thread) => {
     if (actionPending.current) return;
-    if (action === 'fork') { forkThread(cwd, thread); return; }
     if (action === 'rename' || action === 'delete') {
       setError(''); setNewName(threadNames[thread.id] || thread.name || thread.preview || ''); setActionDialog({ action, cwd, thread });
     } else void performAction(action, cwd, thread);
@@ -721,7 +1161,11 @@ function TabbedWorkspace() {
     refreshProject: (cwd, cursor) => void loadProjectHistory(cwd, cursor),
     newChat: (cwd: string, provider?: AgentProvider) => void open(cwd, undefined, provider), openThread: (cwd, thread) => void open(cwd, thread), report, registerUpdateCapture, onSessionStateChange, flushSessionState, onSessionAttention,
     handoff: (cwd, provider, text) => open(cwd, undefined, provider, undefined, { draft: text }),
-    forkThread, openPalette: () => setShowPalette(true),
+    childParentOf, createExecutor, childThreads: childThreadsFor, openChildThread: openExecutor, executorAction, openParentThread, threadTitle, executorLabel: sessionId => tabsRef.current.find(tab => tab.id === sessionId)?.childLabel,
+    closeWhenComplete: sessionId => sessionId in deferredClose,
+    childCount: (threadId, cwd) => childThreadsFor(threadId, cwd).filter(thread => !thread.id.startsWith('session:')).length,
+    childHistories, expandedGroups, toggleGroup: (cwd, parentId) => setExpandedGroups(previous => ({ ...previous, [`${projectKey(cwd)}|${parentId}`]: !previous[`${projectKey(cwd)}|${parentId}`] })),
+    startBulk: scope => { setBulkScope(scope); setBulkSelected([]); }, cancelBulk: () => { setBulkScope(null); setBulkSelected([]); }, toggleBulk: (scope, id) => setBulkSelected(previous => previous.includes(id) ? previous.filter(value => value !== id) : [...previous, id]), setBulkSelection: (_scope, ids) => setBulkSelected(ids), requestBulkArchive, bulkScope, bulkSelected, bulkBusy: Boolean(bulkRun), openPalette: () => setShowPalette(true),
   };
   const attentionTabs = tabs.filter(tab => !tab.archivedThread && (summaries[tab.id]?.pending || attention[tab.id]));
   const parallelSessions = tabs.map(tab => {
@@ -742,6 +1186,7 @@ function TabbedWorkspace() {
     const activeCwd = activeState?.cwd || active?.cwd || projects[0] || '';
     const activeThread = activeState?.threadId ? { id: activeState.threadId, cwd: activeCwd, name: activeState.title, provider: activeState.settings.provider } : undefined;
     const busyActive = Boolean(activeState?.busy || activeState?.loading || activeState?.terminalOpen || activeState?.pending);
+    const activeIsExecutor = Boolean(active?.childOf);
     const tabTitle = (tab: Tab) => { const state = summaries[tab.id]; return threadNames[state?.threadId || tab.initialThread?.id || ''] || state?.title || tab.archivedThread?.name || tab.initialThread?.name || tab.initialThread?.preview || 'Новый диалог'; };
     const commands: PaletteCommand[] = tabs.map(tab => ({
       id: `tab:${tab.id}`, group: 'Открытые вкладки', label: `${folderName(tab.cwd)} · ${tabTitle(tab)}`, hint: `${tab.cwd}${tab.pinned ? ' · закреплена' : ''}${activeId === tab.id ? ' · текущая' : ''}`, keywords: tab.cwd,
@@ -750,7 +1195,7 @@ function TabbedWorkspace() {
     commands.push(
       { id: 'new-codex', group: 'Действия', label: 'Новый диалог Codex', hint: activeCwd ? folderName(activeCwd) : 'Текущая папка', icon: Plus, disabled: opening || !activeCwd, run: () => void open(activeCwd, undefined, 'codex') },
       { id: 'new-claude', group: 'Действия', label: 'Новый диалог Claude Code', hint: activeCwd ? folderName(activeCwd) : 'Текущая папка', icon: Plus, disabled: opening || !activeCwd, run: () => void open(activeCwd, undefined, 'claude') },
-      { id: 'fork', group: 'Действия', label: 'Ответвить текущую беседу', hint: activeThread ? 'Копия беседы в новой вкладке. Папка и файлы общие' : 'В текущей вкладке нет диалога', icon: GitFork, disabled: !activeThread || busyActive || opening, run: () => { if (activeThread) forkThread(activeCwd, activeThread); } },
+      { id: 'executor', group: 'Действия', label: 'Новый агент-исполнитель', hint: activeIsExecutor ? 'У агента-исполнителя своих исполнителей нет' : activeThread ? 'Чистый диалог этой папки' : 'Сначала откройте диалог', icon: Bot, disabled: activeIsExecutor || !activeThread || opening, run: () => { if (activeThread) createExecutor(activeCwd, activeThread.id); } },
       { id: 'restore-closed', group: 'Действия', label: 'Вернуть закрытую вкладку', hint: closedTabs[0] ? `${folderName(closedTabs[0].cwd)} · ${closedTabs[0].title}` : 'Закрытых вкладок нет', shortcut: 'Ctrl+Shift+T', icon: RotateCcw, disabled: !closedTabs.length || opening, run: restoreClosed },
       { id: 'pin', group: 'Действия', label: active?.pinned ? 'Открепить текущую вкладку' : 'Закрепить текущую вкладку', icon: active?.pinned ? PinOff : Pin, disabled: !active, run: () => { if (active) togglePin(active.id); } },
       { id: 'close-tab', group: 'Действия', label: 'Закрыть текущую вкладку', icon: X, disabled: !active || closing || Boolean(activeState?.terminalOpen), run: () => { if (active) requestClose(active.id); } },
@@ -760,8 +1205,8 @@ function TabbedWorkspace() {
       { id: 'library', group: 'Действия', label: 'История и закладки', hint: 'Поиск по сообщениям Codex и Claude', icon: BookMarked, run: () => setShowLibrary(true) },
       { id: 'archive', group: 'Действия', label: archiveOpen ? 'Скрыть архив' : 'Показать архив', icon: ArchiveRestore, run: () => { setArchiveOpen(previous => !previous); if (!archiveOpen) void loadArchive(); } },
       { id: 'attention', group: 'Действия', label: 'Требуют внимания', hint: attentionTabs.length ? `${attentionTabs.length} диалог(ов)` : 'Все просмотрено', icon: BellRing, run: () => setShowAttention(true) },
-      { id: 'release-notes', group: 'Действия', label: 'Что нового?', hint: releaseNotes.state?.currentVersion ? `Изменения версии ${releaseNotes.state.currentVersion}` : 'Изменения Codex Desk', icon: Sparkles, run: () => setShowReleaseNotes(true) },
-      { id: 'app-updates', group: 'Действия', label: 'Обновления приложения', hint: 'Новая версия Codex Desk', icon: RefreshCw, run: () => setShowAppUpdates(true) },
+      { id: 'release-notes', group: 'Действия', label: 'Что нового?', hint: releaseNotes.state?.currentVersion ? `Изменения версии ${releaseNotes.state.currentVersion}` : 'Изменения Кузьмича', icon: Sparkles, run: () => setShowReleaseNotes(true) },
+      { id: 'app-updates', group: 'Действия', label: 'Обновления приложения', hint: 'Новая версия Кузьмича', icon: RefreshCw, run: () => setShowAppUpdates(true) },
       { id: 'notifications', group: 'Действия', label: 'Настройки уведомлений', icon: Bell, run: () => setShowNotificationSettings(true) },
     );
     const openIds = new Set(tabs.map(tab => `${projectKey(tab.cwd)}:${summaries[tab.id]?.threadId || tab.initialThread?.id || ''}`));
@@ -776,23 +1221,70 @@ function TabbedWorkspace() {
     return commands;
   };
 
+  const activeExecutor = tabs.find(tab => tab.id === activeId && tab.childOf);
+  const executorName = (child: ExecutorThread) => child.label || child.name || child.preview || 'Агент-исполнитель';
+  /** The «Исполнители» row lives inside the parent's own view, so from any other tab this badge
+   * is the only sign of their work: waiting outranks working, and a result finished in the
+   * background keeps an unread dot until the executor is opened. */
+  const parentExecutorState = (parentId: string, cwd: string) => {
+    const children = childThreadsFor(parentId, cwd);
+    const selected = activeExecutor ? children.find(child => child.sessionId === activeExecutor.id) : undefined;
+    const waiting = children.filter(child => child.pending || (child.unread && child.attentionKind === 'question'));
+    const rest = children.filter(child => !waiting.includes(child));
+    const running = rest.filter(child => child.busy);
+    const unread = rest.filter(child => child.unread);
+    return {
+      selected, waiting, running, unread,
+      hint: [
+        ...waiting.map(child => `${executorName(child)} ждёт ответа`),
+        ...running.map(child => `${executorName(child)} работает`),
+        ...unread.filter(child => !child.busy).map(child => `${executorName(child)}: ${child.attentionKind === 'error' ? 'ошибка' : 'новый результат'}`),
+      ].join('\n'),
+    };
+  };
+  const executorBadge = (state: ReturnType<typeof parentExecutorState>) => {
+    const count = state.waiting.length || state.running.length || state.unread.length;
+    if (!state.selected && !count) return null;
+    const tone = state.waiting.length ? 'waiting' : state.running.length ? 'running' : '';
+    return <span className={`session-executor-badge ${tone}`} aria-hidden="true">
+      {tone === 'running' ? <LoaderCircle size={11} className="spin" /> : <Bot size={11} />}
+      <span>{state.selected ? shortExecutorName(executorName(state.selected)) : count}</span>
+      {state.unread.length > 0 && <span className="tab-unread" />}
+    </span>;
+  };
+  const missingParent = activeExecutor && !tabs.some(tab => !tab.childOf && !tab.archivedThread && sameFolder(tab.cwd, activeExecutor.cwd) && (summaries[tab.id]?.threadId || tab.initialThread?.id) === activeExecutor.childOf) ? activeExecutor : undefined;
+  const closeState = confirmClose ? summaries[confirmClose] : undefined;
+  const closeExecutor = confirmClose ? tabs.find(tab => tab.id === confirmClose)?.childOf : undefined;
+  const closeDeferred = Boolean(confirmClose && confirmClose in deferredClose);
+  // Closing a parent closes its executors too, so one dialog answers for the whole group.
+  const closeChildren = confirmClose ? executorTabsOf(confirmClose) : [];
+  const closeGroupIds = confirmClose ? [confirmClose, ...closeChildren.map(tab => tab.id)] : [];
+  const closeBusy = closeGroupIds.filter(id => summaries[id]?.busy || summaries[id]?.loading);
+  const closeGroupNames = closeChildren.map(tab => executorTabName(tab.id)).join(', ');
+  const closeBusyNames = closeBusy.map(id => id === confirmClose ? 'этот диалог' : executorTabName(id)).join(', ');
+  const waitBlocked = closeChildren.length ? waitGroupBlocked(closeGroupIds)
+    : closeState?.pending ? 'Сначала ответьте агенту' : closeState?.pendingDelivery ? 'Сначала проверьте неподтверждённую отправку' : closeState?.loading && !closeState.busy ? 'Дождитесь загрузки диалога' : '';
+
   return <OpenAppUpdatesContext.Provider value={() => setShowAppUpdates(true)}><div className="workspace-window"><AppUpdateBanner control={appUpdates} onDetails={() => setShowAppUpdates(true)} /><UpdateNoticeContext.Provider value={{ status: updateStatus, deciding: decidingUpdate, decide: decision => void decideUpdate(decision), force: () => void forceUpdate(), dismiss: () => setUpdateStatus(null) }}><div className="workspace-shell" ref={shellRef}>
     <div className="workspace-tabs-bar">
       <div className="session-tabs" role="tablist" aria-label="Открытые диалоги">
-        {tabs.map(tab => {
+        {tabs.filter(tab => !tab.childOf).map(tab => {
           const state = summaries[tab.id];
           const referenced = tab.archivedThread || tab.initialThread;
           const title = threadNames[state?.threadId || referenced?.id || ''] || state?.title || referenced?.name || referenced?.preview || 'Новый диалог';
+          const children = parentExecutorState(tab.archivedThread ? '' : state?.threadId || referenced?.id || '', tab.cwd);
+          const childActive = Boolean(children.selected);
+          const executorDescription = `${children.selected ? `, открыт исполнитель ${executorName(children.selected)}` : ''}${children.hint ? `, ${children.hint}` : ''}`;
           const status = state?.terminalOpen ? 'Открыт в терминале' : state?.pending ? 'Ожидает ответа' : state?.busy ? 'Выполняется' : state?.connection === 'error' ? 'Ошибка подключения' : 'Готов';
           const dropClass = dropTarget?.id === tab.id && dragTabId && dragTabId !== tab.id ? (dropTarget.after ? 'drop-after' : 'drop-before') : '';
-          return <div className={`session-tab ${activeId === tab.id ? 'active' : ''} ${attention[tab.id] ? 'has-unread' : ''} ${tab.pinned ? 'pinned' : ''} ${dragTabId === tab.id ? 'dragging' : ''} ${dropClass}`} data-session-id={tab.id} data-pinned={tab.pinned ? 'true' : undefined} key={tab.id}
+          return <div className={`session-tab ${activeId === tab.id ? 'active' : childActive ? 'child-active' : ''} ${attention[tab.id] ? 'has-unread' : ''} ${tab.pinned ? 'pinned' : ''} ${dragTabId === tab.id ? 'dragging' : ''} ${dropClass}`} data-session-id={tab.id} data-pinned={tab.pinned ? 'true' : undefined} key={tab.id}
             draggable onDragStart={event => { setDragTabId(tab.id); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', tab.id); }}
             onDragOver={event => { if (!dragTabId || dragTabId === tab.id || Boolean(tabs.find(item => item.id === dragTabId)?.pinned) !== Boolean(tab.pinned)) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; const box = event.currentTarget.getBoundingClientRect(); setDropTarget({ id: tab.id, after: event.clientX > box.left + box.width / 2 }); }}
             onDragLeave={() => setDropTarget(current => current?.id === tab.id ? null : current)}
             onDrop={event => { event.preventDefault(); const from = dragTabId || event.dataTransfer.getData('text/plain'); if (from) { const box = event.currentTarget.getBoundingClientRect(); setTabs(previous => reorderTabs(previous, from, tab.id, event.clientX > box.left + box.width / 2)); } setDragTabId(null); setDropTarget(null); }}
             onDragEnd={() => { setDragTabId(null); setDropTarget(null); }}
             onContextMenu={event => { event.preventDefault(); setShowAttention(false); setTabMenu({ id: tab.id, x: event.clientX, y: event.clientY }); }}>
-            <button id={`tab-${tab.id}`} role="tab" aria-selected={activeId === tab.id} aria-controls={`view-${tab.id}`} data-tooltip={`${tab.cwd}\n${title} · ${status}${tab.pinned ? ' · Закреплена' : ''}`} onClick={() => activate(tab.id)} onKeyDown={event => {
+            <button id={`tab-${tab.id}`} role="tab" aria-selected={activeId === tab.id} aria-label={`${folderName(tab.cwd)}: ${title}${executorDescription}`} aria-controls={`view-${tab.id}`} data-tooltip={`${tab.cwd}\n${title} · ${status}${tab.pinned ? ' · Закреплена' : ''}${executorDescription}`} onClick={() => activate(tab.id)} onKeyDown={event => {
               const index = tabs.findIndex(value => value.id === tab.id);
               const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : -1;
               if (next >= 0) { event.preventDefault(); activate(tabs[next].id); document.getElementById(`tab-${tabs[next].id}`)?.focus(); }
@@ -800,13 +1292,28 @@ function TabbedWorkspace() {
             }}>
               {tab.archivedThread ? <Archive size={13} /> : state?.terminalOpen ? <Terminal size={13} /> : state?.busy ? <LoaderCircle size={13} className="spin" /> : <AgentLogo provider={(state?.settings.provider || tab.provider) === 'claude' ? 'claude' : 'codex'} size={13} />}
               <span className="session-tab-label"><strong>{folderName(tab.cwd)}</strong><span>{title}</span></span>
+              {executorBadge(children)}
               {tab.pinned && <Pin size={11} className="session-tab-pin" aria-label="Закреплена" />}
               <span className={`tab-state ${state?.pending ? 'waiting' : state?.busy ? 'running' : state?.connection === 'error' ? 'error' : ''}`} aria-label={status} />
               {attention[tab.id] && <span className="tab-unread" aria-label={attention[tab.id].kind === 'completed' ? 'Непрочитанный результат' : 'Непрочитанное событие'} data-tooltip={attention[tab.id].kind === 'completed' ? 'Новый результат' : 'Требует внимания'} />}
             </button>
-            {!tab.pinned && <button className="session-tab-close" aria-label={`Закрыть вкладку ${folderName(tab.cwd)}: ${title}`} data-tooltip={state?.terminalOpen ? 'Сначала закройте терминал этого диалога' : 'Закрыть вкладку'} disabled={closing || actionBusy || state?.terminalOpen} onClick={() => requestClose(tab.id)}><X size={13} /></button>}
+            {/* A clean executor never touches the parent's conversation, so a working parent is not a reason to block it. */}
+            {activeId === tab.id && !tab.childOf && state?.threadId && <button type="button" className="session-tab-child" aria-label="Новый агент-исполнитель" data-tooltip="Новый агент-исполнитель: чистый диалог этой папки" disabled={opening || actionBusy} onClick={event => { event.stopPropagation(); createExecutor(state.cwd || tab.cwd, state.threadId!); }}><Bot size={15} /></button>}
+            {!tab.pinned && <button className={`session-tab-close ${tab.id in deferredClose ? 'close-when-complete' : ''}`} aria-label={`Закрыть вкладку ${folderName(tab.cwd)}: ${title}`}
+              data-tooltip={closeBlockedReason(tab.id) || (tab.id in deferredClose ? 'Закроется по завершении' : executorTabsOf(tab.id).length ? 'Закрыть вкладку вместе с исполнителями' : 'Закрыть вкладку')}
+              disabled={Boolean(closeBlockedReason(tab.id))} onClick={() => requestClose(tab.id)}>{tab.id in deferredClose ? <Clock3 size={12} /> : <X size={13} />}</button>}
           </div>;
         })}
+        {missingParent && (() => {
+          const parentId = missingParent.childOf!;
+          const title = threadTitle(parentId, missingParent.cwd) || 'Родительский диалог';
+          const children = parentExecutorState(parentId, missingParent.cwd);
+          return <div className="session-tab child-active" data-parent-thread-id={parentId}>
+            <button type="button" role="tab" aria-selected={false} aria-label={`${folderName(missingParent.cwd)}: ${title}, открыт исполнитель ${executorName(children.selected!)}${children.hint ? `, ${children.hint}` : ''}`} data-tooltip={`${title} · Открыть родительский диалог${children.hint ? `\n${children.hint}` : ''}`} disabled={controls.opening || closing} onClick={() => openParentThread(missingParent.cwd, parentId)}>
+              <MessageSquare size={13} /><span className="session-tab-label"><strong>{folderName(missingParent.cwd)}</strong><span>{title}</span></span>{executorBadge(children)}
+            </button>
+          </div>;
+        })()}
       </div>
       <button className="icon-button tab-add" data-tooltip="Новый диалог в текущей папке" aria-label="Открыть новый диалог" disabled={opening || starting} onClick={() => void open(tabs.find(tab => tab.id === activeId)?.cwd || projects[0])}><Plus size={17} /></button>
       <div className="workspace-alert-tools">
@@ -835,10 +1342,10 @@ function TabbedWorkspace() {
     </div>}
     <div className="workspace-views">
       {tabs.map(tab => <div className="session-view" id={`view-${tab.id}`} role="tabpanel" aria-labelledby={`tab-${tab.id}`} data-session-id={tab.id} hidden={activeId !== tab.id} key={tab.id}>
-        {tab.archivedThread ? <ArchiveView thread={tab.archivedThread} active={activeId === tab.id} initialScrollTop={tab.scrollTop} initialScrollAnchor={tab.scrollAnchor} jump={tab.jump} workspace={controls} /> : <App bridge={tab.bridge} sessionId={tab.id} active={activeId === tab.id} initialThread={tab.initialThread} initialFork={tab.fork} initialDraft={tab.draft} initialAttachments={tab.attachments} initialPreservedDraft={tab.preservedDraft} initialQueue={tab.queue} initialPendingMessage={tab.pendingMessage} initialScrollTop={tab.scrollTop} initialScrollAnchor={tab.scrollAnchor} jump={tab.jump} restoreSettings={tab.restoreSettings} workspace={controls} />}
+        {tab.archivedThread ? <ArchiveView thread={tab.archivedThread} active={activeId === tab.id} initialScrollTop={tab.scrollTop} initialScrollAnchor={tab.scrollAnchor} jump={tab.jump} workspace={controls} /> : <App bridge={tab.bridge} sessionId={tab.id} active={activeId === tab.id} initialThread={tab.initialThread} executorOf={tab.childOf} executorLabel={tab.childLabel} initialFork={tab.fork} initialDraft={tab.draft} initialAttachments={tab.attachments} initialPreservedDraft={tab.preservedDraft} initialQueue={tab.queue} initialPendingMessage={tab.pendingMessage} initialScrollTop={tab.scrollTop} initialScrollAnchor={tab.scrollAnchor} jump={tab.jump} restoreSettings={tab.restoreSettings} workspace={controls} />}
       </div>)}
       {!tabs.length && <div className="session-view folder-empty-view"><div className="app-shell panel-hidden">
-        <aside className="sidebar"><div className="brand"><div className="brand-mark"><Terminal size={19} strokeWidth={2.4} /></div><span>codex<span className="brand-light"> desk</span></span><BuildBadge /></div><ProjectSidebar controls={controls} /><div className="sidebar-bottom"><div className="local-engine"><span className="status-dot" /><span>Локальный Codex CLI</span><span className="connection-label">OFF</span></div></div></aside>
+        <aside className="sidebar"><div className="brand"><ProductLogo /><ProductBrand /><BuildBadge /></div><ProjectSidebar controls={controls} /><div className="sidebar-bottom"><div className="local-engine"><span className="status-dot" /><span>Локальный Codex CLI</span><span className="connection-label">OFF</span></div></div></aside>
         <main className="main-column"><div className="workspace-empty">
         {starting ? <><LoaderCircle className="spin" size={24} /><p>Открываем рабочие папки…</p></> : <>
           <MessageSquare size={32} /><h2>Откройте диалог</h2><p>Выберите рабочую папку или добавьте ещё одну.</p>
@@ -861,16 +1368,33 @@ function TabbedWorkspace() {
         else if (event.key === 'Tab') { setTabMenu(null); }
       }}>
         <button type="button" role="menuitem" onClick={() => { togglePin(tab.id); setTabMenu(null); }}>{tab.pinned ? <PinOff size={14} /> : <Pin size={14} />}{tab.pinned ? 'Открепить вкладку' : 'Закрепить вкладку'}</button>
-        <button type="button" role="menuitem" disabled={closing || actionBusy || Boolean(state?.terminalOpen)} onClick={() => { setTabMenu(null); requestClose(tab.id); }}><X size={14} />Закрыть вкладку</button>
-        <button type="button" role="menuitem" disabled={closing || actionBusy || tabs.filter(other => other.id !== tab.id && !other.pinned).some(other => summaries[other.id]?.terminalOpen || summaries[other.id]?.busy || summaries[other.id]?.pending || summaries[other.id]?.loading) || tabs.every(other => other.id === tab.id || other.pinned)} data-tooltip="Закрываются только простаивающие незакреплённые вкладки" onClick={async () => { setTabMenu(null); for (const other of tabsRef.current.filter(other => other.id !== tab.id && !other.pinned)) { const state = summariesRef.current[other.id]; if (!state?.busy && !state?.pending && !state?.loading && !state?.terminalOpen) await close(other.id); } }}><X size={14} />Закрыть остальные</button>
+        <button type="button" role="menuitem" disabled={Boolean(closeBlockedReason(tab.id))} data-tooltip={closeBlockedReason(tab.id) || undefined} onClick={() => { setTabMenu(null); requestClose(tab.id); }}><X size={14} />Закрыть вкладку</button>
+        <button type="button" role="menuitem" disabled={closing || actionBusy || tabs.filter(other => other.id !== tab.id && !other.pinned).some(other => summaries[other.id]?.terminalOpen || summaries[other.id]?.busy || summaries[other.id]?.pending || summaries[other.id]?.loading) || tabs.every(other => other.id === tab.id || other.pinned)} data-tooltip="Закрываются только простаивающие незакреплённые вкладки" onClick={() => { setTabMenu(null); void closeOthers(tab.id); }}><X size={14} />Закрыть остальные</button>
         <hr />
         <button type="button" role="menuitem" disabled={!closedTabs.length || opening} onClick={() => { setTabMenu(null); restoreClosed(); }}><RotateCcw size={14} />Вернуть закрытую вкладку<kbd>Ctrl+Shift+T</kbd></button>
       </div>;
     })()}
     {showPalette && <CommandPalette onClose={() => setShowPalette(false)} commands={paletteCommands()} />}
-    {confirmClose && <div className="modal-backdrop"><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="close-session-title">
-      <h2 id="close-session-title">Закрыть работающий диалог?</h2><p>Выполнение в этой вкладке остановится. Беседа останется в истории папки.</p>
-      <div className="confirm-actions"><button className="secondary-button" disabled={closing} autoFocus onClick={() => setConfirmClose(null)}>Отмена</button><button className="danger-button" disabled={closing} onClick={() => void close(confirmClose)}>Остановить и закрыть</button></div>
+    {confirmClose && <div className="modal-backdrop"><section className={`confirm-modal ${closeExecutor || closeChildren.length ? 'executor-close-modal' : ''}`} role="alertdialog" aria-modal="true" aria-labelledby="close-session-title">
+      <h2 id="close-session-title">{closeChildren.length
+        ? closeDeferred ? 'Диалог и исполнители закроются по завершении' : 'Закрыть диалог вместе с исполнителями?'
+        : closeDeferred ? 'Вкладка закроется по завершении' : 'Закрыть работающий диалог?'}</h2>
+      {closeChildren.length
+        ? <>
+          <p>Вместе с этой вкладкой закроются её исполнители: {closeGroupNames}.</p>
+          {closeBusyNames && <p>Сейчас заняты: {closeBusyNames}.</p>}
+          <p>{closeDeferred ? 'Можно отменить отложенное закрытие или остановить всех сейчас.' : 'Остановите всех сейчас или дождитесь завершения текущих ходов. Вопрос или запрос разрешения у любого исполнителя отменит отложенное закрытие.'} Беседы останутся в истории папки.</p>
+        </>
+        : <p>{closeExecutor ? closeDeferred ? 'Можно отменить отложенное закрытие или остановить исполнителя сейчас.' : 'Остановите исполнителя сейчас или дождитесь завершения текущего хода. Вопрос или запрос разрешения отменит отложенное закрытие.' : 'Выполнение в этой вкладке остановится.'} Беседа останется в истории папки.</p>}
+      {confirmClose && closeBlockedReason(confirmClose) && <p role="status">{closeBlockedReason(confirmClose)}</p>}
+      {error && <p className="thread-action-error" role="alert">{error}</p>}
+      <div className="confirm-actions">
+        <button className="secondary-button" disabled={closing} autoFocus onClick={() => setConfirmClose(null)}>Отмена</button>
+        {(closeExecutor || closeChildren.length > 0) && (closeDeferred
+          ? <button className="secondary-button" disabled={closing} onClick={() => { cancelCloseWait(confirmClose); setConfirmClose(null); }}>Отменить отложенное закрытие</button>
+          : <button className="secondary-button" disabled={Boolean(closeBlockedReason(confirmClose) || waitBlocked)} data-tooltip={waitBlocked || undefined} onClick={() => waitAndClose(confirmClose)}>Дождаться и закрыть</button>)}
+        <button className="danger-button" disabled={Boolean(closeBlockedReason(confirmClose))} onClick={() => void (closeChildren.length ? closeGroup(confirmClose) : close(confirmClose))}>Остановить и закрыть</button>
+      </div>
     </section></div>}
     {confirmCloseProject && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget && !closing) setConfirmCloseProject(null); }}><section className="confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="close-project-title">
       <h2 id="close-project-title">Закрыть проект «{folderName(confirmCloseProject)}»?</h2>
@@ -886,6 +1410,7 @@ function TabbedWorkspace() {
       {error && <p className="thread-action-error" role="alert">{error}</p>}
       <div className="confirm-actions"><button type="button" className="secondary-button" disabled={actionBusy} onClick={() => setActionDialog(null)}>Отмена</button><button type="submit" className={actionDialog.action === 'delete' ? 'danger-button' : 'primary-button'} disabled={actionBusy || (actionDialog.action === 'rename' && !newName.trim())}>{actionBusy ? 'Выполняем…' : actionDialog.action === 'rename' ? 'Сохранить' : 'Удалить'}</button></div>
     </form></div>}
+    {bulkRun && <BulkArchiveDialog run={bulkRun} busy={actionBusy} onConfirm={() => void runBulkArchive()} onStop={() => { bulkStop.current = true; }} onClose={closeBulkRun} />}
     {worktreeDialog && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget && !opening) setWorktreeDialog(null); }}><form className="confirm-modal thread-action-modal" role="dialog" aria-modal="true" aria-label="Новая задача в отдельной ветке" onSubmit={event => { event.preventDefault(); void openWorktree(worktreeDialog.cwd, worktreeName.trim()); }}>
       <h2>Новая задача в отдельной ветке</h2>
       <p className="muted">Git создаст ветку и отдельную рабочую копию рядом с проектом: <code>{folderName(worktreeDialog.cwd)}.worktrees/…</code>. Диалог откроется в новой вкладке в этой копии, а файлы основной папки останутся без изменений.</p>

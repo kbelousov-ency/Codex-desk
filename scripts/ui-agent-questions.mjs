@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdir, readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
@@ -109,6 +109,8 @@ try {
     }
     await assertWorkAfterUser(log, userText, `Continuation ${suffix} appears after its user answer in the conversation`);
     await log.locator(`[data-item-id="command-${suffix}"] > summary`).click();
+    // Native details.toggle mounts the React tool body asynchronously after the click.
+    await log.getByText(`Проверка ${suffix} выполняется`, { exact: true }).waitFor({ state: 'visible' });
     assert.equal(await log.getByText(`Проверка ${suffix} выполняется`, { exact: true }).isVisible(), true, 'Streamed tool output remains accessible in the continuation');
   };
   await message('q-live').locator('.agent-question-option').first().waitFor();

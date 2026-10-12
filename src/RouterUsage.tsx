@@ -1,167 +1,172 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Gauge, RefreshCw } from 'lucide-react';
-import type { CodexBridge, RouterLimit, RouterUsageSnapshot } from './types';
-import { resetText } from './UsageLimit';
+import type { CodexBridge, RouterBand, RouterCreditSpend, RouterLimit, RouterUsageSnapshot } from './types';
 import './router-usage.css';
 
-type RecordValue = Record<string, unknown>;
-const object = (value: unknown): RecordValue | null => value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : null;
-const number = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : typeof value === 'string' && value.trim() && Number.isFinite(Number(value)) ? Number(value) : null;
-const text = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
-const summary = (value: unknown): string | null => text(value) || (value && typeof value === 'object' ? JSON.stringify(value).slice(0, 400) : null);
+type CreditSpend = RouterCreditSpend & { since?: string };
+const number = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value
+  : typeof value === 'string' && value.trim() && Number.isFinite(Number(value)) ? Number(value) : null;
+const creditsFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 });
+const percentFormat = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 });
+const formatCredits = (value: number | null) => value === null ? '—' : creditsFormat.format(value);
+const formatPercent = (value: number | null) => value === null ? '—' : percentFormat.format(value) + '%';
+const clampPercent = (value: number) => Math.min(100, Math.max(0, value));
 
-function at(root: RecordValue, paths: string[][]): unknown {
-  for (const path of paths) {
-    let current: unknown = root;
-    for (const key of path) { const record = object(current); current = record?.[key]; }
-    if (current !== undefined && current !== null) return current;
+/** The legacy ledger and the portal's personal quota are different accounting contracts. */
+function limitUsage(limit: RouterLimit | RouterBand | null) {
+  if (!limit) return { total: null, remaining: null, left: null };
+  const legacy = limit as RouterLimit;
+  const total = number(limit.limitCredits) ?? number(legacy.limit_credits);
+  const portal = limit.limitCredits !== undefined || limit.usedCredits !== undefined || limit.left !== undefined;
+  let used: number | null;
+  let remaining: number | null;
+  let usedPercent: number | null;
+  if (portal) {
+    used = number(limit.usedCredits);
+    remaining = number(limit.remainingCredits) ?? (total !== null && used !== null ? Math.max(0, total - used) : null);
+    usedPercent = number(limit.usedPercent) ?? (total !== null && total > 0 && used !== null ? used / total * 100 : null);
+    const reportedLeft = number(limit.left);
+    const left = usedPercent !== null ? clampPercent(100 - usedPercent)
+      : reportedLeft !== null ? clampPercent(reportedLeft)
+      : total !== null && total > 0 && remaining !== null ? clampPercent(remaining / total * 100) : null;
+    return { total, remaining, left };
   }
-  return null;
+  const ledger = number(legacy.ledger_used_credits);
+  used = ledger ?? number(legacy.used_credits);
+  // With a ledger but no quota, unrelated server remaining/percent values cannot fill the gap.
+  remaining = ledger !== null ? (total !== null ? Math.max(0, total - ledger) : null)
+    : number(legacy.remaining_credits) ?? (total !== null && used !== null ? Math.max(0, total - used) : null);
+  usedPercent = ledger !== null ? (total !== null && total > 0 ? ledger / total * 100 : null)
+    : number(legacy.used_percent) ?? (total !== null && total > 0 && used !== null ? used / total * 100 : null);
+  return { total, remaining, left: usedPercent === null ? null : clampPercent(100 - usedPercent) };
 }
 
-function formatCredits(value: unknown): string | null {
-  const amount = number(value);
-  if (amount === null) return text(value);
-  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 2 }).format(amount);
+function DateValue({ value }: { value?: string | null }) {
+  const timestamp = value ? Date.parse(value) : NaN;
+  if (!Number.isFinite(timestamp)) return <>—</>;
+  const title = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(timestamp);
+  return <time dateTime={value!} title={title}>{new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(timestamp)}</time>;
 }
 
-function limitUsage(limit: RouterLimit) {
-  const ledger = number(limit.ledger_used_credits);
-  const total = number(limit.limit_credits);
-  // The ledger matches the period spend. API remaining/percent belong to
-  // used_credits and must not be mixed with a different ledger amount.
-  if (ledger !== null) return {
-    used: ledger,
-    total,
-    remaining: total !== null && total >= 0 ? Math.max(0, total - ledger) : null,
-    percent: total !== null && total > 0 ? ledger / total * 100 : null,
-  };
-  const used = number(limit.used_credits);
-  return {
-    used,
-    total,
-    remaining: number(limit.remaining_credits),
-    percent: number(limit.used_percent) ?? (used !== null && total !== null && total > 0 ? used / total * 100 : null),
-  };
+function BalanceBar({ left, label }: { left: number | null; label: string }) {
+  return <div className={'router-credit-bar' + (left === null ? ' is-unknown' : '')} role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={left ?? undefined} aria-valuetext={left === null ? 'Нет данных' : formatPercent(left) + ' осталось'}><span style={{ width: (left ?? 0) + '%' }} /></div>;
 }
 
-function formatPercent(value: number | null): string {
-  return value === null ? '—' : new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value) + '%';
+function SpendValue({ kind, value, threadId }: { kind: 'session' | 'today'; value?: CreditSpend; threadId?: string | null }) {
+  const amount = number(value?.credits);
+  const session = kind === 'session';
+  const baseline = session ? (threadId ? 'Текущий диалог' : 'Новый диалог') : 'С 00:00 · этот агент';
+  const note = amount === null ? 'Нет данных' : value?.partial ? 'Учтено частично' : baseline;
+  const explanation = value?.reason || (session
+    ? (value?.threadCount && value.threadCount > 1 ? 'Диалог и подагенты. Кредиты по серверной статистике.' : 'Кредиты текущего диалога по серверной статистике.')
+    : 'Расход этого агента по аккаунту с местной полуночи.' + (value?.since ? ' Начало периода: ' + new Date(value.since).toLocaleString('ru-RU') + '.' : ''));
+  return <div className="router-credit-stat" data-spend={kind}>
+    <span>{session ? 'За сессию' : 'Сегодня'}</span>
+    <strong title={amount === null ? explanation : formatCredits(amount) + ' кредитов'}>{formatCredits(amount)}</strong>
+    <small className={value?.partial ? 'is-partial' : undefined} title={explanation}>{note}</small>
+  </div>;
 }
 
-function details(snapshot: RouterUsageSnapshot) {
-  const root = object(snapshot.overview) || {};
-  const last24h = object(at(root, [['last_24h'], ['last24h']])) || {};
-  const dayCredits = formatCredits(at(last24h, [['credits']]));
-  const requests = formatCredits(at(last24h, [['requests']]));
-  const failures = formatCredits(at(last24h, [['failures']]));
-  const email = text(at(root, [['email'], ['user', 'email'], ['account', 'email'], ['me', 'email']]));
-  const tier = text(at(root, [['tier'], ['plan'], ['subscription']]));
-  const state = text(at(root, [['state'], ['status']]));
-  const coverage = summary(at(root, [['coverage']]));
-  const sources = at(root, [['sources']]);
-  return { dayCredits, requests, failures, email, tier, state, coverage, sources };
-}
-
-function LimitCard({ limit, index, now }: { limit: RouterLimit; index: number; now: number }) {
-  const name = limit.key || `Ключ ${index + 1}`;
-  const resetAt = limit.reset_at ? Date.parse(limit.reset_at) : NaN;
-  const hasReset = Number.isFinite(resetAt);
-  const resetDate = hasReset ? new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }).format(resetAt) : '—';
-  const { used, total, remaining, percent } = limitUsage(limit);
-  const incomplete = [used, total, remaining].some(value => value === null);
-  return <section className="router-limit-card" aria-label={`Лимит: ${name}`} data-router-limit>
-    <h3>{name}</h3>
-    {(limit.tier || limit.state) && <p className="router-usage-note">{[limit.tier, limit.state].filter(Boolean).join(' · ')}</p>}
-    <dl>
-      <div data-limit-field="percent"><dt>Использовано</dt><dd>{formatPercent(percent)}</dd></div>
-      <div data-limit-field="used"><dt>Потрачено</dt><dd>{formatCredits(used) ?? '—'}</dd></div>
-      <div data-limit-field="total"><dt>Всего</dt><dd>{formatCredits(total) ?? '—'}</dd></div>
-      <div data-limit-field="remaining"><dt>Осталось</dt><dd>{formatCredits(remaining) ?? '—'}</dd></div>
-      <div data-limit-field="reset"><dt>Сброс</dt><dd>{hasReset ? <time dateTime={limit.reset_at!}>{resetDate}</time> : '—'}{hasReset && <small>{resetAt > now ? resetText(limit.reset_at, now) : 'Дата сброса прошла. Обновите данные.'}</small>}</dd></div>
-    </dl>
-    <p className="router-usage-note">Суммы указаны в кредитах текущего периода.</p>
-    {incomplete && <p className="router-usage-note router-limit-missing">Роутер не передал часть сумм. «—» означает отсутствие данных.</p>}
-    {percent === null && <p className="router-usage-note router-limit-missing">Недостаточно данных для расчёта процента лимита. Расход за 24 часа ниже — отдельная величина.</p>}
-    {limit.available === false && <p className="router-usage-error">Лимит этого ключа недоступен.</p>}
-  </section>;
-}
-
-export default function RouterUsage({ bridge, enabled, ready, active = true }: { bridge: CodexBridge; enabled: boolean; ready: boolean; active?: boolean }) {
-  const [snapshot, setSnapshot] = useState<RouterUsageSnapshot | null>(null);
+export default function RouterUsage({ bridge, enabled, ready, active = true, provider = 'codex', threadId, refreshKey }: {
+  bridge: CodexBridge; enabled: boolean; ready: boolean; active?: boolean;
+  provider?: 'codex' | 'claude'; threadId?: string | null; refreshKey?: string | number;
+}) {
+  const identity = provider + ':' + (threadId ?? '');
+  const [stored, setStored] = useState<{ identity: string; value: RouterUsageSnapshot } | null>(null);
+  const snapshot = enabled && ready && stored?.identity === identity ? stored.value : null;
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const request = useRef(0);
-  const [now, setNow] = useState(Date.now);
+  const inFlight = useRef(false);
+  const queued = useRef(false);
+  const lastStarted = useRef(0);
+  const previousTurn = useRef({ identity, refreshKey });
   const id = useId();
-  const refresh = useCallback(async () => {
-    if (!bridge.getRouterUsage || !enabled || !ready) return;
+  const refresh = useCallback(async function refreshUsage(afterTurn = false) {
+    if (!bridge.getRouterUsage || !enabled || !ready || !active) return;
+    if (inFlight.current) { if (afterTurn) queued.current = true; return; }
+    // Activation and opening can happen together; share their request.
+    if (!afterTurn && Date.now() - lastStarted.current < 1_000) return;
     const sequence = ++request.current;
+    inFlight.current = true;
+    lastStarted.current = Date.now();
     setLoading(true);
-    try { const result = await bridge.getRouterUsage(); if (sequence === request.current) { setSnapshot(result); setNow(Date.now()); } }
-    catch { if (sequence === request.current) setSnapshot({ available: false, reason: 'Не удалось получить статистику роутера.' }); }
-    finally { if (sequence === request.current) setLoading(false); }
-  }, [bridge, enabled, ready]);
-  useEffect(() => { if (active) void refresh(); else setOpen(false); return () => { request.current++; }; }, [active, refresh]);
+    try {
+      const value = await bridge.getRouterUsage({ threadId: threadId ?? null });
+      if (sequence === request.current) setStored({ identity, value });
+    } catch {
+      if (sequence === request.current) setStored({ identity, value: { available: false, reason: 'Не удалось получить лимиты и расход.' } });
+    } finally {
+      if (sequence === request.current) {
+        inFlight.current = false;
+        setLoading(false);
+        if (queued.current) { queued.current = false; void refreshUsage(true); }
+      }
+    }
+  }, [active, bridge, enabled, identity, ready, threadId]);
   useEffect(() => {
-    if (!open) return;
-    setNow(Date.now());
-    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    request.current++;
+    inFlight.current = false;
+    queued.current = false;
+    lastStarted.current = 0;
+    setStored(null);
+    setLoading(false);
+    void refresh();
+    return () => { request.current++; inFlight.current = false; queued.current = false; };
+  }, [refresh]);
+  useEffect(() => { setOpen(false); }, [identity, active, ready]);
+  useEffect(() => {
+    const before = previousTurn.current;
+    previousTurn.current = { identity, refreshKey };
+    if (before.identity === identity && before.refreshKey !== refreshKey) void refresh(true);
+  }, [identity, refreshKey, refresh]);
+  useEffect(() => {
+    if (!open || !active) return;
+    void refresh();
+    const timer = setInterval(() => void refresh(), 60_000);
     return () => clearInterval(timer);
-  }, [open]);
-  useEffect(() => { if (open && active) void refresh(); }, [open, active, refresh]);
+  }, [open, active, refresh]);
   useEffect(() => {
     if (!open || !active) return;
     const outside = (event: PointerEvent) => { if (root.current && event.target instanceof Node && !root.current.contains(event.target)) setOpen(false); };
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setOpen(false); trigger.current?.focus(); } };
-    document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape);
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', escape);
     return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); };
   }, [open, active]);
   if (!enabled || !bridge.getRouterUsage) return null;
-  const info = snapshot && snapshot.available ? details(snapshot) : null;
-  // Unavailable keys (for example FREE_POOL) have no current quota and must not
-  // hide the percentage of the only available limit. Unknown availability stays
-  // a candidate; multiple candidates still cannot be combined into one quota.
-  const availableLimits = snapshot?.limits?.filter(limit => limit.available !== false) || [];
-  const singleLimit = availableLimits.length === 1 ? availableLimits[0] : null;
-  const percent = singleLimit ? limitUsage(singleLimit).percent : null;
-  // Without a published quota a percentage cannot be computed, so the badge falls
-  // back to the measured daily spend instead of an empty «Роутер · —».
-  const label = percent !== null ? 'Роутер · ' + formatPercent(percent)
-    : info?.dayCredits ? 'Роутер · ' + info.dayCredits + ' кр./сут'
-    : 'Роутер';
-  const title = !snapshot?.available ? snapshot?.reason || 'Статистика роутера ещё не получена.'
-    : percent !== null ? 'Использовано лимита: ' + formatPercent(percent)
-    : singleLimit ? 'Недостаточно данных для расчёта процента лимита; показан расход за 24 часа.'
-    : 'Статистика роутера';
-  return <div ref={root} className="router-usage">
-    <button ref={trigger} type="button" className={`router-usage-trigger ${open ? 'open' : ''}`} aria-label={label} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined} data-tooltip={title} disabled={!ready} onClick={() => setOpen(value => !value)}>
+
+  // Unknown availability remains a candidate. Never add quotas or pick an arbitrary key.
+  const candidates = snapshot?.limits?.filter(limit => limit.available !== false) || [];
+  const limit = candidates.length === 1 ? candidates[0] : null;
+  const { total, remaining, left } = limitUsage(limit);
+  const fable = provider === 'claude' ? limit?.bands?.find(band => /fable/i.test((band.name || '') + ' ' + (band.band || ''))) : null;
+  const fableLeft = limitUsage(fable ?? null).left;
+  const label = left !== null ? 'Лимит · ' + formatPercent(left) + ' осталось' : 'Лимит';
+  const issue = !snapshot ? (loading ? 'Загружаем…' : '') : !snapshot.available ? snapshot.reason || 'Лимиты недоступны.'
+    : snapshot.limitReason || (candidates.length > 1 ? 'Несколько лимитов: общая квота неизвестна.'
+      : !limit ? 'Данные лимита не переданы.' : limit.blocked ? 'Лимит временно недоступен.' : '');
+  const fetchedAt = snapshot?.fetchedAt ? Date.parse(snapshot.fetchedAt) : NaN;
+  return <div ref={root} className="router-usage router-credit-usage">
+    <button ref={trigger} type="button" className={'router-usage-trigger' + (open ? ' open' : '')} aria-label={label} aria-haspopup="dialog" aria-expanded={open} aria-controls={open ? id : undefined} data-tooltip={issue || (provider === 'claude' ? 'Claude' : 'Codex') + ': ' + (left === null ? 'остаток неизвестен' : formatPercent(left) + ' лимита осталось')} disabled={!ready} onClick={() => setOpen(value => !value)}>
       <Gauge size={13} /><span>{label}</span>
     </button>
-    {open && <section id={id} className="router-usage-popover" role="dialog" aria-label="Статистика роутера">
-      <header><strong>Статистика роутера</strong><button type="button" className="icon-button small" aria-label="Обновить статистику роутера" data-tooltip="Обновить" disabled={loading || !ready} onClick={() => void refresh()}><RefreshCw size={13} className={loading ? 'spin' : ''} /></button></header>
-      {!snapshot && <p className="router-usage-muted">Загружаем…</p>}
-      {snapshot && !snapshot.available && <p className="router-usage-error">{snapshot.reason || 'Статистика недоступна.'}</p>}
-      {snapshot?.available && info && <>
-        {info.email && <p className="router-usage-row"><span>Аккаунт</span><strong>{info.email}</strong></p>}
-        <div className="router-limits"><h2>Лимит</h2>
-          {snapshot.limits?.map((limit, index) => <LimitCard key={`${limit.key}:${index}`} limit={limit} index={index} now={now} />)}
-          {snapshot.limitReason && <p className="router-usage-error">Не удалось обновить лимиты: {snapshot.limitReason}</p>}
-          {!snapshot.limits?.length && !snapshot.limitReason && <p className="router-usage-note">Роутер не передал лимиты ключей.</p>}
-        </div>
-        {!snapshot.limits?.length && info.tier && <p className="router-usage-row"><span>Тариф</span><strong>{info.tier}</strong></p>}
-        {!snapshot.limits?.length && info.state && <p className="router-usage-row"><span>Состояние</span><strong>{info.state}</strong></p>}
-        <p className="router-usage-note">За последние 24 часа · все ваши ключи</p>
-        {snapshot.overviewReason && <p className="router-usage-error">Суточная статистика недоступна: {snapshot.overviewReason}</p>}
-        {info.dayCredits && <p className="router-usage-row"><span>За 24 часа</span><strong>{info.dayCredits} кредитов</strong></p>}
-        {info.requests && <p className="router-usage-row"><span>Запросы за 24 часа</span><strong>{info.requests}</strong></p>}
-        {info.failures && <p className="router-usage-row"><span>Ошибки за 24 часа</span><strong>{info.failures}</strong></p>}
-        {info.coverage && <p className="router-usage-note">Покрытие: {info.coverage}</p>}
-        {info.sources && <p className="router-usage-note">Источники: {summary(info.sources)}</p>}
-        <p className="router-usage-note">Обновлено: {new Date(snapshot.fetchedAt || Date.now()).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</p>
-      </>}
+    {open && <section id={id} className="router-usage-popover router-credit-popover" role="dialog" aria-label="Лимиты" aria-busy={loading}>
+      <header className="router-credit-head"><strong>Лимиты</strong><span>{provider === 'claude' ? 'Claude' : 'Codex'}</span><button type="button" className="icon-button small" aria-label="Обновить лимиты" data-tooltip="Обновить" disabled={loading || !ready} onClick={() => void refresh(true)}><RefreshCw size={14} className={loading ? 'spin' : ''} /></button></header>
+      <section data-router-limit>
+        <div className="router-credit-balance"><span>Остаток лимита</span><strong data-limit-field="percent">{formatPercent(left)}</strong></div>
+        <BalanceBar left={left} label="Остаток лимита" />
+        <dl className="router-credit-quota">
+          <div><dt>Доступно / всего</dt><dd><span data-limit-field="remaining">{formatCredits(remaining)}</span> / <span data-limit-field="total">{formatCredits(total)}</span> кр.</dd></div>
+          <div><dt>Обновление лимита</dt><dd data-limit-field="reset"><DateValue value={limit?.resetAt ?? limit?.reset_at} /></dd></div>
+        </dl>
+        {issue && <p className={'router-credit-status' + (!snapshot ? '' : ' is-warning')} title={limit?.blockedReason || undefined}>{issue}</p>}
+      </section>
+      <section className="router-credit-spend"><h2>Расход кредитов</h2><div className="router-credit-spend-grid"><SpendValue kind="session" value={snapshot?.spend?.session} threadId={threadId} /><SpendValue kind="today" value={snapshot?.spend?.today} /></div></section>
+      {provider === 'claude' && <section className="router-credit-fable" data-router-band="fable"><div><span>Fable</span><strong>{fableLeft === null ? '—' : formatPercent(fableLeft) + ' осталось'}</strong></div><BalanceBar left={fableLeft} label="Остаток Fable" /><small>{fable?.blocked ? 'Лимит недоступен · ' : ''}Обновление <DateValue value={fable?.resetAt} /></small></section>}
+      <footer className="router-credit-freshness">Обновлено {Number.isFinite(fetchedAt) ? <time dateTime={snapshot!.fetchedAt}>{new Date(fetchedAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time> : '—'}</footer>
     </section>}
   </div>;
 }

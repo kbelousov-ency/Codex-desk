@@ -67,7 +67,7 @@ function processIsAlive(pid) {
  */
 export async function createNightlyUpdate({ releaseRoot, executable, userData, cwd, buildId, getBusy, prepare, quit, notify = () => {} }) {
   if (![releaseRoot, executable, userData, cwd].every(validPath)
-      || !samePath(executable, path.join(releaseRoot, 'nightly', 'Codex Desk.exe'))
+      || !samePath(executable, path.join(releaseRoot, 'nightly', 'Kuzmich.exe'))
       || !BUILD_ID.test(buildId) || [getBusy, prepare, quit, notify].some(value => typeof value !== 'function')) throw fail();
   const root = path.resolve(releaseRoot);
   const rootStat = await lstat(root).catch(() => { throw fail(); });

@@ -8,7 +8,7 @@
 > и согласованно пересчитывает процент/остаток. Подробности — [ROUTER_USAGE.md](docs/ROUTER_USAGE.md).
 
 **Кому:** разработчику `router.encycam.com`
-**От кого:** Codex Desk (вкладка Codex, индикатор «Роутер»)
+**От кого:** Кузьмич (вкладка Codex, индикатор «Роутер»)
 **Дата проверки:** 2026-09-23, около 06:57 UTC
 **Аккаунт:** `k.belousov@encycam.com`, ключ `coder-k.belousov@encycam.com`, тариф `TierA`, состояние `ACTIVE`
 **Хост:** `https://router.encycam.com`, авторизация `Authorization: Bearer sk-cf3cd…` (ключ из `model_providers.<provider>.experimental_bearer_token` в `~/.codex/config.toml`)

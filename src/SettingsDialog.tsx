@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { Check, X } from 'lucide-react';
+import { useProductName } from './BuildInfo';
 import './settings-dialog.css';
 
 type SettingsTab = { id: string; label: string; icon: ReactNode; content: ReactNode };
@@ -8,6 +9,7 @@ export default function SettingsDialog({ tabs, active, busy, onClose }: {
   tabs: SettingsTab[]; active: boolean; busy: boolean; onClose(): void;
 }) {
   const [selected, setSelected] = useState(tabs[0].id);
+  const productName = useProductName();
   const dialog = useRef<HTMLElement>(null);
   const tabButtons = useRef(new Map<string, HTMLButtonElement>());
   const id = useId();
@@ -58,7 +60,7 @@ export default function SettingsDialog({ tabs, active, busy, onClose }: {
   return <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) close(); }}>
     <section ref={dialog} className="settings-modal settings-dialog" role="dialog" aria-modal="true" aria-labelledby={`${id}-title`} onKeyDown={onKeyDown}>
       <div className="modal-header">
-        <div><span className="eyebrow">CODEX DESK</span><h2 id={`${id}-title`}>Ваше рабочее пространство</h2></div>
+        <div><span className="eyebrow">{productName.toUpperCase()}</span><h2 id={`${id}-title`}>Ваше рабочее пространство</h2></div>
         <button type="button" className="icon-button" data-tooltip="Закрыть настройки" aria-label="Закрыть настройки" disabled={busy} onClick={close}><X size={19} /></button>
       </div>
       <div className="settings-tabs" role="tablist" aria-label="Разделы настроек">

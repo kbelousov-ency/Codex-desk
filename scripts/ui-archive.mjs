@@ -306,7 +306,8 @@ try {
   if (await projectA().getAttribute('aria-expanded') === 'false') { await projectA().click(); await flush(); }
   await row(claudeId).waitFor();
   await sidebar().getByRole('button', { name: 'Действия диалога Диалог Claude', exact: true }).press('ArrowDown');
-  assert.deepEqual(await page.getByRole('menuitem').allTextContents(), ['Переименовать', 'Ответвить', 'В архив', 'Удалить']);
+  // Project-tree menus no longer create children or user groups; child creation lives in the open parent toolbar.
+  assert.deepEqual(await page.getByRole('menuitem').allTextContents(), ['Переименовать', 'В архив', 'Удалить']);
   await page.keyboard.press('Escape');
   await action('Диалог Claude', 'В архив');
   assert.deepEqual((await managed('archive')).at(-1).params, { action: 'archive', threadId: claudeId, cwd: 'C:/Fixtures/PROJECT_A' });

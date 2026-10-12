@@ -6,6 +6,12 @@
 .folder-thread-row:hover{background:#202824}
 .folder-thread-row.active{background:#29362e}
 .folder-thread-row>.folder-thread{flex:1;min-width:0;width:auto;background:transparent}
+/* Executor agents of a conversation, nested under it in the project tree. */
+.folder-thread-children{margin:1px 0 3px 13px;padding-left:7px;border-left:1px solid #313a35}
+.folder-thread-row>.child-count-badge{display:inline-flex;align-items:center;gap:1px;height:16px;margin-right:2px;border:1px solid #3A413D;cursor:pointer}
+.folder-thread-row>.child-count-badge:hover,.folder-thread-row>.child-count-badge:focus-visible{background:#3a4a40;border-color:#82968A;color:#D5E0D8}
+.folder-thread-row>.child-count-badge>svg{color:#82968A;transition:transform .15s}
+.folder-thread-row>.child-count-badge.expanded>svg{transform:rotate(90deg)}
 .folder-thread-row>.thread-menu-trigger{display:grid;place-items:center;width:21px;height:22px;flex:0 0 21px;margin-right:2px;padding:0;border-radius:4px;color:#82958a}
 .folder-thread-row>.thread-menu-trigger:hover,.folder-thread-row>.thread-menu-trigger.open{color:#d6e5db;background:#35443b}
 .thread-action-menu{z-index:35;padding:5px;border:1px solid #43544a;background:#1d2521;border-radius:8px;box-shadow:0 8px 25px #0008;overflow:auto;color:#c0d1c7}

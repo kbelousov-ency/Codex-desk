@@ -11,7 +11,7 @@ import {
   readReleaseNotesFile,
 } from '../electron/release-notes.mjs';
 
-const changelog = `# Codex Desk\n\n## [0.6.0] — 2026-09-24\n\n- Обновление Codex CLI.\n- Новые модели появляются после переподключения.\n\n## [0.5.1] — 2026-09-22\n\n- Продолжение работы после уточняющего вопроса.\n\n## [0.5.0] — 2026-09-22\n\n- Перетаскивание файлов в окно.\n\n## [0.4.0] — 2026-09-21\n\n- Правила памяти в поставке.\n`;
+const changelog = `# Кузьмич\n\n## [0.6.0] — 2026-09-24\n\n- Обновление Codex CLI.\n- Новые модели появляются после переподключения.\n\n## [0.5.1] — 2026-09-22\n\n- Продолжение работы после уточняющего вопроса.\n\n## [0.5.0] — 2026-09-22\n\n- Перетаскивание файлов в окно.\n\n## [0.4.0] — 2026-09-21\n\n- Правила памяти в поставке.\n`;
 
 test('release notes parser keeps versions and user-facing bullet items', () => {
   const releases = parseReleaseNotes(changelog);

@@ -35,7 +35,7 @@ public class TerminalServerFixture {
         Console.OutputEncoding = new UTF8Encoding(false);
         if (args.Length > 0 && args[0] == "resume") {
             File.WriteAllText(Path.Combine(Cwd, "terminal.json"), Json.Serialize(new { args = args, cwd = Cwd, pid = Pid, stdin = IsConsole(-10), stdout = IsConsole(-11), stderr = IsConsole(-12) }), new UTF8Encoding(false));
-            Console.WriteLine("Codex Desk terminal regression fixture. No Codex/model requests.");
+            Console.WriteLine("Кузьмич terminal regression fixture. No Codex/model requests.");
             Thread.Sleep(2200);
             File.WriteAllText(Path.Combine(Cwd, "terminal.done"), "complete", new UTF8Encoding(false));
             return 0;

@@ -4,8 +4,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import asar from '@electron/asar';
+import { applicationBuildIdentity } from '../electron/app-identity.mjs';
 
 const EXE = 'Codex Desk.exe';
+const executableForChannel = channel => channel === 'stable' ? EXE : 'Kuzmich.exe';
+const hasExecutable = (files, channel) => Boolean(files[executableForChannel(channel)] || (channel !== 'experimental3' && (files[EXE] || files['Kuzmich.exe'])));
 const EXCLUDED = new Set(['release-manifest.json', 'resources/channel.json']);
 const TRANSIENT_MOVE_ERRORS = new Set(['EPERM', 'EACCES', 'EBUSY']);
 // Antivirus scans and lingering Chromium handles held release/nightly for more than 5 s on 2026-09-19 (EBUSY).
@@ -15,9 +18,10 @@ const MOVE_RETRY_MAX_ATTEMPTS = Math.ceil(MOVE_RETRY_WINDOW_MS / MOVE_RETRY_DELA
 const JOURNAL_RETRY_WINDOW_MS = 2000;
 const JOURNAL_RETRY_DELAY_MS = 50;
 const JOURNAL_RETRY_MAX_ATTEMPTS = Math.ceil(JOURNAL_RETRY_WINDOW_MS / JOURNAL_RETRY_DELAY_MS);
-const TRANSACTION_NAMES = new Set(['nightly', 'stable', 'stable-previous', '.nightly-incoming', '.stable-incoming', '.nightly-old', '.previous-old', '.stable-swap']);
+const TRANSACTION_NAMES = new Set(['nightly', 'experimental3', 'stable', 'stable-previous', '.nightly-incoming', '.experimental3-incoming', '.experimental3-old', '.stable-incoming', '.nightly-old', '.previous-old', '.stable-swap']);
 const TRANSACTION_PLANS = new Set([
   ...[false, true].map(replace => JSON.stringify({ steps: [...(replace ? [['nightly', '.nightly-old']] : []), ['.nightly-incoming', 'nightly']], cleanup: ['.nightly-incoming', '.nightly-old'] })),
+  ...[false, true].map(replace => JSON.stringify({ steps: [...(replace ? [['experimental3', '.experimental3-old']] : []), ['.experimental3-incoming', 'experimental3']], cleanup: ['.experimental3-incoming', '.experimental3-old'] })),
   ...[false, true].flatMap(previous => [false, true].map(stable => JSON.stringify({ steps: [...(previous ? [['stable-previous', '.previous-old']] : []), ...(stable ? [['stable', 'stable-previous']] : []), ['.stable-incoming', 'stable']], cleanup: ['.stable-incoming', '.previous-old'] }))),
   JSON.stringify({ steps: [['stable', '.stable-swap'], ['stable-previous', 'stable'], ['.stable-swap', 'stable-previous']], cleanup: ['.stable-swap'] }),
 ]);
@@ -113,14 +117,31 @@ export async function readBuildInfo(directory) {
   const info = JSON.parse(asar.extractFile(archive, path.join('electron', 'build-info.json')).toString('utf8'));
   const pkg = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
   if (!/^[a-f0-9]{64}$/.test(info.buildId) || !/^\d{4}-\d\d-\d\dT/.test(info.builtAt) || !Number.isFinite(Date.parse(info.builtAt)) || typeof info.version !== 'string' || info.version !== pkg.version) throw new Error('Неверные метаданные сборки в app.asar.');
-  return { buildId: info.buildId, builtAt: info.builtAt, version: info.version };
+  if ((info.productName !== undefined && (typeof info.productName !== 'string' || info.productName.length > 80))
+    || (info.iconName !== undefined && !['icon.ico', 'kuzmich.ico'].includes(info.iconName))) throw new Error('Неверные метаданные бренда сборки в app.asar.');
+  if (info.releaseSource !== undefined && (!info.releaseSource || info.releaseSource.format !== 1
+    || !/^[a-f0-9]{64}$/.test(info.releaseSource.buildId) || !/^[a-f0-9]{64}$/.test(info.releaseSource.manifestSha256))) throw new Error('Неверное происхождение Release-кандидата.');
+  return {
+    buildId: info.buildId, builtAt: info.builtAt, version: info.version,
+    ...(info.productName !== undefined ? { productName: info.productName } : {}),
+    ...(info.iconName !== undefined ? { iconName: info.iconName } : {}),
+    ...(info.releaseSource !== undefined ? { releaseSource: info.releaseSource } : {}),
+  };
 }
 
-export async function createReleaseManifest(root, directory) {
+function assertStableBranding(info) {
+  const stable = applicationBuildIdentity('stable');
+  if ((info.productName !== undefined && info.productName !== stable.productName)
+    || (info.iconName !== undefined && info.iconName !== stable.iconName)) {
+    throw new Error('Бренд сборки несовместим с публичным Release. Exact-byte promotion не преобразует PE ProductName/иконку. Нужен отдельно проверенный кандидат Release с корректными ProductName и icon; см. docs/RELEASES.md.');
+  }
+}
+
+export async function createReleaseManifest(root, directory, channel = 'stable') {
   await checkedTree(root, directory);
   const info = await readBuildInfo(directory);
   const files = await fileChecksums(root, directory);
-  if (!files[EXE] || !files['resources/app.asar']) throw new Error('В сборке нет приложения или app.asar.');
+  if (!hasExecutable(files, channel) || !files['resources/app.asar']) throw new Error('В сборке нет приложения или app.asar.');
   const manifest = { format: 1, ...info, files };
   await writeFile(path.join(directory, 'release-manifest.json'), JSON.stringify(manifest, null, 2));
   return manifest;
@@ -130,19 +151,20 @@ export async function verifyRelease(root, directory, expectedChannel) {
   await checkedTree(root, directory);
   const manifest = JSON.parse(await readFile(path.join(directory, 'release-manifest.json'), 'utf8'));
   const info = await readBuildInfo(directory);
-  if (manifest.format !== 1 || ['buildId', 'builtAt', 'version'].some(key => manifest[key] !== info[key])) throw new Error('Метаданные сборки не совпадают с манифестом.');
+  if (manifest.format !== 1 || ['buildId', 'builtAt', 'version', 'productName', 'iconName', 'releaseSource'].some(key => JSON.stringify(manifest[key]) !== JSON.stringify(info[key]))) throw new Error('Метаданные сборки не совпадают с манифестом.');
   const actual = await fileChecksums(root, directory);
-  if (!actual[EXE] || !actual['resources/app.asar'] || JSON.stringify(actual) !== JSON.stringify(manifest.files)) throw new Error('Контрольные суммы сборки не совпадают. Повторите сборку Nightly перед переносом.');
+  if (!hasExecutable(actual, expectedChannel) || !actual['resources/app.asar'] || JSON.stringify(actual) !== JSON.stringify(manifest.files)) throw new Error('Контрольные суммы сборки не совпадают. Повторите сборку Nightly перед переносом.');
   const channel = JSON.parse(await readFile(path.join(directory, 'resources', 'channel.json'), 'utf8'));
-  if (!channel || Object.keys(channel).length !== 1 || !['nightly', 'stable'].includes(channel.channel) || (expectedChannel && channel.channel !== expectedChannel)) throw new Error('Неверный канал сборки.');
+  if (!channel || Object.keys(channel).length !== 1 || !['nightly', 'experimental3', 'stable'].includes(channel.channel) || (expectedChannel && channel.channel !== expectedChannel)) throw new Error('Неверный канал сборки.');
+  if (channel.channel === 'stable') assertStableBranding(info);
   return manifest;
 }
 
-export async function assertNotRunning(directory) {
+export async function assertNotRunning(directory, executableName = EXE) {
   if (process.platform !== 'win32') return;
-  const expected = path.join(path.resolve(directory), EXE).toLowerCase();
+  const expected = [EXE, 'Kuzmich.exe'].map(name => path.join(path.resolve(directory), name).toLowerCase());
   const stdout = await new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); @(Get-CimInstance Win32_Process -Filter \"Name = 'Codex Desk.exe'\" | Select-Object ExecutablePath, ProcessId) | ConvertTo-Json -Compress"], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); @(Get-CimInstance Win32_Process -Filter "Name = 'Codex Desk.exe' OR Name = 'Kuzmich.exe'" | Select-Object ExecutablePath, ProcessId) | ConvertTo-Json -Compress`], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     const timeout = setTimeout(() => { child.kill(); reject(Object.assign(new Error('Не удалось проверить запущенные экземпляры приложения.'), { code: 'EPROCESSCHECK' })); }, 15000);
     child.stdout.on('data', chunk => { output += chunk.toString('utf8'); });
@@ -152,8 +174,8 @@ export async function assertNotRunning(directory) {
   });
   const parsed = stdout.trim() ? JSON.parse(stdout) : [];
   const running = Array.isArray(parsed) ? parsed : [parsed];
-  if (running.some(item => typeof item.ExecutablePath !== 'string' || !item.ExecutablePath)) throw new Error('Не удалось определить путь запущенного Codex Desk. Закройте его перед обновлением.');
-  if (running.some(item => typeof item.ExecutablePath === 'string' && path.resolve(item.ExecutablePath).toLowerCase() === expected)) throw new Error(`Закройте ${path.basename(directory)} перед обновлением этого канала. Другой канал можно оставить открытым.`);
+  if (running.some(item => typeof item.ExecutablePath !== 'string' || !item.ExecutablePath)) throw new Error('Не удалось определить путь запущенного Кузьмича. Закройте его перед обновлением.');
+  if (running.some(item => typeof item.ExecutablePath === 'string' && expected.includes(path.resolve(item.ExecutablePath).toLowerCase()))) throw new Error(`Закройте ${path.basename(directory)} перед обновлением этого канала. Другой канал можно оставить открытым.`);
 }
 
 async function writeChannel(directory, channel) {
@@ -251,34 +273,35 @@ async function transaction(root, steps, cleanup, options) {
   }
 }
 
-export async function publishNightly(root, source, options = {}) {
+export async function publishChannel(root, source, channel, options = {}) {
+  if (!['nightly', 'experimental3'].includes(channel)) throw new Error('Нельзя публиковать этот канал через publishChannel.');
   const guard = options.guard ?? assertNotRunning;
-  const nightly = transactionPath(root, 'nightly');
-  const incoming = transactionPath(root, '.nightly-incoming');
-  await guard(nightly);
+  const target = transactionPath(root, channel);
+  const incomingName = `.${channel}-incoming`;
+  const oldName = `.${channel}-old`;
+  const incoming = transactionPath(root, incomingName);
+  const old = transactionPath(root, oldName);
+  await guard(target, executableForChannel(channel));
   await checkedTree(root, source);
-  await guard(incoming);
+  await guard(incoming, executableForChannel(channel));
   await removeChecked(root, incoming);
   await mkdir(path.join(root, 'release'), { recursive: true });
   try {
     await cp(source, incoming, { recursive: true });
-    await writeChannel(incoming, 'nightly');
-    await createReleaseManifest(root, incoming);
-    await verifyRelease(root, incoming, 'nightly');
-  } catch (error) { await guard(incoming); await removeChecked(root, incoming); throw error; }
+    await writeChannel(incoming, channel);
+    await createReleaseManifest(root, incoming, channel);
+    await verifyRelease(root, incoming, channel);
+  } catch (error) { await guard(incoming, executableForChannel(channel)); await removeChecked(root, incoming); throw error; }
   const steps = [];
-  if (await statOrNull(nightly)) steps.push(['nightly', '.nightly-old']);
-  steps.push(['.nightly-incoming', 'nightly']);
-  await transaction(root, steps, ['.nightly-incoming', '.nightly-old'], { ...options, guard });
+  if (await statOrNull(target)) steps.push([channel, oldName]);
+  steps.push([incomingName, channel]);
+  await transaction(root, steps, [incomingName, oldName], { ...options, guard });
 }
 
-export async function promoteRelease(root, options = {}) {
-  const guard = options.guard ?? assertNotRunning;
-  const stable = transactionPath(root, 'stable');
-  const previous = transactionPath(root, 'stable-previous');
-  const incoming = transactionPath(root, '.stable-incoming');
-  await guard(stable);
-  await guard(previous);
+export async function publishNightly(root, source, options = {}) {
+  return publishChannel(root, source, 'nightly', options);
+}
+export async function resolveNightlySource(root) {
   // The running Nightly may still use the preceding build. A pending update is
   // immutable release input; promoting its bytes must not apply or cancel it.
   let source = transactionPath(root, 'nightly');
@@ -298,11 +321,25 @@ export async function promoteRelease(root, options = {}) {
   } else if (await statOrNull(queueDirectory)) throw new Error('Очередь Nightly повреждена: отсутствует state.json.');
   const manifest = await verifyRelease(root, source, 'nightly');
   if (queuedBuildId && manifest.buildId !== queuedBuildId) throw new Error('Кандидат Nightly не совпадает с очередью обновления.');
+  return { source, manifest };
+}
+
+export async function promoteRelease(root, options = {}) {
+  const guard = options.guard ?? assertNotRunning;
+  const stable = transactionPath(root, 'stable');
+  const previous = transactionPath(root, 'stable-previous');
+  const incoming = transactionPath(root, '.stable-incoming');
+  await guard(stable);
+  await guard(previous);
+  const { source, manifest } = options.preparedCandidate
+    ? await (await import('./release-candidate.mjs')).verifyPreparedReleaseCandidate(root)
+    : await resolveNightlySource(root);
+  assertStableBranding(manifest);
   await guard(incoming);
   await removeChecked(root, incoming);
   try {
     await cp(source, incoming, { recursive: true });
-    if ((await verifyRelease(root, incoming, 'nightly')).buildId !== manifest.buildId) throw new Error('Сборка Nightly изменилась во время переноса.');
+    if ((await verifyRelease(root, incoming, options.preparedCandidate ? 'stable' : 'nightly')).buildId !== manifest.buildId) throw new Error('Сборка изменилась во время переноса.');
     await writeChannel(incoming, 'stable');
   } catch (error) { await guard(incoming); await removeChecked(root, incoming); throw error; }
   const steps = [];

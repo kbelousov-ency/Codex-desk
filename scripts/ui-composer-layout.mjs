@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 
-const root = resolve('dist');
+const root = resolve(process.env.CODEX_DESK_TEST_RENDERER || 'dist');
 const server = createServer(async (request, response) => {
   const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
   const file = resolve(root, `.${pathname === '/' ? '/index.html' : pathname}`);

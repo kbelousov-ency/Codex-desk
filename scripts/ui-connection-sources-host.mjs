@@ -85,6 +85,8 @@ try {
     };
   }, { installer, ticket, installerScript });
   await view().getByText('Stored fixture answer 0', { exact: true }).waitFor();
+  await view().getByRole('button', { name: 'Настройки', exact: true }).click();
+  assert.equal(await view().locator('.composer [aria-label="Источник"]').count(), 0);
   await until(() => source().isEnabled(), 'restored native Claude session');
   assert.equal(await source().getAttribute('data-value'), 'account');
   const ids = await page.locator('.session-tab').evaluateAll(tabs => tabs.map(tab => tab.dataset.sessionId));

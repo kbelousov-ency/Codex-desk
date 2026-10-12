@@ -15,7 +15,7 @@ async function temporary(t) {
 
 test('packaged channels use an external bounded manifest and expose only public build fields', async t => {
   const resourcesPath = await temporary(t);
-  for (const channel of ['nightly', 'stable']) {
+  for (const channel of ['nightly', 'stable', 'experimental3']) {
     await writeFile(path.join(resourcesPath, 'channel.json'), JSON.stringify({ channel }));
     assert.deepEqual(resolveReleaseChannel({ isPackaged: true, resourcesPath, buildInfo: { ...buildInfo, secret: 'never-forward' } }), { channel, ...buildInfo });
   }
@@ -51,8 +51,13 @@ test('stable retains existing data and channels split settings while sharing his
   const stable = resolveChannelPaths({ appData, channel: 'stable' });
   const nightly = resolveChannelPaths({ appData, channel: 'nightly' });
   const development = resolveChannelPaths({ appData, channel: 'development' });
+  const experimental = resolveChannelPaths({ appData, channel: 'experimental3' });
   assert.deepEqual(stable, { userData: path.join(appData, 'Codex Desk'), attachmentsDirectory: path.join(appData, 'Codex Desk', 'attachments') });
   assert.equal(nightly.userData, path.join(appData, 'Codex Desk Nightly'));
+  assert.equal(experimental.userData, path.join(appData, 'Kuzmich Experimental 3'));
+  assert.notEqual(experimental.userData, nightly.userData);
+  assert.equal(experimental.profileMarkerName, '.experimental3-profile-initialized.json');
+  assert.equal(nightly.profileMarkerName, '.nightly-profile-initialized.json');
   assert.equal(nightly.legacyDataDirectory, stable.userData);
   assert.equal(development.userData, path.join(appData, 'Codex Desk Development'));
   assert.equal(development.legacyDataDirectory, undefined);

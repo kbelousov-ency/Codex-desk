@@ -1,3 +1,96 @@
+## Release 0.11.0 — 2026-10-12
+
+Пользователь явно поручил «обновляй релиз и заливай»: перенос в Release и публикация GitHub/Gerrit разрешены. Версия повышена штатной `version:minor`; новые возможности и исправления сверены с `v0.10.0` и описаны в [CHANGELOG](../CHANGELOG.md). Восемь пунктов прежнего «Не выпущено» уже присутствовали в опубликованном теге `v0.10.0`; они перенесены в его раздел с пояснением, без удаления знаний.
+
+Новый бренд требует реального преобразования PE и ASAR. `release:candidate` создаёт `artifacts/release-candidate/app` из проверенной установленной Nightly либо кандидата очереди. Меняются только Windows resources EXE, имя EXE, `electron/build-info.json` внутри ASAR и внешний маркер stable; renderer, host, зависимости, остальные ресурсы и исполняемые секции PE проверяются на сохранность. ASAR integrity в EXE обновляется. Кандидат получает новый build ID и `releaseSource` с исходным build ID и SHA-256 манифеста; подписанные EXE отклоняются. Установленная Nightly и очередь не меняются. После smoke `release:promote -- --prepared-candidate` повторно сверяет происхождение с текущей Nightly и выполняет прежний транзакционный перенос с `stable-previous`.
+
+Расхождение с исторической заметкой от 2026-10-10: актуальный `applicationBuildIdentity('nightly')` и установленная сборка используют `Kuzmich.exe`; стабильная совместимость сохраняет `Codex Desk.exe`. Release теперь имеет ProductName «Кузьмич» и `kuzmich.ico`; старое требование `Codex Desk` / `icon.ico` ниже описывает прежний бренд. Полная новая тема и специальный мастер Experimental 3 остаются ограничены соответствующими каналами.
+
+Nightly `82cffa8d64e999c9812898c3babadb17c087be85938c7d557c325806a0afeee6` собрана штатной `npm.cmd run package`; проверены 72 контрольные суммы и совпадение всех 85 файлов electron/dist и встроенных заметок с исходниками. Подготовленный и проверенный Release `3a4e40a9bf03753a44f2ea978f0d881c89ddb8b9471ceba163bd65b1b3aaab21` перенесён в `release/stable`; прежняя 0.10.0 `70aa4e37d064651a4ad5a58c6dadac81b4a1923a5949dce5fbd2faacb3f82747` сохранена в `stable-previous`. Пользовательское приложение не закрывалось, очередь Nightly остаётся штатной.
+
+Проверки: `check` — TypeScript, 1035 passed / 2 skipped / 0 failed, Vite; после изменений release tools — 65 passed / 1 skipped / 0 failed. UI executors, executor-nav, bulk-archive, provider-switch, router-usage, claude-router-usage прошли. Настоящий packaged Electron/Codex bootstrap выполнен для Nightly и кандидата Release; identity и совместный запуск каналов с изолированными профилями прошли. Запросов модели не было. Существующая пользовательская установка в `%LOCALAPPDATA%/Programs/codex-desk` запрещает installer-test в этом профиле: проверяются распакованный Setup и packaged host, реальная установка/миграция здесь не выполняется.
+
+Первый реальный запуск конверсии выявил Windows-разделители вложенных путей ASAR; исправление `path.normalize(filename)` проверено регрессионным тестом до/после и повторной конверсией. Логи и сверки — `artifacts/release-0110-*.log`, `artifacts/release-0110-preflight.json`. Vite сохраняет прежнее предупреждение о крупном bundle.
+
+
+Setup `Codex-Desk-Setup-0.11.0.exe`: 101875916 байт, SHA-256 `63b686f84b03a5111aade7b5064bc244216946ec5122a85cc8081b3ace1eaebb`. Распаковка NSIS подтвердила совпадение всех 72 файлов с утверждённым stable (`artifacts/release-0110-setup-verification.json`). Извлечённое приложение прошло setup-host (`artifacts/setup-host-GXJLE0`): мастер, backup конфигурации, fixture login Claude, правила памяти и навыки; без реальной авторизации, установки CLI или запросов модели. Первый прогон выявил устаревшую fixture: она не принимала существующий `--settings` prefix для изоляции аккаунта. Исправлены только fixture и строгая проверка её вызовов, байты приложения/Setup не менялись.
+
+## Вкладки исполнителей: каскадное закрытие и открытие из дерева — Nightly 0.10.0, 2026-10-12
+
+По поручению пользователя доработаны вкладки агентов-исполнителей: крестик родителя
+закрывает и его исполнителей (простаивающая группа — сразу; занятая — общий диалог
+«Отмена / Дождаться и закрыть / Остановить и закрыть», вопрос или запрос разрешения
+любого участника отменяет ожидание), а клик по исполнителю в дереве открывает родителя
+с фокусом на его подвкладке, без дубля в ряду «Исполнители». Детали и ограничения —
+[TABS](TABS.md) и [SUBAGENTS](SUBAGENTS.md).
+
+Приёмка: `npm run check` (tsc, node --test, vite build) и UI-прогоны `test:executors`,
+`test:executor-nav`, `test:tabs`, `test:project-tree` — PASS; скриншоты
+`artifacts/executor-cascade-close.png`, `artifacts/executor-open-from-tree.png`.
+`npm.cmd run package` собрал Nightly `9c64fb972d6267232d98403dfad84d15f7b17ac628e399ea1c89f0a93d004b96`
+в `2026-10-12T07:06:55Z` и поставил в штатную очередь обновления. Предыдущий кандидат
+`2ad2a9d616e5afa5c09c941b096081f93e7a26999cabfefebf4f1f22dedd122e` был упакован до
+последних правок `src/Workspace.tsx`/`src/child-tabs.css` и снят штатно: остановка
+node-помощника и `node scripts/apply-nightly-update.mjs --discard`. Пользовательский
+Nightly агент не закрывал, Release не переносился.
+
+## Единое окно кредитов — Nightly 0.10.0, 2026-10-12
+
+По поручению пользователя реализовано одинаковое компактное окно лимитов Codex/Claude
+без «Подробнее»: остаток, общий объём кредитов, дата обновления, расход диалога и
+календарного дня; только Claude имеет Fable. Источники и ограничения учёта описаны
+в [статистике роутера](ROUTER_USAGE.md#компактное-окно-реализовано--2026-10-12).
+
+`npm.cmd run package` собрал Nightly `845dc26126c56670cfe1cab960be3beeabc2246f7161e8f065a01e396adf2fc4`
+в `2026-10-12T06:24:12.823Z` и запустил штатную очередь обновления. Кандидат
+`artifacts/nightly-update/app` ждёт выбора «Закрыть»/ручного выхода. Пользовательский
+Nightly агент не закрывал, Release не переносился.
+
+Проверены TypeScript, общий unit-набор, новые targeted host/API-тесты, оба UI-сценария
+на финальном renderer и настоящий packaged Electron/preload/Codex bootstrap в
+отдельном тестовом профиле. Запросов модели в проверках не было. Живые GET-запросы
+подтвердили сводки кредитов обоих агентов. Все 72 контрольные суммы манифеста и
+85 исходных файлов electron/dist совпали с кандидатом побайтно; отчёт
+`artifacts/limits-research/package-verification.json`. Vite сохранил прежнее
+предупреждение о крупном bundle.
+
+## Видимое имя «Кузьмич», совместимость сохранена — 2026-10-10
+
+Пользователь выбрал: «Видимое имя — только Кузьмич; совместимость сохранить». Исходники всех каналов используют «Кузьмич» в интерфейсе, окнах, подсказках, уведомлениях, мастере и установщике. `applicationBuildIdentity('stable')` теперь задаёт `Кузьмич` / `Codex Desk` / `kuzmich.ico`; Nightly сохраняет суффикс канала. Это описание текущего кода, а не переименование уже опубликованного Release.
+
+Для существующих установок сохранены имя npm-пакета `codex-desk`, `Codex Desk.exe`, `Uninstall Codex Desk.exe`, AppUserModelID `local.codex.desk.*`, каталоги профилей и установки, `CODEX_DESK_*`, ключи хранилищ и событий, маркеры памяти, формат диагностики, updater pipes, GitHub URL и имена Setup assets. Старые VBS-запускатели и существующие ярлыки продолжают работать; `Create Shortcut.ps1` создаёт новые `Кузьмич.lnk` / `Кузьмич Nightly.lnk` без удаления старых. Пользовательские профили, авторизация, история и конфигурация CLI не мигрируются.
+
+Ниже сохранены исторические требования прежнего брендинга. Они объясняют решения и результаты тех проверок, но требование будущего PE ProductName `Codex Desk` / `icon.ico` уже не соответствует текущему коду. Exact-byte promotion по-прежнему требует совместимых реальных PE/ASAR метаданных; подмена одного `channel.json` недостаточна. Перенос в Release требует отдельного подтверждения пользователя.
+
+Проверка 2026-10-10: `npm.cmd run check` — TypeScript/Vite, 1006 passed / 2 платформенных skipped / 0 failed. Прошли `test:build-channel`, `test:setup`, `test:memory-rules-ui`, `test:skills` и `test:app-identity` на исходниках и финальном packaged exe; тестовые окна не изменили production ярлыки и не отправляли model turns. Первые параллельные прогоны memory/skills завершились `page.goto` timeout, последовательные прошли; точная причина timeout не установлена. Vite сохранил предупреждение о крупном bundle.
+
+Штатный `package` создал Nightly `799c6a88dc31cdbb31fd1df4d1d39b0d56fcf5432489fcab88a33052768a0a5a` в очереди до штатного закрытия пользователем. Реальные PE ProductName/FileDescription — `Кузьмич Nightly`; 83 файла electron/dist и встроенные release notes совпали с исходниками, проверены 72 checksum манифеста (`artifacts/kuzmich-branding-verification.json`). Проверочный Setup `artifacts/installer-nightly/Codex-Desk-Nightly-Setup-0.10.0.exe` собран из этого кандидата, SHA-256 `264aee74231566623bf53b330fe14b3ffc3d3057db19fc3e413faad559fd4bb0`; настоящая установка в этой проверке не выполнялась. Release и установленный Nightly не заменялись, пользовательское приложение не закрывалось агентом.
+
+## Nightly: отображаемый бренд «Кузьмич» — 2026-10-09
+
+Nightly отображает «Кузьмич», название окна «Кузьмич — Nightly» и геометрический SVG-знак K; будущая сборка получает соответствующий Windows-значок и ProductName. Для совместимости сохранены `release/nightly`, `Codex Desk.exe`, AppUserModelID `local.codex.desk.nightly`, профиль `Codex Desk Nightly`, marker `.nightly-profile-initialized.json` и установочная папка `Codex Desk Nightly`. Данные не переименовываются и не мигрируют. `experimental3` остаётся отдельным каналом: свой `Kuzmich.exe`, профиль `Kuzmich Experimental 3`, marker и router-only мастер. Nightly не получает router-only ограничения или принудительный экспериментальный мастер. Публичные файлы Release, его бренд и значок не изменялись; упаковка/публикация/перенос не выполнялись. Проверки и ограничения — [отчёт Agent B](agent-reports/agent-b.md).
+
+## Promotion и PE branding — проверка общего diff 2026-10-09
+
+`package` собирает только `nightly` или `experimental3`; их Windows ProductName, executableName и iconName выбираются одной функцией `applicationBuildIdentity(channel)`. Для Nightly это `Кузьмич Nightly` / `Codex Desk` / `kuzmich.ico`; для Experimental 3 — `Кузьмич Experimental 3` / `Kuzmich` / `kuzmich.ico`. Public Release остаётся `Codex Desk` / `Codex Desk` / `icon.ico`. Fingerprint новых сборок включает branding, чтобы варианты одного исходного дерева не получали один build ID только из-за одинакового набора staged files.
+
+Exact-byte promotion **не преобразует** PE resources, `app.asar` или подписи. Переключение одного `channel.json` недостаточно для превращения branded Nightly в public Release. Теперь promotion отклоняет несовместимые `productName`/`iconName` до изменения `.stable-incoming`, `stable`, `stable-previous` или update queue. Проверка действует также на queued candidate; установленные и ожидающие Nightly не применяются/не отменяются. `verifyRelease` проверяет branding манифеста против `build-info.json` внутри ASAR и не принимает branded сборку с маркером stable. Подмена/удаление только branding в манифесте не обходит защиту.
+
+Старые проверенные сборки без branding fields остаются совместимыми с прежним exact-byte контрактом. Для кандидата с явно указанными `Codex Desk` и `icon.ico` перенос также остаётся байт-в-байт, за исключением external channel marker. Это не разрешает подменять PE metadata правкой JSON.
+
+### Требуемая конверсия перед будущим public Release
+
+1. Зафиксировать и сохранить проверенный исходный Nightly candidate; не менять установленный Nightly или queue.
+2. Отдельной явно разрешённой задачей получить новый Release-compatible candidate с **реальными** Windows PE ProductName `Codex Desk`, прежней встроенной иконкой `icon.ico`, executable `Codex Desk.exe` и согласованными `productName`/`iconName` в ASAR. Потребуется отдельная сборка либо проверенная PE-resource conversion; одной правки marker/JSON недостаточно. Текущий `package` намеренно не предоставляет флага для такой конверсии.
+3. Изменённые PE/ASAR bytes считать новым артефактом: новый branding-aware build ID, новые checksums/manifest, повторная подпись при необходимости. Это **не** прежний проверенный Nightly byte identity.
+4. Выполнить identity/channel/installer/host smoke для нового кандидата и получить отдельное подтверждение пользователя. Только после этого выполнять exact-byte перенос одобренного совместимого кандидата в Release.
+
+Конверсия, упаковка, подписание и реальный promotion в ходе этого review не выполнялись. Текущий Release 0.10.0 с build ID `70aa4e37d064651a4ad5a58c6dadac81b4a1923a5949dce5fbd2faacb3f82747` проверен read-only по ASAR metadata и всем manifest checksums; он не изменён. Подробные результаты — [отчёт Agent B](agent-reports/agent-b.md).
+
+## Experimental 3
+
+С 8 октября 2026 года добавлен отдельный экспериментальный канал `experimental3` с именем «Кузьмич Experimental 3». Он собирается из тех же исходников, что Nightly, но публикуется в `release/experimental3`, использует отдельный профиль, `Kuzmich.exe` и установщик `Kuzmich-Setup-<version>.exe`. После установки мастер принудительно открывается и на существующем профиле: показывает найденную конфигурацию Router, позволяет проверить `/v1/models` и предлагает установить Боцмана через Portal. Release и Nightly не изменяются.
+
 # Release и Nightly
 
 ## Публичный Release 0.10.0 — 2026-10-06
@@ -26,7 +119,7 @@ Read-only `GET /v1/models` роутера подтвердил внешний ID
 
 `npm.cmd run package` собрал **0.10.0**, build ID `797c7a0daa802a66a11e94605cabcc96a67c38c67675d8be5162e12663d6c346`. Кандидат поставлен в штатную очередь `2026-10-05T09:17:28.761Z`; применяется после «Закрыть» в чате Nightly или ручного выхода. Пользовательский Nightly не закрывался. Release остаётся **0.9.0**, build `26cf8b5b08527468afb6c1b8cde44cf9192eb46ca82eb27969156b03ccec8b59`; manifest и 63 файла electron/dist кандидата сверены побайтно с исходниками (`artifacts/connection-sources-package-verification.json`).
 
-Проверены UI переключения/несовместимой модели (`test:connection-sources`), прежние providers/router-usage/composer-layout, реальный sandbox BrowserWindow с синтетической HTTPS-загрузкой (`test:claude-portal-browser-host`). Готовый кандидат прошёл новые production main/preload/IPC + DPAPI проверки двух изолированных Claude-вкладок (`artifacts/connection-sources-host-NxfXfQ`) и прежнюю авторизацию с обновлённым CLI fixture (`artifacts/claude-auth-host-88KzvG`). Нативные Codex 0.156.1 / Claude 2.1.278 проверены без запросов модели; обычный Codex resume синтетической истории работает без Desk overrides. Реальный SSO и цикл model turn аккаунт → роутер → аккаунт этими тестами не подменяются.
+Проверены UI переключения/несовместимой модели (`test:connection-sources`), прежние providers/router-usage/composer-layout, реальный sandbox BrowserWindow с синтетической HTTPS-загрузкой (`test:claude-portal-browser-host`). Готовый кандидат прошёл новые production main/preload/IPC + DPAPI проверки двух изолированных Claude-вкладок (`artifacts/connection-sources-host-NxfXfQ`) и прежнюю авторизацию с обновлённым CLI fixture (`artifacts/claude-auth-host-88KzvG`). Нативные Codex 0.156.1 / Claude 2.1.278 проверены без запросов модели; обычный Codex resume синтетической истории работает без Кузьмич overrides. Реальный SSO и цикл model turn аккаунт → роутер → аккаунт этими тестами не подменяются.
 
 В общем прогоне повторился прежний Windows `EPERM` при атомарной замене `.transaction.json`; изолированный тест release воспроизвёл это снова. Независимая последовательность `writeFile → rename → readFile` дала 25 отказов на 1000 циклов, каждый прошёл с первой повторной попытки после 25 мс; конкретный внешний держатель файла не установлен. `scripts/release-utils.mjs` теперь повторяет только Windows `EPERM/EACCES/EBUSY` до 2 с с шагом 50 мс, с повторной проверкой путей и без удаления прежнего журнала. Четыре детерминированные регрессии покрывают атомарность, исчерпание срока/числа попыток, остальные платформы/ошибки и подмену пути junction. Release/nightly-update subset — 45/45; правка скриптов не меняет уже собранные байты приложения. Диагностика: `connection-sources-rename-probe.json`, `connection-sources-release-journal-fix.log`; финальный общий лог — `artifacts/connection-sources-final-check.log`.
 
@@ -347,7 +440,7 @@ Nightly `bb395564365b767a2f1ccef03f5d7763487d0a19386f88eb092e692556054f53`: до
 
 `npm.cmd run release:installer` создаёт `release/installer/Codex Desk Setup <version>.exe` из **уже утверждённого stable**, без компиляции исходников или продвижения Nightly. Рядом — SHA256SUMS.txt, release-info.json и короткая README.txt. Для установки достаточно передать один exe; он содержит Electron и все файлы оболочки. Node.js/исходники на компьютере коллеги не нужны. CLI устанавливаются отдельно от payload приложения; в сборках с новым мастером это можно сделать при первом запуске. Авторизацию, корпоративные токены, пользовательские настройки и историю автора в установщик не включаем.
 
-Первоначальная версия NSIS была oneClick. С 2026-09-21 используется assisted мастер с фирменными изображениями, русскими страницами приветствия/завершения и принудительным режимом текущего пользователя. Каталог Release сохранён: `%LOCALAPPDATA%/Programs/codex-desk`; создаются ярлыки на рабочем столе и в меню «Пуск», в конце предлагается запуск приложения. Администратор для Codex Desk не нужен; `/allusers` отвергается. App ID `local.codex.desk.stable` совпадает с runtime AUMI Release; GUID установки `c9b20eca-5a9a-5a4d-9498-438701eb97b0`. Обычное удаление сохраняет настройки оболочки/attachments и Codex config/history. Системного сертификата подписи нет, поэтому Windows может предупреждать о неизвестном издателе.
+Первоначальная версия NSIS была oneClick. С 2026-09-21 используется assisted мастер с фирменными изображениями, русскими страницами приветствия/завершения и принудительным режимом текущего пользователя. Каталог Release сохранён: `%LOCALAPPDATA%/Programs/codex-desk`; создаются ярлыки на рабочем столе и в меню «Пуск», в конце предлагается запуск приложения. Администратор для Кузьмича не нужен; `/allusers` отвергается. App ID `local.codex.desk.stable` совпадает с runtime AUMI Release; GUID установки `c9b20eca-5a9a-5a4d-9498-438701eb97b0`. Обычное удаление сохраняет настройки оболочки/attachments и Codex config/history. Системного сертификата подписи нет, поэтому Windows может предупреждать о неизвестном издателе.
 
 Первый запуск открывает [мастер настройки агентов](SETUP.md). Изображения NSIS генерирует `scripts/installer-branding.mjs` из существующей иконки и палитры продукта в `artifacts/installer-build`; системные элементы управления остаются нативными. `npm.cmd run package:installer` (`scripts/installer.mjs --nightly`) упаковывает текущий Nightly или проверенный ожидающий кандидат в `artifacts/installer-nightly`, с отдельным `local.codex.desk.nightly` и каталогом `%LOCALAPPDATA%/Programs/Codex Desk Nightly`. Проверочный Setup не продвигает Nightly в Release. Обычный `release:installer` сохраняет прежнюю границу утверждённого stable.
 

@@ -168,7 +168,7 @@ try {
   assert.deepEqual(await page.evaluate(() => window.__skills.calls.map(call => call.provider)), ['claude']);
 
   await page.goto(`${url}?scenario=unavailable`);
-  await page.getByText('Список навыков доступен в установленном приложении Codex Desk.', { exact: true }).waitFor();
+  await page.getByText('Список навыков доступен в установленном приложении Кузьмич.', { exact: true }).waitFor();
   assert.equal(await page.locator('.skills-group').count(), 0);
 
   // The production settings dialog keeps its own tab navigation and focus trap around the inner tabs.

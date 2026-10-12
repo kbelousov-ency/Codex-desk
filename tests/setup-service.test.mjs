@@ -55,6 +55,26 @@ test('existing user is not interrupted by the new wizard during update', async t
   assert.deepEqual(await service.state(), { show: false, completed: false, deferred: false });
 });
 
+test('forced setup reopens for an existing user and reports Router connectivity without exposing its key', async t => {
+  let request;
+  const f = await fixture(t, { initialExisting: true, fetchImpl: async (url, options) => {
+    request = { url, options };
+    return { ok: true, status: 200, json: async () => ({ data: [{ id: 'fixture-model' }] }) };
+  }, forceShow: true });
+  await writeConfig(f.config, `model_provider = "router"\n\n[model_providers.router]\nbase_url = "https://router.example.test/v1"\nexperimental_bearer_token = "secret-router-key"\nhttp_headers = { "x-openai-actor-authorization" = "ency-router" }\n`);
+  assert.deepEqual(await f.service.state(), { show: true, completed: false, deferred: false });
+  const detected = await f.service.scan();
+  assert.equal(detected.router.configured, true);
+  assert.equal(detected.router.reachable, null);
+  const checked = await f.service.routerStatus({ check: true });
+  assert.equal(checked.reachable, true);
+  assert.equal(checked.modelCount, 1);
+  assert.equal(request.url, 'https://router.example.test/v1/models');
+  assert.equal(request.options.headers.Authorization, 'Bearer secret-router-key');
+  assert.equal(request.options.headers['x-openai-actor-authorization'], 'ency-router');
+  assert.doesNotMatch(JSON.stringify(checked), /secret-router-key/);
+});
+
 test('an interrupted first run resumes even after CLI installation has created settings', async t => {
   const f = await fixture(t);
   await f.service.state();

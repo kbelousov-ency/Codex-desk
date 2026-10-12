@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
-import { applicationIdentity } from '../electron/app-identity.mjs';
+import { applicationIconName, applicationIdentity } from '../electron/app-identity.mjs';
 
 // Real Electron, disposable profiles and a fixture server. Reading the shell's
 // notification preferences must not initialize Windows' production registration.
@@ -21,7 +21,7 @@ async function productionShortcuts() {
   const result = {};
   for (const directory of directories) {
     const files = await readdir(directory).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
-    for (const filename of files.filter(name => /^Codex Desk(?: Nightly| Development)?\.lnk$/i.test(name))) {
+    for (const filename of files.filter(name => /^(?:Codex Desk(?: Nightly| Development)?|Кузьмич(?: Nightly| Experimental 3| Development)?)\.lnk$/i.test(name))) {
       const file = path.join(directory, filename);
       result[file] = (await readFile(file)).toString('base64');
     }
@@ -29,9 +29,9 @@ async function productionShortcuts() {
   return result;
 }
 
-async function verifyShellIcon(app, profile, identity) {
+async function verifyShellIcon(app, profile, identity, channel) {
   if (process.platform !== 'win32') return { skipped: 'Windows shell only' };
-  const source = await readFile(path.join(root, 'electron', 'icon.ico'));
+  const source = await readFile(path.join(root, 'electron', applicationIconName(channel)));
   const digest = createHash('sha256').update(source).digest('hex');
   const icon = path.join(profile, 'shell-icons', `icon-${digest}.ico`);
   assert.deepEqual(await readFile(icon), source, 'Startup must persist the complete ICO outside the replaceable app directory');
@@ -150,7 +150,7 @@ for (const testFlag of [true, false]) {
     assert.equal(actual.name, applicationIdentity(info.channel, actual.pid).name);
     assert.equal(actual.userData, profile);
     assert.equal(actual.windows, 1);
-    const shellIcon = await verifyShellIcon(app, profile, applicationIdentity(info.channel, actual.pid));
+    const shellIcon = await verifyShellIcon(app, profile, applicationIdentity(info.channel, actual.pid), info.channel);
     assert.deepEqual(await productionShortcuts(), before, 'Disposable notification settings must not alter production shortcuts');
     results.push({ testFlag, ...actual, channel: info.channel, shellIcon });
   } finally {

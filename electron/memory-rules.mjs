@@ -235,7 +235,7 @@ export class MemoryRulesService {
     const procedureNeeded = enabled && !procedure.exists;
     if (!instructionChanged && !procedureNeeded) return { ...snapshot.preview, changed: false, backupPaths: [] };
 
-    // The lock serializes other Codex Desk windows/processes. External editors are
+    // The lock serializes other Kuzmich windows/processes. External editors are
     // checked again immediately before each commit; rename is not a filesystem CAS.
     await this.io.mkdir(path.dirname(paths.procedurePath), { recursive: true });
     await this.io.mkdir(path.dirname(instruction.path), { recursive: true });

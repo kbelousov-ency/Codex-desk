@@ -71,8 +71,8 @@ export default function MemoryRulesSettings({ providers = allProviders, onBusyCh
     {showTitle && <h3><BookOpen size={17} />Правила памяти для всех проектов</h3>}
     <p className="memory-rules-description">Рекомендуем сохранять решения и причины, держать краткий индекс и проверять целостность заметок перед сжатием. Полное сжатие памяти не запускается автоматически.</p>
     <p className="memory-rules-description">Правила действуют в новых сессиях выбранного агента во всех проектах, включая терминал. После изменения откройте новый диалог; уже запущенный CLI перезапустите.</p>
-    <p className="memory-rules-description">Включение добавит раздел к вашим глобальным инструкциям. Существующие инструкции сохранятся; перед изменением файлов создаются резервные копии. Отключение уберёт только раздел Codex Desk.</p>
-    {!providers.length ? <p className="memory-rules-unavailable">Установите агента, чтобы подключить правила. Позже это можно сделать в настройках приложения.</p> : !bridge ? <p className="memory-rules-unavailable" role="status">Настройка правил доступна в установленном приложении Codex Desk.</p> : <div className="memory-rules-providers">{providers.map(provider => {
+    <p className="memory-rules-description">Включение добавит раздел к вашим глобальным инструкциям. Существующие инструкции сохранятся; перед изменением файлов создаются резервные копии. Отключение уберёт только раздел Кузьмича.</p>
+    {!providers.length ? <p className="memory-rules-unavailable">Установите агента, чтобы подключить правила. Позже это можно сделать в настройках приложения.</p> : !bridge ? <p className="memory-rules-unavailable" role="status">Настройка правил доступна в установленном приложении Кузьмич.</p> : <div className="memory-rules-providers">{providers.map(provider => {
       const state = states[provider];
       const preview = state?.preview;
       const name = names[provider];

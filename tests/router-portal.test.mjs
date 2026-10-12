@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { RouterPortalClient, PORTAL_ORIGIN } from '../electron/router-portal.mjs';
 
 const device = { device_code: 'device-secret-fixture', user_code: 'BCDF-GHJK', verification_uri: `${PORTAL_ORIGIN}/device`, verification_uri_complete: `${PORTAL_ORIGIN}/device?code=BCDF-GHJK`, expires_in: 600, interval: 5 };
-const provider = { name: 'ENCY OmniRoute', base_url: 'https://router.encycam.com/v1', wire_api: 'responses', requires_openai_auth: false };
+const provider = { name: 'ENCY OmniRoute', base_url: 'https://router.encycam.com/v1', wire_api: 'responses', requires_openai_auth: false, supports_websockets: true, supports_standalone_web_search: true };
 const defaults = { model: 'gpt-5.6-terra', model_provider: 'router', model_context_window: 1000000, model_auto_compact_token_limit: 900000, model_reasoning_summary: 'detailed', hide_agent_reasoning: false };
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -38,7 +38,7 @@ test('device flow waits for the interval and returns secrets only in host config
   assert.equal(start.expiresAt, '2026-09-25T12:10:00.000Z');
   assert.equal(start.intervalMs, 5000);
   assert.equal(JSON.stringify(start).includes(device.device_code), false);
-  assert.deepEqual(JSON.parse(f.calls[0].options.body), { client: 'Codex Desk', host: 'WORKSTATION' });
+  assert.deepEqual(JSON.parse(f.calls[0].options.body), { client: 'Кузьмич', host: 'WORKSTATION' });
   assert.equal(f.client.verificationUri(start.flowId), device.verification_uri_complete);
   assert.deepEqual(await f.client.poll(start.flowId), { state: 'pending', intervalMs: 5000 });
   assert.equal(f.calls.length, 1);
@@ -67,6 +67,16 @@ test('provider response preserves validated nested http_headers', async () => {
   f.advance(5000);
   const result = await f.client.poll(flow.flowId);
   assert.deepEqual(result.config.provider.http_headers, headers);
+});
+
+test('provider response accepts Portal capability flags', async () => {
+  const f = fixture(url => url.endsWith('/provider') ? json(provider) : undefined);
+  const flow = await f.client.start('PC');
+  f.advance(5000);
+  const result = await f.client.poll(flow.flowId);
+  assert.equal(result.state, 'ready');
+  assert.equal(result.config.provider.supports_websockets, true);
+  assert.equal(result.config.provider.supports_standalone_web_search, true);
 });
 
 test('pending and slow_down enforce progressively longer intervals', async () => {
