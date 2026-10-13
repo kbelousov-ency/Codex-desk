@@ -1,14 +1,15 @@
-# Jenkins: сборка для каталога роутера
+# Jenkins: публикация в каталог роутера
 
-`Jenkinsfile` собирает Windows x64 установщик Nightly. Публикация в каталог
-роутера пока обозначена TODO.
+Работа идёт в ветке `develop`. `master` — то, что получают люди: каждое изменение
+`master` в Gerrit запускает джобу `WEBTEAM_FOLDER/codexdesk-build`, она собирает
+Release-установщик и заливает его в каталог «Приложения» портала роутера
+(карточка `codex-desk`). Сборки других веток завершаются `ABORTED`.
 
 Настройки Multibranch Pipeline:
 
 - Репозиторий: `https://gerrit1.hq.encycam.com/a/CodexDesk`.
 - Credentials: `jenkins4gerrit_gerrit1`.
 - Ветка: `master`, Script Path: `Jenkinsfile`.
-- Запуск вручную; автоматическая сборка после сканирования завершается `ABORTED`.
 
 Используется Kubernetes cloud `hq.encycam.com`, шаблон `win-root-lts2022`
 и контейнер `builder` с образом
@@ -17,20 +18,22 @@
 Windows-контейнер нужен в том числе для PowerShell/System.Drawing,
 которые использует `scripts/installer-branding.mjs`.
 
-В контейнер скачивается portable Node.js 22.14.0 с nodejs.org в `.local/node`
-по образцу подготовки Node.js в AI-Tool. В его окружении выполняются
-`npm ci`, `npm run package` и `npm run package:installer`.
-Контейнеру нужен доступ к nodejs.org, npm и загрузкам Electron/electron-builder.
+В контейнер скачивается portable Node.js 22.14.0 с nodejs.org в `.local/node`.
+Сборка — штатная цепочка [выпуска](RELEASES.md) в чистом воркспейсе:
+`npm ci`, `npm run package` (Nightly в `release/nightly`), `release:candidate`,
+`release:promote -- --prepared-candidate` и `release:installer`.
+Jenkins сохраняет `release/installer/*`: Setup, `SHA256SUMS.txt`,
+`release-info.json` и `README.txt`.
 
-Jenkins сохраняет `artifacts/installer-nightly/*`: установщик `.exe`,
-`SHA256SUMS.txt`, `release-info.json` и `README.txt`.
-Стабильный выпуск оформляется
-отдельно по [RELEASES.md](RELEASES.md), с явным подтверждением переноса в Release.
+Публикация идёт именным ключом роутера `codexdesk-publish` с единственным правом
+`apps:publish` (Jenkins credential `codexdesk-portal-key`, Secret text). Ключ
+выпущен на владельца карточки: заливать и снимать её версии может только он.
+Моделями этот ключ не ходит; владелец видит его в кабинете портала на вкладке
+«API-ключи». Квота каталога — 200 МБ на человека, Setup весит ~100 МБ,
+поэтому перед заливкой джоба снимает все прежние версии. Версия в каталоге —
+`<версия package.json>.<номер сборки>`: версия каталога неизменяема, а `master`
+может меняться без повышения версии. После заливки джоба сверяет SHA-256,
+который сохранил портал, с собранным.
 
-Для публикации предстоит определить API/адрес каталога (`PORTAL_APP_CATALOG`),
-канал выпуска и состав файлов. Предусмотрен Jenkins credential
-`codexdesk-portal-key` типа **Secret text** для ключа API портала;
-до реализации публикации он не используется и не требуется для сборки.
-
-Добавление установщика в каталог роутера само по себе не меняет встроенную
-проверку обновлений приложения: сейчас она использует GitHub Releases.
+Каталог не меняет встроенную проверку обновлений приложения: она по-прежнему
+использует GitHub Releases ([UPDATES.md](UPDATES.md)).
