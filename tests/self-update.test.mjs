@@ -210,9 +210,16 @@ test('после перезапуска совпавшая версия приз
     format: 1, version: '0.12.0.7', previousVersion: '0.11.0', installerPath: place.installer,
   }));
   const { service } = harness(place, { currentVersion: '0.12.0', currentBuildNumber: 7 });
+  // Следы прежней неудачной попытки тоже убираются: иначе в профиле копятся
+  // установщики по сотне мегабайт.
+  const stale = path.join(place.staging, 'Codex-Desk-Setup-0.11.9.exe');
+  await writeFile(stale, 'старый');
+  await writeFile(path.join(place.staging, 'install.log'), 'ok\n');
   assert.deepEqual(await service.review(), { state: 'applied', version: '0.12.0.7' });
   assert.equal(await exists(path.join(place.userData, 'pending-update.json')), false);
   assert.equal(await exists(place.installer), false, 'скачанный установщик удалён');
+  assert.equal(await exists(stale), false, 'прежние установщики удалены');
+  assert.equal(await exists(path.join(place.staging, 'install.log')), false, 'отчёт установщика удалён');
   assert.equal(await service.review(), null, 'повторный запуск ничего не показывает');
   await rm(place.root, { recursive: true, force: true });
 });

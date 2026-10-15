@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn } from 'node:child_process';
-import { lstat, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { lstat, readdir, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { catalogVersion } from './app-updates.mjs';
 
@@ -19,6 +19,9 @@ const RESULTS = new Set(['ok', 'timeout', 'error']);
 function fail(message) {
   return new Error(message || 'Установка обновления сейчас недоступна.');
 }
+
+/** Windows отпускает файл не сразу после выхода процесса — удаляем с повторами. */
+const discard = target => rm(target, { force: true, maxRetries: 20, retryDelay: 250 }).catch(() => {});
 
 function inside(parent, child) {
   const base = path.resolve(parent);
@@ -218,8 +221,14 @@ export function createSelfUpdate({ executable, userData, stagingDirectory, curre
         && (offered.buildNumber === currentBuildNumber || changed);
       await unlink(marker).catch(() => {});
       if (applied) {
-        await unlink(installerPath).catch(() => {});
-        await unlink(logFile).catch(() => {});
+        // Установщик ещё держит свой файл в момент, когда запускает новую версию:
+        // одной попытки удаления мало, и в профиле оставалась сотня мегабайт до
+        // следующего обновления. Замечено на живом прогоне 2026-10-15.
+        // Заодно убираются следы прежних неудачных попыток.
+        for (const name of await readdir(stagingDirectory).catch(() => [])) {
+          if (/\.exe$/i.test(name)) await discard(path.join(stagingDirectory, name));
+        }
+        await discard(logFile);
         return { state: 'applied', version: record.version };
       }
       let result = '';
