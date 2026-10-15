@@ -35,7 +35,7 @@ export function useAppUpdates() {
       if (next && revision.current === started) setStatus(next);
       if (action.kind === 'download') setDownloadOpened(true);
     } catch (cause) {
-      if (mounted.current) setFailure({ action, message: `${action.kind === 'save' ? 'Не удалось сохранить настройку.' : action.kind === 'download' ? 'Не удалось открыть загрузку.' : 'Не удалось проверить обновления.'} ${causeText(cause)}` });
+      if (mounted.current) setFailure({ action, message: `${action.kind === 'save' ? 'Не удалось сохранить настройку.' : action.kind === 'download' ? 'Не удалось скачать установщик.' : 'Не удалось проверить обновления.'} ${causeText(cause)}` });
     } finally {
       running.current = false;
       if (mounted.current) setPending(null);
@@ -55,7 +55,7 @@ export function useAppUpdates() {
   const status = receivedStatus || (!available ? {
     currentVersion: build?.version || '', channel: build?.channel || 'development', supported: false, enabled: false, phase: 'disabled' as const,
   } : null);
-  const offered = Boolean(status?.supported && status.latestVersion && status.downloadUrl && status.phase === 'available');
+  const offered = Boolean(status?.supported && status.latestVersion && status.downloadUrl && (status.phase === 'available' || status.phase === 'downloading'));
   return {
     status, pending, failure, downloadOpened, available,
     bannerVisible: offered && !dismissed.has(status!.latestVersion!) && status!.skippedVersion !== status!.latestVersion,
@@ -76,7 +76,7 @@ export function AppUpdateBanner({ control, onDetails }: { control: UpdateControl
   if (!control.bannerVisible || !status) return null;
   return <aside className="app-update-banner" aria-label="Доступно обновление приложения">
     <Download size={17} aria-hidden="true" />
-    <div className="app-update-banner-copy" role="status"><strong>Доступен {productName} {status.latestVersion}</strong><span>{failure ? failure.message : control.downloadOpened ? 'Загрузка открыта в браузере. Запустите скачанный установщик.' : 'Новая версия готова к скачиванию.'}</span></div>
+    <div className="app-update-banner-copy" role="status"><strong>Доступен {productName} {status.latestVersion}</strong><span>{failure ? failure.message : control.downloadOpened ? 'Установщик скачан и проверен. Закройте приложение и запустите его.' : 'Новая версия готова к скачиванию.'}</span></div>
     <div className="app-update-banner-actions">
       <button type="button" className="primary-button" disabled={Boolean(pending)} onClick={control.download}><Download size={13} /> Скачать обновление</button>
       <button type="button" className="text-button" onClick={onDetails}>Подробнее</button>
@@ -93,7 +93,7 @@ function lastChecked(value?: string) {
 
 function statusText(status: AppUpdateStatus) {
   if (status.phase === 'checking') return 'Проверяем наличие новой версии…';
-  if (status.phase === 'available') return `Доступна версия ${status.latestVersion || ''}.`;
+  if (status.phase === 'available' || status.phase === 'downloading') return `Доступна версия ${status.latestVersion || ''}.`;
   if (status.phase === 'up-to-date') return 'Установлена актуальная версия.';
   if (status.phase === 'error') return 'Проверка обновлений не завершилась. Повторите её позже.';
   if (!status.enabled || status.phase === 'disabled') return 'Автоматическая проверка выключена. Вы можете проверить обновления вручную.';
@@ -122,7 +122,7 @@ export function AppUpdateDialog({ control, onClose }: { control: UpdateControl; 
     document.addEventListener('keydown', onKey, true);
     return () => { document.removeEventListener('keydown', onKey, true); if (previous?.isConnected) previous.focus(); };
   }, []);
-  const busy = Boolean(pending || status?.phase === 'checking');
+  const busy = Boolean(pending || status?.phase === 'checking' || status?.phase === 'downloading');
   const local = status && status.channel !== 'stable';
   return <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="settings-modal app-update-dialog" role="dialog" aria-modal="true" aria-labelledby="app-updates-title" ref={dialog}>
@@ -131,17 +131,17 @@ export function AppUpdateDialog({ control, onClose }: { control: UpdateControl; 
         <BuildDetails />
         {!status && !failure && <p className="app-update-status" role="status"><LoaderCircle className="spin" size={15} /> Загружаем сведения об обновлениях…</p>}
         {local ? <p className="app-update-status">{status.channel === 'nightly' ? 'Nightly' : 'Версия для разработки'} обновляется локально. Онлайн-обновления доступны в канале Release.</p> : status && !status.supported ? <p className="app-update-status">Онлайн-обновления недоступны в этой сборке.</p> : status && <>
-          <label className="settings-row app-update-option"><span><strong>Проверять автоматически</strong><small>Периодически проверять новые версии на GitHub и предлагать обновление.</small></span><input type="checkbox" aria-label="Проверять обновления автоматически" checked={status.enabled} disabled={busy} onChange={event => control.save({ enabled: event.target.checked })} /></label>
+          <label className="settings-row app-update-option"><span><strong>Проверять автоматически</strong><small>Периодически проверять новые версии в каталоге Portal и предлагать обновление.</small></span><input type="checkbox" aria-label="Проверять обновления автоматически" checked={status.enabled} disabled={busy} onChange={event => control.save({ enabled: event.target.checked })} /></label>
           <p className="app-update-last-check">Последняя проверка: <span>{lastChecked(status.checkedAt)}</span></p>
           <p className="app-update-status" role="status">{status.phase === 'checking' && <LoaderCircle className="spin" size={15} />}{statusText(status)}</p>
           {status.phase === 'error' && status.error && !failure && <p className="app-update-error" role="alert">{status.error}</p>}
           {control.offered && <>
             {status.skippedVersion === status.latestVersion && <p className="app-update-note">Вы пропустили эту версию. Её по-прежнему можно скачать вручную.</p>}
             <div className="app-update-actions"><button type="button" className="primary-button" disabled={busy} onClick={control.download}><Download size={14} /> Скачать обновление</button><button type="button" className="text-button" disabled={busy} onClick={() => control.save({ skippedVersion: status.skippedVersion === status.latestVersion ? null : status.latestVersion })}>{status.skippedVersion === status.latestVersion ? 'Снова напоминать' : 'Пропустить эту версию'}</button></div>
-            <p className="app-update-note">Загрузка откроется в браузере. Затем запустите скачанный установщик, чтобы обновить приложение.</p>
+            <p className="app-update-note">Установщик скачается из Portal и будет проверен. Затем закройте приложение и запустите его, чтобы обновиться.</p>
           </>}
           {control.offered && status.releaseNotes && <details className="app-update-notes"><summary>Что нового в версии {status.latestVersion}</summary><div>{status.releaseNotes}</div></details>}
-          {control.downloadOpened && <p className="app-update-status" role="status">Загрузка открыта в браузере.</p>}
+          {control.downloadOpened && <p className="app-update-status" role="status">Установщик скачан и проверен. Он показан в папке загрузок.</p>}
         </>}
         {failure && <div className="app-update-error" role="alert"><span>{failure.message}</span><button type="button" className="secondary-button" disabled={busy} onClick={control.retry}>{failure.action.kind === 'save' ? 'Повторить сохранение' : failure.action.kind === 'download' ? 'Повторить загрузку' : 'Повторить проверку'}</button></div>}
       </div>

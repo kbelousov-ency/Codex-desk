@@ -55,7 +55,10 @@ try {
     }, null, 2));
     const checksums = await fileChecksums(root, stage, new Set(['electron/build-info.json']));
     const buildId = createHash('sha256').update(JSON.stringify({ files: checksums, branding })).digest('hex');
-    await writeFile(path.join(stage, 'electron', 'build-info.json'), JSON.stringify({ buildId, builtAt: new Date().toISOString(), version: manifest.version, productName: branding.productName, iconName: branding.iconName }, null, 2));
+    // Jenkins задаёт BUILD_NUMBER; сборка запоминает его, чтобы установленная копия
+    // могла отличить себя от другой заливки той же X.Y.Z в каталоге роутера.
+    const buildNumber = /^[1-9]\d{0,9}$/.test(process.env.BUILD_NUMBER ?? '') ? Number(process.env.BUILD_NUMBER) : null;
+    await writeFile(path.join(stage, 'electron', 'build-info.json'), JSON.stringify({ buildId, builtAt: new Date().toISOString(), version: manifest.version, productName: branding.productName, iconName: branding.iconName, ...(buildNumber ? { buildNumber } : {}) }, null, 2));
     await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [
         path.join(root, 'node_modules', 'electron-builder', 'out', 'cli', 'cli.js'),

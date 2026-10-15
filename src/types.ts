@@ -102,12 +102,16 @@ export type AppUpdateStatus = {
   channel: 'stable' | 'nightly' | 'experimental3' | 'development';
   enabled: boolean;
   supported: boolean;
-  phase: 'idle' | 'checking' | 'available' | 'up-to-date' | 'error' | 'disabled';
+  phase: 'idle' | 'checking' | 'available' | 'downloading' | 'up-to-date' | 'error' | 'disabled';
   checkedAt?: string;
   latestVersion?: string;
-  releaseUrl?: string;
   downloadUrl?: string;
   releaseNotes?: string;
+  filename?: string;
+  sha256?: string;
+  sizeBytes?: number;
+  downloadedPath?: string;
+  downloadedVersion?: string;
   error?: string;
   skippedVersion?: string;
 };
@@ -119,7 +123,7 @@ export type ReleaseNotesState = {
   releases: ReleaseNotesRelease[];
   shouldShow: boolean;
 };
-export type BuildInfo = { channel: 'stable' | 'nightly' | 'experimental3' | 'development'; version: string; buildId?: string; builtAt?: string };
+export type BuildInfo = { channel: 'stable' | 'nightly' | 'experimental3' | 'development'; version: string; buildId?: string; builtAt?: string; buildNumber?: number | null };
 export type DiagnosticsStatus = { enabled: boolean; directory: string | null; error?: string };
 export type RendererErrorReport = { kind: 'error' | 'unhandledrejection' | 'react'; name?: string; message?: string; stack?: string; componentStack?: string };
 export type ProjectFile = { name: string; path: string; type: 'directory' | 'file' | 'link' };

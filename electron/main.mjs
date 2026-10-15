@@ -115,9 +115,15 @@ let releaseNotesService;
 const appUpdates = new AppUpdateService({
   buildInfo: releaseInfo,
   store: new AppUpdateStore(path.join(channelPaths.userData, 'updates.json')),
-  fetch: (url, options) => net.fetch(url, options),
-  openExternal: url => shell.openExternal(url),
-  // Test/isolated profiles must not poll GitHub, including packaged host tests.
+  // Каталог обновлений авторизует Portal-сессия приложения. portalSession создаётся ниже,
+  // но к моменту первой проверки (15 с после открытия окна) он уже инициализирован.
+  portal: {
+    status: () => portalSession.status(),
+    fetch: (url, options) => session.fromPartition(PORTAL_PARTITION).fetch(url, options),
+  },
+  saveDirectory: () => app.getPath('downloads'),
+  reveal: target => shell.showItemInFolder(target),
+  // Test/isolated profiles must not poll the portal, including packaged host tests.
   networkAllowed: process.env.CODEX_DESK_TEST !== '1' && !isolatedProfile && process.platform === 'win32' && process.arch === 'x64',
   publish: status => {
     for (const { window } of windows.values()) {

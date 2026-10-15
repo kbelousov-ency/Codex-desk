@@ -17,7 +17,14 @@ test('packaged channels use an external bounded manifest and expose only public 
   const resourcesPath = await temporary(t);
   for (const channel of ['nightly', 'stable', 'experimental3']) {
     await writeFile(path.join(resourcesPath, 'channel.json'), JSON.stringify({ channel }));
-    assert.deepEqual(resolveReleaseChannel({ isPackaged: true, resourcesPath, buildInfo: { ...buildInfo, secret: 'never-forward' } }), { channel, ...buildInfo });
+    assert.deepEqual(resolveReleaseChannel({ isPackaged: true, resourcesPath, buildInfo: { ...buildInfo, secret: 'never-forward' } }), { channel, ...buildInfo, buildNumber: null });
+  }
+  // Номер сборки Jenkins проходит насквозь; мусор становится null, а не ошибкой.
+  await writeFile(path.join(resourcesPath, 'channel.json'), JSON.stringify({ channel: 'stable' }));
+  assert.deepEqual(resolveReleaseChannel({ isPackaged: true, resourcesPath, buildInfo: { ...buildInfo, buildNumber: 57 } }),
+    { channel: 'stable', ...buildInfo, buildNumber: 57 });
+  for (const invalid of [0, -1, '57', 1.5, 2 ** 31]) {
+    assert.equal(resolveReleaseChannel({ isPackaged: true, resourcesPath, buildInfo: { ...buildInfo, buildNumber: invalid } }).buildNumber, null);
   }
 });
 
@@ -41,9 +48,9 @@ test('packaged build metadata must identify an exact valid build', async t => {
 
 test('development never reads the packaged marker and filters unsafe metadata', () => {
   assert.deepEqual(resolveReleaseChannel({ isPackaged: false, resourcesPath: 'does-not-exist', buildInfo: { version: 'bad version', buildId: 'secret', builtAt: 'secret', channel: 'stable' } }), {
-    channel: 'development', version: 'development', buildId: null, builtAt: null,
+    channel: 'development', version: 'development', buildId: null, builtAt: null, buildNumber: null,
   });
-  assert.deepEqual(resolveReleaseChannel({ isPackaged: false, buildInfo }), { channel: 'development', ...buildInfo });
+  assert.deepEqual(resolveReleaseChannel({ isPackaged: false, buildInfo }), { channel: 'development', ...buildInfo, buildNumber: null });
 });
 
 test('stable retains existing data and channels split settings while sharing historical images', async t => {

@@ -32,7 +32,7 @@ try {
         status: { currentVersion: '0.2.0', channel, supported: channel === 'stable', enabled: true, phase: channel === 'stable' ? 'up-to-date' : 'disabled', checkedAt: '2026-09-21T10:20:00Z', ...saved },
       };
       state.emit = patch => { state.status = { ...state.status, ...patch }; for (const listener of state.listeners) listener(structuredClone(state.status)); };
-      state.newRelease = (version = '0.3.0') => state.emit({ phase: 'available', latestVersion: version, downloadUrl: 'https://github.com/owner/repo/releases/download/v0.3.0/Setup.exe', releaseNotes: 'Новые возможности\n<img src=x onerror="window.__unsafe=1">\n[Ссылка](javascript:alert(1))' });
+      state.newRelease = (version = '0.3.0') => state.emit({ phase: 'available', latestVersion: version, downloadUrl: 'https://coder-portal.encycam.com/api/apps/codex-desk/versions/0.3.0.7/file', releaseNotes: 'Новые возможности\n<img src=x onerror="window.__unsafe=1">\n[Ссылка](javascript:alert(1))' });
       window.codex = {
         async getBuildInfo() { return { channel, version: '0.2.0', buildId: '12345678901234567890' }; },
         async getWorkspace() { return { projects: [], sessions: [] }; },
@@ -98,7 +98,7 @@ try {
   assert.ok(position.banner <= position.tabs, 'Update notice does not cover chat tabs');
   assert.equal(position.overflow, false);
   await banner().getByRole('button', { name: 'Скачать обновление', exact: true }).click();
-  await banner().getByText('Загрузка открыта в браузере. Запустите скачанный установщик.', { exact: true }).waitFor();
+  await banner().getByText('Установщик скачан и проверен. Закройте приложение и запустите его.', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.__appUpdates.downloads), 1);
   await banner().getByRole('button', { name: 'Подробнее', exact: true }).click();
   await dialog().locator('summary').click();
@@ -152,9 +152,9 @@ try {
   await dialog().getByText(/Fixture browser unavailable/).waitFor();
   await page.evaluate(() => { window.__appUpdates.failDownload = false; });
   await dialog().getByRole('button', { name: 'Повторить загрузку' }).click();
-  await dialog().getByText('Загрузка открыта в браузере.', { exact: true }).waitFor();
-  await page.evaluate(() => window.__appUpdates.emit({ phase: 'error', error: 'GitHub временно недоступен' }));
-  await dialog().getByText('GitHub временно недоступен', { exact: true }).waitFor();
+  await dialog().getByText('Установщик скачан и проверен. Он показан в папке загрузок.', { exact: true }).waitFor();
+  await page.evaluate(() => window.__appUpdates.emit({ phase: 'error', error: 'Portal временно недоступен' }));
+  await dialog().getByText('Portal временно недоступен', { exact: true }).waitFor();
   await dialog().getByRole('button', { name: 'Повторить проверку' }).click();
   await dialog().getByText('Установлена актуальная версия.', { exact: true }).waitFor();
   await page.close();
@@ -184,7 +184,7 @@ try {
   await dialog().getByText('Онлайн-обновления недоступны в этой сборке.', { exact: true }).waitFor();
   assert.equal(await banner().count(), 0);
   assert.deepEqual(errors, []);
-  console.log('PASS: online update events, status race, version, plain release notes, browser action, later/skip/re-enable, manual check with automatic off, error retries, keyboard/focus, compact layout, palette/badge entry and Nightly/dev/legacy bridge fallback. Fixture IPC only.');
+  console.log('PASS: online update events, status race, version, plain release notes, download action, later/skip/re-enable, manual check with automatic off, error retries, keyboard/focus, compact layout, palette/badge entry and Nightly/dev/legacy bridge fallback. Fixture IPC only.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/app-updates-failure.png' }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '(page unavailable)')); }
   throw error;

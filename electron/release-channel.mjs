@@ -21,6 +21,10 @@ function validBuildId(value) {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
 
+function validBuildNumber(value) {
+  return Number.isSafeInteger(value) && value > 0 && value <= 2 ** 31 - 1;
+}
+
 function validBuiltAt(value) {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
     && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
@@ -62,6 +66,9 @@ export function resolveReleaseChannel({ isPackaged, resourcesPath, buildInfo = {
     version: validVersion(buildInfo?.version) ? buildInfo.version : 'development',
     buildId: validBuildId(buildInfo?.buildId) ? buildInfo.buildId : null,
     builtAt: validBuiltAt(buildInfo?.builtAt) ? buildInfo.builtAt : null,
+    // Jenkins BUILD_NUMBER; локальные сборки его не имеют — каталог различает
+    // две заливки одной X.Y.Z именно по нему.
+    buildNumber: validBuildNumber(buildInfo?.buildNumber) ? buildInfo.buildNumber : null,
   });
 }
 
