@@ -735,3 +735,33 @@ Nightly `c9d510a30e5a` (предупреждение о заполненном �
 Коммит `bec2874` (параллельная сессия: «Стоп» больше не прикладывает ошибку к прерванному ходу Claude) и `2e41666` (время ответов и счётчики токенов из транскрипта Claude при открытии диалога, см. [CLAUDE.md](CLAUDE.md)). `npm run check` прошёл (tsc, node --test, vite build); `test:providers` прошёл с новым сценарием открытия истории Claude, скриншот `artifacts/provider-claude-history.png`. Реальная история проекта прочитана SDK reader без запуска CLI. Запросов модели не было.
 
 Кандидат с тем же build ID `781fc2c04438` уже стоял в очереди с 11:01 (собран параллельной сессией из рабочей копии до коммитов); он был снят `apply-nightly-update.mjs --discard` после остановки помощника (node) и собран заново из закоммиченного состояния — байты совпали, ID не изменился. Сборка применится после «Закрыть» в работающем Nightly `c9d510a30e5a`; Release не изменён. Упакованный кандидат прошёл `ui-providers-host` с реальными Codex и Claude CLI (`artifacts/providers-host-cl6aLT`), запросов модели не было.
+
+## Nightly 0.12.0 `c2f600f586e4`: пульт в Telegram с рубильником канала — 2026-10-15
+
+Коммит `c056496` собрал всю незакоммиченную работу этапов 0–5 плана Mini App
+([TELEGRAM_MINIAPP_PLAN](TELEGRAM_MINIAPP_PLAN.md)), авто-проверку исполнителей,
+смену допуска во время хода и восстановление childOf/childLabel. Версия исходников
+поднята до 0.12.0 (общая для Nightly и будущего Release по правилам VERSIONING).
+
+Рубильник канала (решение владельца 2026-10-15): пульт поставляется в
+nightly/experimental3/development и выключен в stable — список в `phonePultEnabled`
+(`electron/release-channel.mjs`). В stable не создаётся relay-служба, preload не отдаёт
+`relayBridge` и доступ бесед, раздела «Телефон» нет; решение принимается на каждом
+запуске от маркера канала. Владелец выкатит Release 0.12.0 отдельно, без пульта,
+когда решит; публичный Release остаётся 0.11.0.
+
+Проверки: корневой `npm.cmd run check` — 1240 тестов, 1236 passed, 2 skipped,
+2 failed: известный `terminal-launcher` (PowerShell 5.1, SIGTERM, существует с этапа 3)
+и нестабильный под нагрузкой `release-publication` EPERM rename (standalone 8/8 passed).
+`test:phone-pult` (новый, настоящий Electron, оба состояния рубильника),
+`test:remote-control-host`, `test:relay-connection`, `test:phone-access`,
+`test:executors`, preload-session 21/21 — PASS. relay-server 69/69, miniapp 35/35 + build.
+`npm.cmd run package` обновил `release/nightly` сборкой `c2f600f586e4`; упакованный
+exe прошёл сквозной `test:remote-control-host`
+(`artifacts/remote-control-host-wnS1P7`, modelCalls 0, telegramNetwork false),
+маркер канала `nightly`, версия 0.12.0. Release и stable-previous не изменены.
+
+Живая проверка пульта выполнена владельцем 2026-10-14/15 на Experimental 3:
+привязка QR, отправка с телефона, настоящий ход модели, stop, уведомления,
+обрыв Wi-Fi и закрытие приложения. Не проверено живьём: replay команды при обрыве
+точно в момент исполнения; постоянного сервера ещё нет (туннель).
