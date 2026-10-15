@@ -28,7 +28,8 @@ const errors = [], results = [], networkAttempts = [], browserAttempts = [];
 const readJson = file => readFile(file, 'utf8').then(JSON.parse);
 const logs = async () => (await readFile(path.join(project, 'server.jsonl'), 'utf8').catch(() => ''))
   .trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-const ipcMethods = ['getAppUpdateStatus', 'checkAppUpdates', 'setAppUpdatePreferences', 'openAppUpdateDownload'];
+const ipcMethods = ['getAppUpdateStatus', 'checkAppUpdates', 'setAppUpdatePreferences', 'openAppUpdateDownload',
+  'installAppUpdate', 'acknowledgeAppUpdateOutcome', 'revealAppUpdateFile'];
 
 async function waitUntil(check, label) {
   const deadline = Date.now() + 15_000;

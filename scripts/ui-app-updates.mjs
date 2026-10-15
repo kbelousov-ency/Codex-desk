@@ -28,8 +28,10 @@ try {
       const channel = options.channel || 'stable';
       const saved = JSON.parse(localStorage.getItem('fixture-updates') || '{}');
       const state = window.__appUpdates = {
-        listeners: new Set(), checks: 0, downloads: 0, writes: [], failLoad: Boolean(options.failLoad), failSave: false, failDownload: false,
-        status: { currentVersion: '0.2.0', channel, supported: channel === 'stable', enabled: true, phase: channel === 'stable' ? 'up-to-date' : 'disabled', checkedAt: '2026-09-21T10:20:00Z', ...saved },
+        listeners: new Set(), checks: 0, downloads: 0, installs: 0, acks: 0, reveals: 0, writes: [],
+        failLoad: Boolean(options.failLoad), failSave: false, failDownload: false, failInstall: false,
+        total: 120 * 1024 * 1024,
+        status: { currentVersion: '0.2.0', channel, supported: channel === 'stable', enabled: true, phase: channel === 'stable' ? 'up-to-date' : 'disabled', checkedAt: '2026-09-21T10:20:00Z', canApply: Boolean(options.canApply), ...saved },
       };
       state.emit = patch => { state.status = { ...state.status, ...patch }; for (const listener of state.listeners) listener(structuredClone(state.status)); };
       state.newRelease = (version = '0.3.0') => state.emit({ phase: 'available', latestVersion: version, downloadUrl: 'https://coder-portal.encycam.com/api/apps/codex-desk/versions/0.3.0.7/file', releaseNotes: 'Новые возможности\n<img src=x onerror="window.__unsafe=1">\n[Ссылка](javascript:alert(1))' });
@@ -61,8 +63,21 @@ try {
           return structuredClone(state.status);
         },
         async openAppUpdateDownload() { state.downloads++; if (state.failDownload) throw new Error('Fixture browser unavailable'); },
+        // Ход скачивания двигает сам сценарий, чтобы проверка не зависела от таймеров.
+        async installAppUpdate() {
+          state.installs++;
+          if (state.failInstall) throw new Error('Fixture install unavailable');
+          state.emit({ phase: 'downloading', progress: { received: 0, total: state.total } });
+          await new Promise(resolve => { state.continueInstall = resolve; });
+          state.emit({ progress: { received: state.total / 2, total: state.total } });
+          await new Promise(resolve => { state.continueInstall = resolve; });
+          state.emit({ phase: 'available', progress: undefined });
+          return structuredClone(state.status);
+        },
+        async acknowledgeAppUpdateOutcome() { state.acks++; state.emit({ outcome: undefined }); return structuredClone(state.status); },
+        async revealAppUpdateFile() { state.reveals++; return structuredClone(state.status); },
       };
-      if (options.missing) for (const key of ['getAppUpdateStatus', 'onAppUpdateStatus', 'checkAppUpdates', 'setAppUpdatePreferences', 'openAppUpdateDownload']) delete window.codex[key];
+      if (options.missing) for (const key of ['getAppUpdateStatus', 'onAppUpdateStatus', 'checkAppUpdates', 'setAppUpdatePreferences', 'openAppUpdateDownload', 'installAppUpdate', 'acknowledgeAppUpdateOutcome', 'revealAppUpdateFile']) delete window.codex[key];
     }, options);
     await result.goto(`http://127.0.0.1:${server.address().port}`);
     await result.getByRole('button', { name: 'Выбрать папку проекта', exact: true }).waitFor();
@@ -179,12 +194,55 @@ try {
     await dialog().waitFor();
     await page.close();
   }
+  // Тихая установка: «Обновить», ход скачивания и итог прошлой попытки.
+  page = await createPage({ canApply: true });
+  await page.evaluate(() => window.__appUpdates.newRelease());
+  await banner().waitFor();
+  await banner().getByText('Можно обновиться не выходя из приложения.', { exact: true }).waitFor();
+  const install = banner().getByRole('button', { name: 'Обновить', exact: true });
+  assert.equal(await banner().getByRole('button', { name: 'Скачать обновление', exact: true }).count(), 0,
+    'при тихой установке главное действие одно');
+  await install.click();
+  await page.waitForFunction(() => window.__appUpdates.installs === 1 && window.__appUpdates.continueInstall);
+  const progress = banner().getByRole('progressbar', { name: 'Ход скачивания обновления' });
+  await progress.waitFor();
+  assert.match(await banner().innerText(), /Скачиваем установщик: 0 МБ из 120 МБ \(0 %\)/);
+  assert.equal(await install.isDisabled(), true, 'повторный запуск во время скачивания невозможен');
+  await page.evaluate(() => window.__appUpdates.continueInstall());
+  await banner().getByText(/Скачиваем установщик: 60 МБ из 120 МБ \(50 %\)/).waitFor();
+  assert.equal(await progress.evaluate(el => el.value / el.max), 0.5);
+  await page.evaluate(() => window.__appUpdates.continueInstall());
+  await progress.waitFor({ state: 'hidden' });
+  await open();
+  assert.match(await dialog().innerText(), /приложение предложит закрыться, дождётся завершения работы агентов/);
+  assert.equal(await dialog().getByRole('button', { name: 'Скачать установщик', exact: true }).count(), 1,
+    'ручной путь остаётся доступным в окне обновлений');
+  await page.evaluate(() => window.__appUpdates.emit({ outcome: { state: 'applied', version: '0.3.0.7' } }));
+  await dialog().getByText('Приложение обновлено до версии 0.3.0.7.', { exact: true }).waitFor();
+  await dialog().getByRole('button', { name: 'Понятно', exact: true }).click();
+  await page.waitForFunction(() => window.__appUpdates.acks === 1 && !window.__appUpdates.status.outcome);
+  await page.evaluate(() => window.__appUpdates.emit({ outcome: { state: 'failed', version: '0.3.0.7', reason: 'timeout', installerPath: 'C:\\\\updates\\\\setup.exe' } }));
+  await dialog().getByText('Обновление не применилось: приложение не успело закрыться. Скачанный установщик можно запустить вручную.', { exact: true }).waitFor();
+  await dialog().getByRole('button', { name: 'Показать файл в папке', exact: true }).click();
+  await page.waitForFunction(() => window.__appUpdates.reveals === 1);
+  // Файла нет — о ручном запуске не говорим и кнопку не показываем.
+  await page.evaluate(() => window.__appUpdates.emit({ outcome: { state: 'failed', version: '0.3.0.7', reason: 'error', installerPath: null } }));
+  await dialog().getByText('Обновление не применилось. Скачанный установщик не найден — скачайте обновление заново.', { exact: true }).waitFor();
+  assert.equal(await dialog().getByRole('button', { name: 'Показать файл в папке', exact: true }).count(), 0);
+  await page.evaluate(() => window.__appUpdates.emit({ outcome: { state: 'failed', version: '0.3.0.7', reason: 'ok', installerPath: 'C:\\\\updates\\\\setup.exe' } }));
+  await dialog().getByText('Установщик сообщил об успехе, но версия не изменилась. Скачанный установщик можно запустить вручную.', { exact: true }).waitFor();
+  await page.evaluate(() => { window.__appUpdates.failInstall = true; });
+  await close();
+  await banner().getByRole('button', { name: 'Обновить', exact: true }).click();
+  await banner().getByText(/Не удалось обновить приложение/).waitFor();
+  await page.close();
+
   page = await createPage({ missing: true });
   await open();
   await dialog().getByText('Онлайн-обновления недоступны в этой сборке.', { exact: true }).waitFor();
   assert.equal(await banner().count(), 0);
   assert.deepEqual(errors, []);
-  console.log('PASS: online update events, status race, version, plain release notes, download action, later/skip/re-enable, manual check with automatic off, error retries, keyboard/focus, compact layout, palette/badge entry and Nightly/dev/legacy bridge fallback. Fixture IPC only.');
+  console.log('PASS: online update events, status race, version, plain release notes, download action, silent install with progress and outcome notices, later/skip/re-enable, manual check with automatic off, error retries, keyboard/focus, compact layout, palette/badge entry and Nightly/dev/legacy bridge fallback. Fixture IPC only.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/app-updates-failure.png' }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '(page unavailable)')); }
   throw error;

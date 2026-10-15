@@ -96,7 +96,7 @@ try {
   await page.waitForFunction(() => window.__update.restored === 1 && [...document.querySelectorAll('[role="combobox"][aria-label="Модель"]')].every(el => !el.disabled));
   assert.equal(await page.getByRole('tab', { selected: true }).evaluate(el => el.closest('[data-session-id]').dataset.sessionId), 'new-b');
   assert.equal(await input().inputValue(), 'Черновик B');
-  const notice = () => view().getByRole('status', { name: 'Обновление Nightly', exact: true });
+  const notice = () => view().getByRole('status', { name: 'Обновление приложения', exact: true });
   await notice().getByRole('button', { name: 'Закрыть', exact: true }).waitFor();
   assert.equal(await input().isEnabled(), true, 'An offer never freezes the composer');
   assert.equal(await page.evaluate(() => window.__update.results.length), 0, 'An offer never requests a checkpoint');

@@ -1,6 +1,6 @@
 {
   "name": "codex-desk",
-  "version": "0.12.0",
+  "version": "0.12.5",
   "private": true,
   "description": "Local desktop interface for Codex CLI",
   "type": "module",
@@ -115,6 +115,7 @@
     "version:major": "npm version major --no-git-tag-version --ignore-scripts",
     "test:app-updates": "node scripts/ui-app-updates.mjs",
     "test:app-updates-host": "node scripts/ui-app-updates-host.mjs",
+    "test:silent-update": "node scripts/ui-silent-update-host.mjs",
     "test:conversation-outline": "node scripts/ui-conversation-outline.mjs",
     "test:quote-results": "node scripts/ui-quote-results.mjs",
     "test:parallel-activity": "node scripts/ui-parallel-activity.mjs",

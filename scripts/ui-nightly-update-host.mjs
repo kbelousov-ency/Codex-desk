@@ -87,7 +87,7 @@ try {
   assert.equal(current.instance.userData,profile,'Retry remains in the same isolated profile');
   return (await readFile(path.join(run,'artifacts/nightly-update.log'),'utf8')).includes('host_awaiting');
  },'retry adopts the newly registered host and offers the update');
- const notice=()=>view().getByRole('status',{name:'Обновление Nightly',exact:true});
+ const notice=()=>view().getByRole('status',{name:'Обновление приложения',exact:true});
  await notice().getByRole('button',{name:'Закрыть',exact:true}).waitFor();
  await delay(2500);assert.ok(alive(replacement.pid),'An offered update never closes the app by itself');
  assert.equal(await input().inputValue(),'Draft survives confirmed update');

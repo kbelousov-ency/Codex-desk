@@ -152,6 +152,9 @@ contextBridge.exposeInMainWorld('codex', {
   checkAppUpdates: () => ipcRenderer.invoke('host:checkAppUpdates'),
   setAppUpdatePreferences: (patch) => ipcRenderer.invoke('host:setAppUpdatePreferences', patch),
   openAppUpdateDownload: () => ipcRenderer.invoke('host:openAppUpdateDownload'),
+  installAppUpdate: () => ipcRenderer.invoke('host:installAppUpdate'),
+  acknowledgeAppUpdateOutcome: () => ipcRenderer.invoke('host:acknowledgeAppUpdateOutcome'),
+  revealAppUpdateFile: () => ipcRenderer.invoke('host:revealAppUpdateFile'),
   onAppUpdateStatus: (listener) => {
     const handler = (_event, status) => listener(status);
     ipcRenderer.on('host:appUpdateStatus', handler);

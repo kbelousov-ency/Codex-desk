@@ -27,4 +27,8 @@
 .app-update-notes[open] summary::before{content:'▾'}
 .app-update-notes>div{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.8;font-size:11px;max-height:220px;overflow:auto;margin-top:12px;color:#a7baad;user-select:text}
 @media(max-width:1050px){.app-update-banner{align-items:flex-start;flex-wrap:wrap;gap:7px 10px}.app-update-banner-copy{flex-basis:calc(100% - 30px)}.app-update-banner-actions{padding-left:27px;gap:7px 12px}}
-@media(max-width:600px){.app-update-banner{padding:9px 11px}.app-update-banner-actions{padding-left:0}.app-update-dialog .modal-header{padding:19px}.app-update-dialog .modal-header h2{font-size:19px}}
+@media(max-width:600px){.app-update-banner{padding:9px 11px}.app-update-banner-actions{padding-left:0}.app-update-dialog .modal-header{padding:19px}.app-update-dialog .modal-header h2{font-size:19px}}.app-update-progress{appearance:none;width:100%;max-width:300px;height:5px;border:0;border-radius:3px;overflow:hidden;background:#263026}
+.app-update-progress::-webkit-progress-bar{background:#263026;border-radius:3px}
+.app-update-progress::-webkit-progress-value{background:#b6d8cc;border-radius:3px;transition:width .2s linear}
+.app-update-banner-copy .app-update-progress{margin-top:6px}
+.app-update-status .app-update-progress{flex:1;min-width:120px}

@@ -10,13 +10,13 @@ export default function UpdateNotice() {
   if (!control?.status || control.status.state === 'preparing') return null;
   const { status, deciding, decide, force, dismiss } = control;
   const message = status.message || (status.state === 'awaiting'
-    ? 'Обновление Nightly готово. Закрыть приложение и применить его? Вкладки и черновики сохранятся.'
+    ? 'Обновление готово. Закрыть приложение и применить его? Вкладки и черновики сохранятся.'
     : status.state === 'waiting'
       ? 'Обновление ждёт завершения текущей задачи. Новые действия временно отключены; затем приложение закроется и откроется снова.'
       : status.state === 'manual'
         ? 'Обновление будет применено, когда вы сами закроете приложение.'
         : 'Не удалось применить обновление. Приложение продолжает работать.');
-  return <div className={`alert ${status.state === 'error' ? 'error-alert' : 'notice-alert'} nightly-update-notice`} role="status" aria-label="Обновление Nightly">
+  return <div className={`alert ${status.state === 'error' ? 'error-alert' : 'notice-alert'} nightly-update-notice`} role="status" aria-label="Обновление приложения">
     <span>{message}</span>
     {status.state === 'awaiting' && <button type="button" className="continue-button" disabled={deciding} onClick={() => decide('close')}>Закрыть</button>}
     {status.state === 'waiting' && <button type="button" className="continue-button" disabled={deciding} onClick={force}>Закончить процессы принудительно</button>}

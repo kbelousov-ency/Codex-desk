@@ -24,6 +24,7 @@ async function fixture(t, options = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'desk-app-updates-'));
   const filename = path.join(directory, 'updates.json');
   const downloads = path.join(directory, 'downloads');
+  const staging = path.join(directory, 'profile', 'updates');
   const calls = [], events = [], revealed = [], timers = new Map();
   let now = Date.parse('2026-10-15T12:00:00Z');
   const store = new AppUpdateStore(filename);
@@ -36,13 +37,13 @@ async function fixture(t, options = {}) {
         return args[0] === UPDATE_CATALOG ? Response.json(options.card ?? card()) : new Response(PAYLOAD);
       }),
     },
-    saveDirectory: () => downloads,
+    saveDirectory: kind => kind === 'apply' ? staging : downloads,
     reveal: async value => { revealed.push(value); },
     publish: state => events.push(state), now: () => now,
     setTimer: (fn, delay) => { const timer = { fn, delay, unref() {} }; timers.set(timer, timer); return timer; },
     clearTimer: timer => timers.delete(timer), ...options.service });
   t.after(async () => { await service.close(); await rm(directory, { recursive: true, force: true }); });
-  return { service, store, filename, downloads, calls, events, revealed, timers, advance: value => { now += value; } };
+  return { service, store, filename, downloads, staging, calls, events, revealed, timers, advance: value => { now += value; } };
 }
 
 test('catalog versions compare numerically and build numbers follow the contract', () => {
@@ -221,6 +222,99 @@ test('download verifies size and SHA-256, saves into downloads and reveals the f
   const again = await f.service.openDownload();
   assert.equal(path.basename(again.downloadedPath), 'Codex-Desk-Setup-0.3.0 (1).exe', 'existing files are never overwritten');
   assert.equal((await readdir(f.downloads)).filter(name => name.endsWith('.part')).length, 0, 'no staging leftovers');
+});
+
+test('тихая установка получает проверенный файл из служебной папки, а не из загрузок', async t => {
+  const applied = [];
+  const f = await fixture(t, { service: { apply: async request => { applied.push(request); } } });
+  assert.equal((await f.service.status()).canApply, true);
+  await f.service.check();
+  const status = await f.service.installUpdate();
+  assert.equal(applied.length, 1);
+  assert.equal(path.dirname(applied[0].installerPath), f.staging, 'файл кладётся в служебную папку профиля');
+  assert.equal(applied[0].version, '0.3.0.7');
+  assert.equal(applied[0].sha256, PAYLOAD_SHA);
+  assert.deepEqual(await readFile(applied[0].installerPath), PAYLOAD);
+  assert.deepEqual(f.revealed, [], 'папка загрузок при тихой установке не открывается');
+  assert.equal(status.phase, 'available');
+  assert.deepEqual(await readdir(f.downloads).catch(() => []), []);
+
+  await writeFile(path.join(f.staging, 'install.log'), 'ok\n');
+  const repeat = await f.service.installUpdate();
+  assert.equal(path.basename(repeat.downloadedPath), 'Codex-Desk-Setup-0.3.0.exe',
+    'повторная попытка не плодит копий по сотне мегабайт');
+  assert.deepEqual((await readdir(f.staging)).sort(), ['Codex-Desk-Setup-0.3.0.exe', 'install.log'],
+    'отчёт установщика при очистке сохраняется');
+});
+
+test('сорванная передача установщика возвращает обычный ручной путь', async t => {
+  const f = await fixture(t, { service: { apply: async () => { throw new Error('занято'); } } });
+  await f.service.check();
+  await assert.rejects(f.service.installUpdate(), /Запустите скачанный установщик вручную/);
+  const status = await f.service.status();
+  assert.equal(status.phase, 'available', 'предложение остаётся');
+  assert.equal(path.dirname(status.downloadedPath), f.staging);
+  assert.deepEqual(f.revealed, [status.downloadedPath], 'файл показан в папке');
+});
+
+test('параллельный запрос другого назначения не получает чужую задачу', async t => {
+  let release;
+  const applied = [];
+  const f = await fixture(t, {
+    portalFetch: async url => url === UPDATE_CATALOG ? Response.json(card())
+      : new Promise(resolve => { release = () => resolve(new Response(PAYLOAD)); }),
+    service: { apply: async request => { applied.push(request); } },
+  });
+  await f.service.check();
+  const install = f.service.installUpdate();
+  while (!release) await tick();
+  await assert.rejects(f.service.openDownload(), /уже скачивается/,
+    'иначе «Скачать» отчитается о файле в загрузках, которого там нет');
+  release();
+  await install;
+  assert.equal(applied.length, 1);
+  assert.deepEqual(f.revealed, []);
+});
+
+test('итог провала показывает ровно тот файл, который записала служба применения', async t => {
+  const f = await fixture(t);
+  const installer = path.join(f.staging, 'Codex-Desk-Setup-0.3.0.exe');
+  await assert.rejects(f.service.revealOutcomeFile(), /недоступен/, 'без итога показывать нечего');
+  f.service.setOutcome({ state: 'applied', version: '0.3.0.7' });
+  await assert.rejects(f.service.revealOutcomeFile(), /недоступен/, 'у успеха файла уже нет');
+  f.service.setOutcome({ state: 'failed', version: '0.3.0.7', reason: 'timeout', installerPath: installer });
+  await f.service.revealOutcomeFile();
+  assert.deepEqual(f.revealed, [installer], 'renderer путь не передаёт — он берётся из итога');
+  f.service.acknowledgeOutcome();
+  await assert.rejects(f.service.revealOutcomeFile(), /недоступен/);
+});
+
+test('без тихой установки остаётся только скачивание', async t => {
+  const f = await fixture(t);
+  assert.equal((await f.service.status()).canApply, false);
+  await f.service.check();
+  assert.throws(() => f.service.installUpdate(), /Автоматическая установка недоступна/);
+});
+
+test('ход скачивания сообщается с ограничением частоты', async t => {
+  const chunks = [PAYLOAD.subarray(0, 8), PAYLOAD.subarray(8, 16), PAYLOAD.subarray(16)];
+  let clock = Date.parse('2026-10-15T12:00:00Z');
+  const f = await fixture(t, {
+    portalFetch: async url => url === UPDATE_CATALOG ? Response.json(card()) : new Response(new ReadableStream({
+      start(controller) { for (const chunk of chunks) controller.enqueue(new Uint8Array(chunk)); controller.close(); },
+    })),
+    // Время идёт быстрее порога, поэтому каждый кадр даёт событие хода.
+    service: { now: () => (clock += 250) },
+  });
+  await f.service.check();
+  await f.service.openDownload();
+  const reported = f.events.filter(event => event.progress).map(event => event.progress.received);
+  assert.deepEqual(reported[0], 0, 'ход показывается сразу, ещё до первого кадра');
+  assert.deepEqual(reported.at(-1), PAYLOAD.length);
+  assert.deepEqual(reported, [...reported].sort((a, b) => a - b), 'значения только растут');
+  assert.equal(f.events.at(-1).progress, undefined, 'после завершения полоса убирается');
+  assert.equal(f.events.at(-1).phase, 'available');
+  for (const event of f.events) if (event.progress) assert.equal(event.progress.total, PAYLOAD.length);
 });
 
 test('corrupted or unauthorised downloads keep the offer and leave no files', async t => {

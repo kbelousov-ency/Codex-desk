@@ -39,6 +39,7 @@ import { removeLegacyPhoneBotData } from './phone-bot-migration.mjs';
 import { createRemoteBridgeService } from './remote-bridge/service.mjs';
 import { resolveReleaseChannel, resolveChannelPaths, initializeChannelProfile, phonePultEnabled } from './release-channel.mjs';
 import { createNightlyUpdate } from './nightly-update.mjs';
+import { createSelfUpdate } from './self-update.mjs';
 import { captureUpdateCheckpoint, createUpdateCheckpoint } from './update-checkpoint.mjs';
 import { captureWorkspaceState, createWorkspaceState, createWorkspaceSaveHandshake } from './workspace-state.mjs';
 import { NotificationService, NotificationSettingsStore } from './notification-service.mjs';
@@ -112,6 +113,9 @@ app.on('child-process-gone', (_event, details) => diagnostics.record('error', 'a
 const windows = new Map();
 const releaseNotesStore = new ReleaseNotesStore(path.join(channelPaths.userData, 'release-state.json'));
 let releaseNotesService;
+const updateStagingDirectory = path.join(channelPaths.userData, 'updates');
+const selfUpdateSupported = app.isPackaged && releaseInfo.channel === 'stable';
+let selfUpdate = null;
 const appUpdates = new AppUpdateService({
   buildInfo: releaseInfo,
   store: new AppUpdateStore(path.join(channelPaths.userData, 'updates.json')),
@@ -121,8 +125,18 @@ const appUpdates = new AppUpdateService({
     status: () => portalSession.status(),
     fetch: (url, options) => session.fromPartition(PORTAL_PARTITION).fetch(url, options),
   },
-  saveDirectory: () => app.getPath('downloads'),
+  // Ручное скачивание остаётся в «Загрузках»; файл для тихой установки живёт в
+  // служебной папке профиля — её же установщик получает как рабочий каталог.
+  saveDirectory: kind => kind === 'apply' ? updateStagingDirectory : app.getPath('downloads'),
   reveal: target => shell.showItemInFolder(target),
+  // Тихую установку ведёт только упакованный Release: распакованной сборке
+  // и Nightly подменять нечего, у Nightly свой механизм обновления.
+  apply: selfUpdateSupported
+    ? request => {
+      if (!selfUpdate) throw new Error('Автоматическая установка недоступна в этой сборке.');
+      return selfUpdate.offer(request);
+    }
+    : null,
   // Test/isolated profiles must not poll the portal, including packaged host tests.
   networkAllowed: process.env.CODEX_DESK_TEST !== '1' && !isolatedProfile && process.platform === 'win32' && process.arch === 'x64',
   publish: status => {
@@ -309,7 +323,7 @@ const workspaceSave = createWorkspaceSaveHandshake({
   },
   save: (record, snapshot) => workspaceState.save(captureWorkspaceState(snapshot, record.sessions)),
 });
-const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate', 'host:forceUpdate', 'host:getBuildInfo', 'host:getReleaseNotes', 'host:acknowledgeReleaseNotes', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
+const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate', 'host:forceUpdate', 'host:getBuildInfo', 'host:getReleaseNotes', 'host:acknowledgeReleaseNotes', 'host:getAppUpdateStatus', 'host:acknowledgeAppUpdateOutcome', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
 export const remoteControl = createRemoteControl({ userData: channelPaths.userData });
 const remoteHost = createRemoteControlHost({ controller: remoteControl, windows,
   assertAllowed: (record, session) => {
@@ -370,7 +384,8 @@ async function prepareUpdate({ requestId }) {
 }
 
 async function traced(channel, event, context, fn) {
-  if (updateFrozen && !updateAllowedChannels.has(channel)) throw new Error('Nightly перезапускается для применения обновления.');
+  // Заморозка теперь бывает и в Release при тихой установке — канал не называем.
+  if (updateFrozen && !updateAllowedChannels.has(channel)) throw new Error('Приложение перезапускается для применения обновления.');
   const owner = windows.get(event.sender.id);
   if (owner?.workspaceClosing) {
     const reads = new Set(['host:completeWorkspaceSave', 'host:getWorkspace', 'host:getSettings', 'host:getBuildInfo', 'host:getReleaseNotes', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:completeUpdateRestore', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus', 'host:getRouterUsage']);
@@ -620,6 +635,9 @@ function installHandlers() {
   workspaceHandle('host:checkAppUpdates', () => appUpdates.check());
   workspaceHandle('host:setAppUpdatePreferences', (_record, _event, patch) => appUpdates.setPreferences(patch));
   workspaceHandle('host:openAppUpdateDownload', () => appUpdates.openDownload());
+  workspaceHandle('host:installAppUpdate', () => appUpdates.installUpdate());
+  workspaceHandle('host:acknowledgeAppUpdateOutcome', () => appUpdates.acknowledgeOutcome());
+  workspaceHandle('host:revealAppUpdateFile', () => appUpdates.revealOutcomeFile());
   workspaceHandle('host:getDiagnosticsStatus', async () => {
     await diagnostics.flush();
     const status = diagnostics.status();
@@ -1493,10 +1511,32 @@ else {
       await relayBridgeService.start();
     } else diagnostics.record('info', 'relayBridge.channelDisabled', { channel: releaseInfo.channel });
     diagnostics.record('info', 'app.ready'); installHandlers();
+    // Снимок перед обновлением пишут оба механизма: ночной и тихая установка Release.
+    if (selfUpdateSupported) {
+      try {
+        selfUpdate = createSelfUpdate({ executable: app.getPath('exe'), userData: channelPaths.userData,
+          stagingDirectory: updateStagingDirectory, currentVersion: releaseInfo.version,
+          currentBuildNumber: Number.isSafeInteger(releaseInfo.buildNumber) && releaseInfo.buildNumber > 0 ? releaseInfo.buildNumber : null,
+          getBusy: updateBusy, prepare: prepareUpdate, quit: () => app.quit(), notify: updateStatus });
+        updater = selfUpdate;
+        const outcome = await selfUpdate.review();
+        if (outcome) {
+          diagnostics.record('info', 'update.outcome', { state: outcome.state, reason: outcome.reason });
+          appUpdates.setOutcome(outcome);
+        }
+      } catch (error) {
+        // Без службы применения кнопка «Обновить» показывалась бы, качала сотню
+        // мегабайт и отказывала в самом конце — убираем её сразу.
+        diagnostics.error('update.failed', error);
+        selfUpdate = null; updater = null;
+        appUpdates.setApplyAvailable(false);
+      }
+    }
     let checkpoint = null;
     let restoreKind = 'workspace';
-    if (releaseInfo.channel === 'nightly') {
-      try { checkpoint = await updateCheckpoint.read(); } catch (error) { diagnostics.error('update.failed', error); dialog.showErrorBox('Восстановление Nightly', error.message); }
+    if (releaseInfo.channel === 'nightly' || selfUpdate) {
+      try { checkpoint = await updateCheckpoint.read(); }
+      catch (error) { diagnostics.error('update.failed', error); dialog.showErrorBox(releaseInfo.channel === 'nightly' ? 'Восстановление Nightly' : 'Восстановление после обновления', error.message); }
     }
     if (checkpoint) restoreKind = 'update';
     else {
@@ -1530,7 +1570,12 @@ else {
     portalConnect.cancel();
     portalAuth.close();
     stopWatchingShellIcon?.();
-    const closeUpdater = updater?.close();
+    // «Отмена» в предложении обновления означает «применить, когда закрою сам»:
+    // установщик запускается здесь и ждёт фактического выхода процесса.
+    const closeUpdater = (async () => {
+      try { await selfUpdate?.applyOnExit(); } catch (error) { diagnostics.error('update.failed', error); }
+      await updater?.close();
+    })();
     const closeAppUpdates = appUpdates.close();
     void (async () => {
       await setupService?.waitForIdle();

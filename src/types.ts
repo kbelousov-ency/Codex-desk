@@ -114,6 +114,11 @@ export type AppUpdateStatus = {
   downloadedVersion?: string;
   error?: string;
   skippedVersion?: string;
+  /** Тихая установка доступна только упакованному Release. */
+  canApply?: boolean;
+  progress?: { received: number; total: number };
+  /** Итог прошлой попытки тихой установки, прочитанный при запуске. */
+  outcome?: { state: 'applied'; version: string } | { state: 'failed'; version: string; reason: 'ok' | 'timeout' | 'error' | 'unknown'; installerPath: string | null };
 };
 /** Curated user-facing changes shown once after a stable release update. */
 export type ReleaseNotesRelease = { version: string; date?: string; items: string[] };
@@ -227,6 +232,9 @@ export interface WorkspaceBridge extends CodexBridge {
   checkAppUpdates(): Promise<AppUpdateStatus>;
   setAppUpdatePreferences(patch: { enabled?: boolean; skippedVersion?: string | null }): Promise<AppUpdateStatus>;
   openAppUpdateDownload(): Promise<void>;
+  installAppUpdate(): Promise<AppUpdateStatus>;
+  acknowledgeAppUpdateOutcome(): Promise<AppUpdateStatus>;
+  revealAppUpdateFile(): Promise<AppUpdateStatus>;
   onAppUpdateStatus(listener: (status: AppUpdateStatus) => void): () => void;
   getReleaseNotes?(): Promise<ReleaseNotesState>;
   acknowledgeReleaseNotes?(): Promise<void>;

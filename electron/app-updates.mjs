@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { SettingsStore } from './window-session.mjs';
 
@@ -15,6 +15,7 @@ const MANUAL_INTERVAL = 60_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_INSTALLER_BYTES = 2 * 1024 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT = 10 * 60 * 1000;
+const PROGRESS_INTERVAL = 200;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const SEGMENT = '(0|[1-9]\\d{0,8})';
 const STABLE_RE = new RegExp(`^${SEGMENT}\\.${SEGMENT}\\.${SEGMENT}$`);
@@ -150,18 +151,21 @@ async function boundedJson(response) {
 }
 
 const RESET = { latestVersion: undefined, downloadUrl: undefined, releaseNotes: undefined,
-  filename: undefined, sha256: undefined, sizeBytes: undefined, downloadedPath: undefined, downloadedVersion: undefined };
+  filename: undefined, sha256: undefined, sizeBytes: undefined, downloadedPath: undefined, downloadedVersion: undefined,
+  progress: undefined };
 
 /** Portal-authorised metadata and download; installation always requires user action. */
 export class AppUpdateService {
   constructor({ buildInfo, store, portal, saveDirectory, reveal, publish = () => {}, networkAllowed = true,
-    now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
-    Object.assign(this, { store, portal, saveDirectory, reveal, publish, now, setTimer, clearTimer });
+    apply = null, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
+    Object.assign(this, { store, portal, saveDirectory, reveal, publish, apply, now, setTimer, clearTimer });
     this.current = { version: buildInfo.version,
       buildNumber: Number.isSafeInteger(buildInfo.buildNumber) && buildInfo.buildNumber > 0 ? buildInfo.buildNumber : null };
     this.supported = networkAllowed && buildInfo.channel === 'stable' && stableVersion(buildInfo.version);
+    // Тихая установка доступна только упакованному Release с подключённым
+    // применением; без неё остаётся прежний ручной путь «показать в папке».
     this.state = { currentVersion: buildInfo.version, channel: buildInfo.channel, enabled: true, supported: this.supported,
-      phase: this.supported ? 'idle' : 'disabled' };
+      canApply: Boolean(apply) && this.supported, phase: this.supported ? 'idle' : 'disabled' };
     this.generation = 0;
   }
 
@@ -173,6 +177,21 @@ export class AppUpdateService {
     await this.loaded;
   }
   async status() { await this.load(); return { ...this.state }; }
+  /** Итог прошлой попытки тихой установки; показывается один раз после запуска. */
+  setOutcome(outcome) { this.outcome = outcome; return this.emit({ outcome }); }
+  acknowledgeOutcome() { this.outcome = null; return this.emit({ outcome: undefined }); }
+  /** Служба применения могла не создаться — тогда предлагать тихую установку нельзя. */
+  setApplyAvailable(value) {
+    if (!value) this.apply = null;
+    return this.emit({ canApply: Boolean(this.apply) && this.supported });
+  }
+  /** Показывает ровно тот файл, который записала служба применения; renderer путь не передаёт. */
+  async revealOutcomeFile() {
+    const target = this.outcome?.state === 'failed' ? this.outcome.installerPath : null;
+    if (!target) throw new Error('Скачанный установщик недоступен.');
+    await this.reveal(target);
+    return { ...this.state };
+  }
   emit(patch = {}) {
     Object.assign(this.state, patch);
     if (!this.closed) this.publish({ ...this.state });
@@ -275,9 +294,20 @@ export class AppUpdateService {
     } finally { this.clearTimer(timeout); if (this.controller === controller) this.controller = null; }
   }
   /** Скачивает установщик Portal-сессией в папку загрузок, сверяет размер и SHA-256. */
-  async openDownload() {
+  openDownload() { return this._start('reveal'); }
+  /** Тот же проверенный файл, но в служебную папку — его применит тихая установка. */
+  installUpdate() {
+    if (!this.apply) throw new Error('Автоматическая установка недоступна в этой сборке.');
+    return this._start('apply');
+  }
+  async _start(deliver) {
     await this.load();
-    if (this.downloadTask) return this.downloadTask;
+    // Один установщик за раз. Запрос другого назначения не должен молча получить
+    // чужую задачу: иначе «Обновить» отчитается об успехе, ничего не установив.
+    if (this.downloadTask) {
+      if (this.downloadDeliver !== deliver) throw new Error('Установщик уже скачивается. Дождитесь окончания.');
+      return this.downloadTask;
+    }
     const { latestVersion, downloadUrl, filename, sha256, sizeBytes } = this.state;
     const parsed = latestVersion ? catalogVersion(latestVersion) : null;
     if (this.closed || !this.supported || this.state.phase !== 'available' || !parsed
@@ -285,20 +315,21 @@ export class AppUpdateService {
       || typeof sha256 !== 'string' || !SHA256_RE.test(sha256) || !Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
       throw new Error('Сначала проверьте наличие новой версии приложения.');
     }
-    const task = this._download({ generation: this.generation, downloadUrl, filename, sha256, sizeBytes, version: latestVersion })
-      .finally(() => { if (this.downloadTask === task) this.downloadTask = null; });
+    const task = this._download({ generation: this.generation, downloadUrl, filename, sha256, sizeBytes, version: latestVersion, deliver })
+      .finally(() => { if (this.downloadTask === task) { this.downloadTask = null; this.downloadDeliver = null; } });
     this.downloadTask = task;
+    this.downloadDeliver = deliver;
     return task;
   }
-  async _download({ generation, downloadUrl, filename, sha256, sizeBytes, version }) {
+  async _download({ generation, downloadUrl, filename, sha256, sizeBytes, version, deliver }) {
     const controller = new AbortController();
     this.downloadController = controller;
     const timeout = this.setTimer(() => controller.abort(), DOWNLOAD_TIMEOUT);
-    const directory = this.saveDirectory();
+    const directory = this.saveDirectory(deliver);
     const staging = path.join(directory, `.${filename}.${randomUUID()}.part`);
     let handle = null;
     try {
-      this.emit({ phase: 'downloading', error: undefined });
+      this.emit({ phase: 'downloading', error: undefined, progress: { received: 0, total: sizeBytes } });
       const response = await this.portal.fetch(downloadUrl, { signal: controller.signal, redirect: 'error',
         credentials: 'include', cache: 'no-store' });
       if (response.status === 401) throw new Error('Сессия Portal истекла. Войдите снова.');
@@ -311,6 +342,7 @@ export class AppUpdateService {
       const reader = response.body.getReader();
       const digest = createHash('sha256');
       let size = 0;
+      let shown = this.now();
       try {
         while (true) {
           const { done, value } = await reader.read();
@@ -319,6 +351,12 @@ export class AppUpdateService {
           if (size > sizeBytes) throw new Error('Установщик не совпадает с каталогом Portal. Проверьте обновления позже.');
           digest.update(value);
           await handle.write(value);
+          // Прогресс показывается не чаще пяти раз в секунду: кадры идут мелкие,
+          // а каждое событие — это IPC и перерисовка.
+          if (!this.closed && generation === this.generation && this.now() - shown >= PROGRESS_INTERVAL) {
+            shown = this.now();
+            this.emit({ progress: { received: size, total: sizeBytes } });
+          }
         }
       } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       if (size !== sizeBytes || digest.digest('hex') !== sha256) {
@@ -327,16 +365,32 @@ export class AppUpdateService {
       await handle.sync().catch(() => {});
       await handle.close();
       handle = null;
+      // Служебная папка хранит один установщик: иначе повторные попытки
+      // накапливают в профиле по сотне мегабайт на каждую. Чистится только
+      // после сверки нового файла — сорвавшееся скачивание не должно унести
+      // установщик, который уже ждёт применения.
+      if (deliver === 'apply') await this._purge(directory, staging);
       const target = await this._reserveName(directory, filename);
       await rename(staging, target);
       if (this.closed || generation !== this.generation) return { ...this.state };
-      this.emit({ phase: 'available', downloadedPath: target, downloadedVersion: version, error: undefined });
+      this.emit({ phase: 'available', downloadedPath: target, downloadedVersion: version, error: undefined, progress: undefined });
+      if (deliver === 'apply') {
+        // Дальше ведёт служба применения: предложение закрыться, ожидание занятых
+        // вкладок и снимок рабочего места. Отказ оставляет обычный ручной путь.
+        try { await this.apply({ installerPath: target, version, sha256 }); }
+        catch {
+          this.emit({ error: 'Не удалось подготовить установку. Запустите скачанный установщик вручную.' });
+          try { await this.reveal(target); } catch { /* Папка не открылась — файл уже на месте. */ }
+          throw new Error('Не удалось подготовить установку. Запустите скачанный установщик вручную.');
+        }
+        return { ...this.state };
+      }
       try { await this.reveal(target); } catch { /* Папка не открылась — файл уже на месте. */ }
       return { ...this.state };
     } catch (error) {
-      if (!this.closed && generation === this.generation && this.state.phase === 'downloading') this.emit({ phase: 'available' });
+      if (!this.closed && generation === this.generation && this.state.phase === 'downloading') this.emit({ phase: 'available', progress: undefined });
       const message = controller.signal.aborted ? 'Скачивание заняло слишком много времени. Повторите попытку.'
-        : /^(Сессия Portal|Portal |Установщик|Не удалось скачать установщик|Не удалось сохранить установщик)/.test(error?.message)
+        : /^(Сессия Portal|Portal |Установщик|Не удалось скачать установщик|Не удалось сохранить установщик|Не удалось подготовить установку)/.test(error?.message)
           ? error.message : 'Не удалось скачать установщик. Проверьте подключение к сети компании и повторите.';
       throw new Error(message);
     } finally {
@@ -344,6 +398,14 @@ export class AppUpdateService {
       if (this.downloadController === controller) this.downloadController = null;
       if (handle) await handle.close().catch(() => {});
       await unlink(staging).catch(() => {});
+    }
+  }
+  /** Убирает прежние установщики и обрывки; отчёт установщика не трогается. */
+  async _purge(directory, keep) {
+    for (const name of await readdir(directory).catch(() => [])) {
+      const target = path.join(directory, name);
+      if (!/\.exe$|\.part$/i.test(name) || target === keep) continue;
+      await unlink(target).catch(() => {});
     }
   }
   /** Одноимённый файл в загрузках не перезаписывается — выбирается свободное имя. */
