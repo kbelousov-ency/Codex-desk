@@ -1,8 +1,23 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// Канал сборки решает в главном процессе, поставляется ли телефонный пульт; сюда
+// признак приходит аргументом окна. Нет явного запрета — считаем включённым (dev).
+// В песочнице unit-тестов preload исполняется без `process`; отсутствие явного запрета = включено.
+const phonePult = !(typeof process !== 'undefined' && Array.isArray(process.argv) && process.argv.includes('--kuzmich-phone-pult=0'));
+
 function forSession(sessionId) {
   if (sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) throw new Error('Некорректная сессия.');
   return {
+    ...(phonePult ? {
+      getRemoteThreadAccess: () => ipcRenderer.invoke('remoteControl:getThreadAccess', sessionId),
+      setRemoteThreadAccess: options => ipcRenderer.invoke('remoteControl:setThreadAccess', options, sessionId),
+    } : {}),
+    publishRemoteState: snapshot => ipcRenderer.invoke('remoteControl:publishState', snapshot, sessionId),
+    publishRemoteAnswer: answer => ipcRenderer.invoke('remoteControl:publishAnswer', answer, sessionId),
+    completeRemoteDispatch: response => ipcRenderer.invoke('remoteControl:completeDispatch', response, sessionId),
+    onRemoteDispatch: listener => scopedRemoteEvent('remoteControl:dispatch', sessionId, listener),
+    onRemoteAccess: listener => scopedRemoteEvent('remoteControl:access', sessionId, value => listener(value.state)),
+    onRemoteCancel: listener => scopedRemoteEvent('remoteControl:cancel', sessionId, listener),
     start: (options) => ipcRenderer.invoke('codex:start', options, sessionId),
     request: (method, params) => ipcRenderer.invoke('codex:request', method, params, sessionId),
     respond: (id, result, options) => ipcRenderer.invoke('codex:respond', id, result, options, sessionId),
@@ -65,7 +80,30 @@ function forSession(sessionId) {
   };
 }
 
+function scopedRemoteEvent(channel, sessionId, listener) {
+  const handler = (_event, value) => { if (typeof sessionId === 'string' && value?.sessionId === sessionId) listener(value); };
+  ipcRenderer.on(channel, handler);
+  return () => ipcRenderer.removeListener(channel, handler);
+}
+
 contextBridge.exposeInMainWorld('codex', {
+  // Local control of the relay bridge. No method here grants access to a conversation, and the
+  // device secret is never part of the state that comes back.
+  ...(phonePult ? { relayBridge: {
+    getState: () => ipcRenderer.invoke('relayBridge:getState'),
+    setRelayUrl: url => ipcRenderer.invoke('relayBridge:setRelayUrl', url),
+    setLabel: label => ipcRenderer.invoke('relayBridge:setLabel', label),
+    setEnabled: enabled => ipcRenderer.invoke('relayBridge:setEnabled', enabled),
+    startPairing: label => ipcRenderer.invoke('relayBridge:startPairing', label),
+    confirmPairing: () => ipcRenderer.invoke('relayBridge:confirmPairing'),
+    cancelPairing: () => ipcRenderer.invoke('relayBridge:cancelPairing'),
+    unlink: () => ipcRenderer.invoke('relayBridge:unlink'),
+    onState: listener => {
+      const handler = (_event, state) => listener(state);
+      ipcRenderer.on('relayBridge:state', handler);
+      return () => ipcRenderer.removeListener('relayBridge:state', handler);
+    },
+  } } : {}),
   memoryRules: {
     preview: provider => ipcRenderer.invoke('memoryRules:preview', provider),
     apply: options => ipcRenderer.invoke('memoryRules:apply', options),

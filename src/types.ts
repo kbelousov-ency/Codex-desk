@@ -26,10 +26,10 @@ export type SettingSources = { model: SettingSource; effort: SettingSource; acce
 export type BridgeEvent = { type: 'notification' | 'serverRequest' | 'status' | 'diagnostic' | 'terminal' | 'mcp' | 'auth'; data: any };
 export type Attachment = { name: string; dataUrl: string; path?: string };
 export type ComposerFiles = { images: Attachment[]; paths: string[]; message?: string };
-export type QueuedMessage = { id: string; text: string; attachments: Attachment[]; state?: 'waiting' | 'uncertain' };
+export type QueuedMessage = { id: string; text: string; attachments: Attachment[]; state?: 'waiting' | 'uncertain'; remote?: RemoteDispatchContext };
 export type MessageQueueState = { items: QueuedMessage[]; paused: boolean; reason?: string; threadId?: string; cwd?: string };
 export type PreservedDraft = { text: string; attachments: Attachment[] };
-export type PendingMessage = { threadId: string; clientUserMessageId: string; kind: 'start' | 'steer'; text: string; attachments: Attachment[] };
+export type PendingMessage = { threadId: string; clientUserMessageId: string; kind: 'start' | 'steer'; text: string; attachments: Attachment[]; origin?: 'remote'; remote?: RemoteDispatchContext };
 export type ScrollAnchor = { itemId: string; offset: number };
 export type NotificationKind = 'completed' | 'question' | 'approval' | 'error';
 export type NotificationPreferences = { enabled: boolean; sound: boolean; completed: boolean; question: boolean; approval: boolean; error: boolean };
@@ -92,9 +92,9 @@ export type WorktreeInfo = { path: string; branch: string; created: boolean; roo
 export type WorktreeEntry = { path: string; branch: string | null; head: string | null; detached: boolean; bare: boolean; main: boolean; current: boolean; dirty: boolean | null; ahead: number | null; behind: number | null };
 export type WorktreeSummary = { root: string; mainBranch: string | null; mainPath: string | null; worktrees: WorktreeEntry[] };
 export type WorktreeMergePreview = { branch: string; target: string; mainPath: string; worktreePath: string; commits: { hash: string; subject: string }[]; stat: string; ahead: number | null; behind: number | null; mainDirty: boolean; worktreeDirty: boolean; blocked: string | null };
-export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; pinned?: boolean; pendingMessage?: PendingMessage };
+export type UpdateTabSnapshot = { sessionId?: string; thread?: Thread; archivedThread?: Thread; settings?: Settings; draft: string; attachments: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; pinned?: boolean; pendingMessage?: PendingMessage; childOf?: string; childLabel?: string; executorAutoReview?: import('./executor-auto-review').ExecutorAutoReviewState };
 export type UpdateSnapshot = { version: 1; activeIndex: number; tabs: UpdateTabSnapshot[] };
-export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; pinned?: boolean; pendingMessage?: PendingMessage };
+export type RestoredTab = SessionInfo & { thread?: Thread; archivedThread?: Thread; settings?: Settings; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; pinned?: boolean; pendingMessage?: PendingMessage; childOf?: string; childLabel?: string; executorAutoReview?: import('./executor-auto-review').ExecutorAutoReviewState };
 export type UpdateStatus = { state: 'awaiting' | 'waiting' | 'manual' | 'preparing' | 'error'; message?: string };
 export type WorkspaceInfo = { projects: string[]; sessions: SessionInfo[]; restore?: { activeIndex: number; tabs: RestoredTab[]; kind?: 'workspace' | 'update' } };
 export type AppUpdateStatus = {
@@ -143,6 +143,15 @@ export type McpRemovalPreview = { previewId: string; configPath: string; server:
 export type McpSaveResult = { configPath: string; backupPath: string | null; servers: string[]; message?: string };
 export type McpConnectionReport = { servers: { name: string; authStatus: string; status: string; toolCount: number }[]; message?: string };
 export interface CodexBridge {
+  getRemoteThreadAccess?(): Promise<RemoteThreadAccessState>;
+  setRemoteThreadAccess?(options: SetRemoteThreadAccess): Promise<RemoteThreadAccessState>;
+  publishRemoteState?(snapshot: RemoteRuntimeSnapshot): Promise<RemoteThreadAccessState>;
+  publishRemoteAnswer?(answer: RemoteAnswer): Promise<void>;
+  completeRemoteDispatch?(response: { dispatchId: string; result: RemoteDispatchResult }): Promise<void>;
+  onRemoteDispatch?(listener: (request: RemoteDispatchRequest) => void): () => void;
+  onRemoteAccess?(listener: (state: RemoteThreadAccessState) => void): () => void;
+  onRemoteCancel?(listener: (request: { operationIds: string[]; reason: string }) => void): () => void;
+
   start(options?: { cwd?: string; refreshModels?: boolean }): Promise<{ initialize: any; models: Model[]; account: any; config: any; cwd: string; executable: string; provider?: AgentProvider; capabilities?: AgentCapabilities; cliVersion?: string; routerSource?: boolean }>;
   request(method: string, params?: any): Promise<any>;
   respond(id: number | string, result: any, options?: { remember?: boolean }): Promise<void>;
@@ -193,6 +202,7 @@ export interface CodexBridge {
   getRouterUsage?(options?: { threadId?: string | null }): Promise<RouterUsageSnapshot>;
 }
 export interface WorkspaceBridge extends CodexBridge {
+  relayBridge?: RelayBridge;
   setup?: SetupBridge;
   memoryRules?: MemoryRulesBridge;
   skills?: AgentSkillsBridge;
@@ -258,3 +268,200 @@ export interface WorkspaceBridge extends CodexBridge {
 declare global {
   interface Window { codex: WorkspaceBridge; }
 }
+
+
+// Telegram-independent remote control v1; see docs/REMOTE_CONTROL_CONTRACT.md.
+export type RemoteTarget = {
+  grantId: string;               // постоянный UUID разрешения на точную беседу
+  generation: number;             // durable, увеличивается при отзыве/перепривязке
+  provider: AgentProvider;
+  threadId: string;               // точный ID оболочки, включая claude:UUID
+  projectKey: string;             // непрозрачный ID проекта, назначает host
+  sessionId: string;              // текущая runtime-сессия, никогда не достаточен один
+  runtimeId: string;              // UUID incarnation владельца/транспорта
+};
+
+export type RemoteBlockReason =
+  | 'busy' | 'approval' | 'question' | 'terminal' | 'restoring'
+  | 'uncertain_delivery' | 'disconnected' | 'queue_paused' | 'queue_not_empty'
+  | 'queue_full' | 'local_action' | 'closing' | 'settings_changing'
+  | 'model_unavailable' | 'compacting' | 'unsupported' | 'ambiguous_owner';
+
+export type RemoteThreadState = {
+  target: RemoteTarget;
+  revision: number;              // монотонно внутри runtimeId, не заменяет turnId
+  phase: 'idle' | 'running' | 'blocked' | 'unavailable';
+  activeTurnId: string | null;    // null также во время ещё не подтверждённого start
+  queue: { count: number; limit: 50; paused: boolean };
+  blockers: RemoteBlockReason[];
+  actions: { send: boolean; enqueue: boolean; steer: boolean; stop: boolean };
+  requiresComputer: boolean;
+  updatedAt: string;
+};
+
+export type RemoteThread = {
+  grantId: string;
+  title: string;                 // название явно разрешённой беседы
+  projectLabel: string;          // короткое имя, без абсолютного cwd
+  provider: AgentProvider;
+  target: RemoteTarget | null;   // null: закрыта, восстанавливается или неоднозначна
+  availability: 'available' | 'unavailable' | 'ambiguous';
+};
+
+export type RemoteAnswer = {
+  answerId: string;
+  turnId: string;
+  text: string;                  // только итоговый текст ассистента
+  completedAt: string | null;    // null, если история не сообщает время
+  truncated: boolean;
+};
+
+
+type RemoteCommandBase = { requestId: string; target: RemoteTarget };
+export type RemoteCommand = RemoteCommandBase & (
+  | { kind: 'send'; text: string }
+  | { kind: 'enqueue'; text: string }
+  | { kind: 'steer'; text: string; expectedTurnId: string }
+  | { kind: 'stop'; expectedTurnId: string }
+);
+
+export type RemoteErrorCode =
+  | 'access_denied' | 'stale_target' | 'stale_turn' | 'ambiguous_owner'
+  | 'unavailable' | 'blocked' | 'queue_full' | 'invalid_command'
+  | 'request_conflict' | 'persistence_failed' | 'not_found';
+export type RemoteError = {
+  code: RemoteErrorCode;
+  message: string;               // безопасный текст, без raw error/stack/команд
+  requiresComputer: boolean;
+  reason?: RemoteBlockReason;
+};
+export type RemoteResult<T> = { ok: true; value: T } | { ok: false; error: RemoteError };
+
+export type RemoteOperation = {
+  operationId: string;           // внутренний UUID, постоянный
+  requestId: string;
+  target: RemoteTarget;          // исходный адрес, неизменяемый
+  kind: RemoteCommand['kind'];
+  phase: 'received' | 'queued' | 'accepted' | 'completed'
+    | 'blocked' | 'stale' | 'rejected' | 'uncertain' | 'cancelled';
+  revision: number;
+  clientUserMessageId: string | null; // отдельный UUID для send/enqueue/steer
+  expectedTurnId: string | null;
+  executionTurnId: string | null; // у Claude steer может отличаться от expectedTurnId
+  queuePosition: number | null;  // снимок позиции, не обещание постоянного номера
+  outcome: 'succeeded' | 'interrupted' | 'failed' | null;
+  error: RemoteError | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+
+export type RemoteEventNotice = { eventId: string }; // непрозрачный сигнал без содержимого
+export type RemoteEvent = {
+  eventId: string;
+  target: RemoteTarget;
+  at: string;
+} & (
+  | { kind: 'operation_changed'; operation: RemoteOperation }
+  | { kind: 'state_changed'; state: RemoteThreadState }
+  | { kind: 'answer_ready'; answer: RemoteAnswer; requestId: string | null }
+  | { kind: 'computer_action_required'; message: 'Требуется действие на компьютере' }
+);
+
+export interface RemoteControl {
+  listThreads(): Promise<RemoteResult<RemoteThread[]>>;
+  getThreadState(target: RemoteTarget): Promise<RemoteResult<RemoteThreadState>>;
+  getLastAnswer(target: RemoteTarget): Promise<RemoteResult<RemoteAnswer | null>>;
+  execute(command: RemoteCommand): Promise<RemoteResult<RemoteOperation>>;
+  getOperation(options: { target: RemoteTarget; requestId: string }): Promise<RemoteResult<RemoteOperation>>;
+  subscribe(listener: (notice: RemoteEventNotice) => void): () => void;
+  readEvent(eventId: string): Promise<RemoteResult<RemoteEvent>>;
+}
+
+
+// Подключение к relay-серверу (docs/RELAY_CONTRACT.md). Секрет установки и соль адресов
+// в renderer не возвращаются никогда: сюда приходит только состояние.
+export type RelayConnectionPhase = 'disabled' | 'unconfigured' | 'connecting' | 'online' | 'pairing' | 'error';
+export type RelayPairingState = {
+  pairingId: string;
+  label: string;                 // имя установки, выбранное для этой привязки
+  code: string;                  // одноразовый nonce, показывается только на ПК
+  link: string | null;           // ссылка для QR; null, пока сервер не назвал имя бота
+  expiresAt: string;
+  claimant: null | { telegramUserId: string; displayName: string; username: string | null };
+  confirmExpiresAt: string | null;
+};
+export type RelayBridgeState = {
+  enabled: boolean;
+  relayUrl: string;
+  label: string;
+  linked: boolean;               // есть действующий device credential
+  encryptionAvailable: boolean;
+  connection: RelayConnectionPhase;
+  owner: null | { telegramUserId: string; displayName: string };
+  pairing: RelayPairingState | null;
+  publishedTabs: number;         // сколько разрешённых вкладок видит сервер
+  error: string | null;          // очищенная причина, без секрета и без URL запроса
+};
+export interface RelayBridge {
+  getState(): Promise<RelayBridgeState>;
+  setRelayUrl(url: string): Promise<RelayBridgeState>;
+  setLabel(label: string): Promise<RelayBridgeState>;
+  setEnabled(enabled: boolean): Promise<RelayBridgeState>;
+  startPairing(label?: string): Promise<RelayBridgeState>;
+  confirmPairing(): Promise<RelayBridgeState>;
+  cancelPairing(): Promise<RelayBridgeState>;
+  unlink(): Promise<RelayBridgeState>;
+  onState(listener: (state: RelayBridgeState) => void): () => void;
+}
+export type RelayConnectionSettingsProps = {
+  bridge: RelayBridge;
+  disabled?: boolean;
+};
+
+
+export type RemoteThreadAccessState = {
+  provider: AgentProvider;
+  threadId: string | null;
+  accessRevision: string;        // CAS token локального вида, меняется при смене адреса
+  enabled: boolean;
+  canEnable: boolean;
+  reason: string | null;         // локальное безопасное пояснение
+  target: RemoteTarget | null;
+};
+export type SetRemoteThreadAccess = {
+  enabled: boolean;
+  expected: { provider: AgentProvider; threadId: string; accessRevision: string };
+};
+
+/** Одна открытая вкладка текущего окна в списке «Доступ бесед» раздела «Телефон».
+ * Механика та же, что у переключателя во вкладке «Агент»: `state` приходит от ядра
+ * (`grantId`/`accessRevision`), `change` вызывает тот же `setRemoteThreadAccess`.
+ * `state: null` или `state.threadId: null` — беседа ещё не начата: разрешать нечего. */
+export type RemoteAccessTab = {
+  sessionId: string;
+  title: string;
+  project: string;               // короткое имя папки, без абсолютного пути
+  provider: AgentProvider;
+  state: RemoteThreadAccessState | null;
+  busy: boolean;
+  change(enabled: boolean): Promise<void>;
+};
+
+// Props именованных export-компонентов из src/PhoneAccessSettings.tsx
+// и src/TelegramThreadAccess.tsx соответственно:
+export type PhoneAccessSettingsProps = {
+  tabs: RemoteAccessTab[];
+  disabled?: boolean;
+};
+export type TelegramThreadAccessProps = {
+  state: RemoteThreadAccessState | null;
+  busy: boolean;
+  disabled?: boolean;
+  onChange(enabled: boolean): Promise<void>; // error/reload обрабатывает parent
+};
+
+export type RemoteDispatchContext = { operationId: string; target: RemoteTarget; kind: RemoteCommand['kind']; expectedTurnId?: string; clientUserMessageId: string | null };
+export type RemoteRuntimeSnapshot = Omit<RemoteThreadState, 'target'> & { threadId: string | null; provider: AgentProvider; ready: boolean; title: string; lastAnswer: RemoteAnswer | null; reservationOperationId?: string };
+export type RemoteDispatchResult = { phase: RemoteOperation['phase']; turnId?: string; queuePosition?: number; error?: RemoteError; outcome?: 'succeeded' | 'interrupted' | 'failed'; consumed?: boolean };
+export type RemoteDispatchRequest = { dispatchId: string; command: RemoteCommand; operation: RemoteOperation };

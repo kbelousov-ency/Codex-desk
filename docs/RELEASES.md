@@ -1,3 +1,91 @@
+## Telegram-пульт: writer и входящие update — приёмка 2026-10-13, новый Nightly заблокирован
+
+### Живой smoke Telegram — 2026-10-14
+
+Nightly `b7b02daa3660` фактически обработала pairing, выбор grant и два входящих
+сообщения от владельца. Оба native turns завершились `serverOverloaded`, поэтому
+успешный ответ модели через Telegram остаётся непроверенным. Исправление текста для
+failed completion прошло source-тесты и требует отдельной новой Nightly-сборки.
+
+После свежей передачи B (`agent-reports/agent-2-telegram.md`) проверена обработка
+полного `handleUpdates`: обязательный отказ записи оставляет update `received`,
+не подтверждает offset, останавливает пакет и виден на ПК. Сохранены исходный адресат,
+request ID и read-only сверка после возможного принятия. Контракт ядра подтверждён
+по коду: ledger сохраняется до dispatch, tombstone IDs не удаляются по TTL,
+`getOperation` принимает свежий target того же grant, а повтор `execute` возвращает
+прежнюю операцию. 15 новых inbound fixtures B прошли в общем наборе.
+
+Общий `createSnapshotStore` получил ограниченный Windows retry **только rename**
+(`EPERM/EBUSY`, 10 попыток, суммарные задержки 750 мс), прежний workspace файл не
+удаляется. Ошибка save/IPC/flush сохраняется; успешное чтение старого файла её не
+поглощает. Отказ финального flush при закрытии журналируется безопасным событием
+`workspace.saveFailed`. Подробности и пределы доказательств исходного `dQhhOc` —
+[REMOTE_CONTROL](REMOTE_CONTROL.md). Причина конкретного Windows-отказа остаётся
+неизвестной: старый журнал не сохранил syscall, утверждать rename или антивирус нельзя.
+
+Проверки окончательной версии:
+
+- `npm.cmd run check`: **1243 passed / 2 skipped / 0 failed**, TypeScript и Vite PASS,
+  прежнее предупреждение о размере bundle; `artifacts/remote-integration-check-final.log`.
+- Writer/workspace/checkpoint/hooks: **48 passed**; среди них 14 файловых сценариев
+  и 8 writer→sender/FIFO инъекций: постоянный отказ — **0 native turn/start**,
+  временный отказ с успешной записью — **1**, повторного запуска после completion нет.
+  Отдельно проверено безопасное журналирование ошибки flush.
+- Workspace renderer и queue renderer PASS. Финальные host-прогоны:
+  `artifacts/workspace-state-host-u55nvg`, `artifacts/message-queue-host-5ZurmY` — PASS.
+- Сквозной `ui-remote-control-host` **на исходниках** — PASS,
+  `artifacts/remote-control-host-Iehc1A`; Electron/preload/main/TelegramService настоящие,
+  HTTP Bot API и CLI — fixtures, `modelCalls:0`, `telegramNetwork:false`.
+
+Сохраняются два выявленных ограничения проверки. Первый workspace host-прогон
+`artifacts/workspace-state-host-I89W8H` терял ответы тестовых поздних IPC: успешный
+close handshake уничтожал renderer раньше их возврата. Fixture теперь удерживает
+только своё окно до результатов probes; production close/guards не замедляются.
+Первый общий check (**1241 passed / 2 skipped / 1 failed**) и один изолированный
+прогон воспроизвели `EPERM` в **другом writer** — `scripts/prepare-release.mjs:69`,
+rename тестового `.github-release-incoming` → `github-release`. Журналы:
+`artifacts/workspace-writer-check.log`, `artifacts/workspace-writer-publication-check.log`.
+Этот путь не исправлялся; последующий успешный общий check не доказывает его
+устойчивость и не устанавливает процесс/причину блокировки.
+
+Финальный `npm.cmd run package` выполнил TypeScript/Vite, затем штатно отказал:
+единственная очередь занята build
+`648b134c40a8941f9fc99d083a21a43fa34c835e9d7ee3d25a302258ebbccd7f`
+с `2026-10-13T08:36:34.216Z`, `restartRequested:false`.
+Журнал — `artifacts/remote-integration-package-final.log`. **Нового packaged exe и
+нового build ID нет; packaged-приёмка новых изменений НЕ выполнена.** Успех старого
+exe `yi14g6` не заменяет её. После штатного освобождения очереди необходимо снова
+выполнить `npm.cmd run package` и `test:remote-control-host` с `CODEX_DESK_PACKAGED`
+на новом exe, сверив его build ID. Приложение пользователя не закрывалось, кандидат
+не заменялся вручную, Release не переносился. Общая поставочная приёмка не завершена.
+
+## Telegram-пульт — Nightly 0.11.0, 2026-10-13
+
+После передачи агента 2 интегрированы общий контроллер бесед, разрешения по точному
+адресу, durable request IDs, единый sender/FIFO, безопасные steer/stop и Telegram long
+polling с локальной привязкой телефона. Настройки и история существующих Codex/Claude
+сохранены. Устройство и ограничения — [REMOTE_CONTROL](REMOTE_CONTROL.md),
+настройка — [TELEGRAM](TELEGRAM.md), согласованный API — [контракт](REMOTE_CONTROL_CONTRACT.md).
+
+`npm.cmd run check` на итоговых исходниках: TypeScript, **1205 passed / 2 skipped / 0 failed**,
+Vite успешно (сохранилось предупреждение о размере bundle). Прошли UI/host очереди,
+workspace-state-host, tabs host, providers UI, terminal UI, executor-auto и phone-access.
+Новые регрессии проверяют отказ сохранения до RPC, exact IDs/late ACK/restart, отзыв
+во время pacing/retry, Claude follow-up steer, паузу FIFO и Windows `EPERM` при atomic rename.
+
+`npm.cmd run package` создал build
+`648b134c40a8941f9fc99d083a21a43fa34c835e9d7ee3d25a302258ebbccd7f`
+в `2026-10-13T08:36:21.067Z`. Проверены все **72 файла** манифеста кандидата.
+Готовый `artifacts/nightly-update/app/Kuzmich.exe` прошёл тот же сквозной
+`ui-remote-control-host` (`artifacts/remote-control-host-HbtjXF`): production UI/preload/
+main/controller/TelegramService, отдельный профиль, подставные HTTP Bot API и JSONL CLI.
+Claude дополнительно проверен транспортными и hook fixtures. Настоящего Telegram,
+реальных сообщений/токенов и запросов модели в этих проверках не было.
+
+Кандидат поставлен в штатную очередь `2026-10-13T08:36:34.216Z`; при последней проверке
+он ждёт «Закрыть»/ручного выхода, `restartRequested:false`. Пользовательское приложение
+агент не закрывал. Release не переносился и публикация не выполнялась.
+
 ## Release 0.11.0 — 2026-10-12
 
 [v0.11.0](https://github.com/kbelousov-ency/Codex-desk/releases/tag/v0.11.0) опубликован как **Latest** `2026-10-12T07:30:16Z`, release ID `410314527`. Размеры, SHA-256 digest и состояние `uploaded` всех четырёх assets проверены до и после публикации; описание совпало с подготовленными заметками. Анонимный latest API и штатный `releaseUpdate` подтвердили обновление с 0.10.0 и отсутствие повторного предложения для 0.11.0 (`artifacts/github-release/published-verification.json`).
@@ -18,6 +106,32 @@ Nightly `82cffa8d64e999c9812898c3babadb17c087be85938c7d557c325806a0afeee6` со�
 
 
 Setup `Codex-Desk-Setup-0.11.0.exe`: 101875916 байт, SHA-256 `63b686f84b03a5111aade7b5064bc244216946ec5122a85cc8081b3ace1eaebb`. Распаковка NSIS подтвердила совпадение всех 72 файлов с утверждённым stable (`artifacts/release-0110-setup-verification.json`). Извлечённое приложение прошло setup-host (`artifacts/setup-host-GXJLE0`): мастер, backup конфигурации, fixture login Claude, правила памяти и навыки; без реальной авторизации, установки CLI или запросов модели. Первый прогон выявил устаревшую fixture: она не принимала существующий `--settings` prefix для изоляции аккаунта. Исправлены только fixture и строгая проверка её вызовов, байты приложения/Setup не менялись.
+
+## Исполнители: видимость закрытой записи в ряду — Nightly 0.11.0, 2026-10-12
+
+По жалобе владельца «закрыл вкладку, но она осталась в строке». Догадка о разных провайдерах
+родителя и исполнителя не подтвердилась: по `thread-child-links.json` и `workspace-state.json`
+владельца claude-исполнитель со связью остаётся в ряду так же, как codex, а исчезает только
+исполнитель, закрытый до первой отправки (связь заводится при первом `threadId`). Решение
+«после закрытия запись остаётся» сохранено; исправлен её вид — класс `child-tab-wrap.closed`
+не имел ни одного правила и отличался от открытой простаивающей записи лишь точкой в 5 px.
+Теперь это пунктирный контур без фона, приглушённый текст, значок `BotOff` и подсказка
+«Нажмите, чтобы открыть снова»; ряд на отрисовке сортируется — открытые вкладки первыми,
+закрытые записи в конец. Попутно `close`/`requestClose` стали идемпотентными, поэтому клик по
+крестику вкладки, только что закрытой автоматически, больше не даёт «Эта вкладка уже закрыта».
+Детали — [SUBAGENTS](SUBAGENTS.md).
+
+Приёмка: `npm run check` (tsc, 1070 passed / 2 skipped, vite build), UI-прогоны
+`test:executors` (в `unlinkClosed` добавлены проверки значка `lucide-bot-off`, пунктирного
+контура и приглушённого цвета), `test:executor-nav`, `test:executor-auto` — PASS; снимки ряда
+в обеих темах `artifacts/executor-closed-record-{default,kuzmich}.png`.
+
+`npm.cmd run package` собрал Nightly `eae3e0503b416f6a9e307dc764f28e1c98b822f15560a23bf1b9a6818b6e55d5`
+в `2026-10-12T11:56:06.491Z`; журнал очереди — `candidate_verified` и `host_awaiting`, манифест
+72 файла, версия 0.11.0. В байтах кандидата сверены сама правка и её минифицированная форма:
+строка подсказки, правило `child-tab-wrap.closed`, иконка `BotOff` и сортировка
+`+!!b.sessionId-+!!a.sessionId`. Сборка применится, когда владелец закроет Nightly;
+агент приложение не закрывал, Release не переносился.
 
 ## Вкладки исполнителей: каскадное закрытие и открытие из дерева — Nightly 0.10.0, 2026-10-12
 

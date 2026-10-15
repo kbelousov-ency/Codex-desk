@@ -26,6 +26,18 @@ function validBuiltAt(value) {
     && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
 }
 
+/**
+ * Каналы, в которых поставляется телефонный пульт (relay + Mini App). Владелец решает,
+ * когда включать stable; включение — правка одной этой строки. Решение принимается на
+ * каждом запуске от текущего канала, потому что маркер канала меняется при promotion
+ * без пересборки app.asar.
+ */
+const phonePultChannels = new Set(['nightly', 'experimental3', 'development']);
+
+export function phonePultEnabled(channel) {
+  return phonePultChannels.has(channel);
+}
+
 /** The external channel marker can change on promotion without rebuilding app.asar. */
 export function resolveReleaseChannel({ isPackaged, resourcesPath, buildInfo = {} }) {
   let channel = 'development';

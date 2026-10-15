@@ -69,6 +69,21 @@ try {
   });
   let closeFrozen;
   page.on('console', message => { if (message.text().startsWith('CLOSE_FROZEN:')) closeFrozen = JSON.parse(message.text().slice(13)); });
+  // Keep only this fixture window alive until the late IPC probes report back.
+  // The production close handshake/guards still run; a fast successful save
+  // must not destroy the renderer while it is awaiting the rejection replies.
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    win.fixtureCloseHold = event => event.preventDefault();
+    win.on('close', win.fixtureCloseHold);
+    win.close();
+  });
+  await waitUntil(() => closeFrozen?.length === 2, 'late IPC rejection replies before renderer destruction');
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    win.removeListener('close', win.fixtureCloseHold);
+    delete win.fixtureCloseHold;
+  });
   await closeWindow();
   assert.equal(closeFrozen?.length, 2, 'Late autosave and turn/start are rejected during the final save');
   assert.ok(closeFrozen.every(message => /закрывается/.test(message)));
@@ -155,5 +170,12 @@ try {
   await writeFile(path.join(runDir, 'result.json'), JSON.stringify({ results, modelCalls: (await logs()).filter(entry => ['turn/start', 'turn/steer'].includes(entry.method)).length }, null, 2));
   console.log(JSON.stringify({ runDir, results }, null, 2));
 } finally {
-  if (app) await app.close().catch(() => {});
+  if (app) {
+    await app.evaluate(({ BrowserWindow }) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.fixtureCloseHold) win.removeListener('close', win.fixtureCloseHold);
+      }
+    }).catch(() => {});
+    await app.close().catch(() => {});
+  }
 }

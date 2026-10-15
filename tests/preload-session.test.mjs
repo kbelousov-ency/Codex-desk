@@ -21,6 +21,31 @@ async function fixture({ getPathForFile = () => '' } = {}) {
   return { bridge, ipc, calls, sends };
 }
 
+test('relay setup stays local and remote dispatch never falls back to the active/default tab', async () => {
+  const { bridge, ipc, calls } = await fixture();
+  const a = bridge.forSession('a'), b = bridge.forSession('b');
+  const received = [], defaultReceived = [];
+  const remove = a.onRemoteDispatch(value => received.push(value));
+  bridge.onRemoteDispatch(value => defaultReceived.push(value));
+  ipc.emit('remoteControl:dispatch', {}, { sessionId: 'b', defaultSession: true, dispatchId: 'b-op' });
+  ipc.emit('remoteControl:dispatch', {}, { sessionId: 'a', dispatchId: 'a-op' });
+  remove();
+  ipc.emit('remoteControl:dispatch', {}, { sessionId: 'a', dispatchId: 'late-op' });
+  assert.equal(received.length, 1); assert.equal(received[0].dispatchId, 'a-op');
+  assert.equal(defaultReceived.length, 0);
+  // The personal bot left the build: neither a scoped nor a global `phoneAccess` remains.
+  assert.equal(a.phoneAccess, undefined);
+  assert.equal(bridge.phoneAccess, undefined);
+  assert.equal(a.relayBridge, undefined);
+  assert.equal(bridge.relayBridge.execute, undefined);
+  await b.getRemoteThreadAccess();
+  await b.setRemoteThreadAccess({ enabled: false, expected: { threadId: 'thread-b' } });
+  await bridge.relayBridge.setEnabled(false);
+  assert.deepEqual(calls.map(value => [value[0], value.at(-1)]), [
+    ['remoteControl:getThreadAccess', 'b'], ['remoteControl:setThreadAccess', 'b'], ['relayBridge:setEnabled', false],
+  ]);
+});
+
 test('setup bridge exposes fixed workspace operations and removable progress subscription', async () => {
   const { bridge, calls, ipc } = await fixture();
   await bridge.setup.state();

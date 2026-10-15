@@ -12,6 +12,13 @@
 .child-tab-wrap.active .child-tab>svg{color:var(--executor-accent)}
 .child-tab-wrap.has-unread .child-tab-label{color:var(--executor-text)}
 .child-tab .child-tab-state.closed{background:var(--executor-muted)}
+/* Запись закрытой вкладки живёт в ряду дальше, но читается как «не открыт»: пунктирный
+   контур вместо плашки вкладки, приглушённый текст и перечёркнутый значок агента. Без этого
+   закрытая запись отличалась от простаивающей открытой только цветом точки в 5 px. */
+.child-tab-wrap.closed{color:var(--executor-muted);background:transparent;outline:1px dashed var(--executor-border);outline-offset:-1px}
+.child-tab-wrap.closed .child-tab>svg{color:var(--executor-muted)}
+.child-tab-wrap.closed:hover{background:var(--executor-surface);color:var(--executor-text);outline-color:var(--executor-icon)}
+.child-tab-wrap.closed:hover .child-tab>svg{color:var(--executor-icon)}
 .child-tab .child-tab-state.tab-state.question{display:grid;place-items:center;width:14px;height:14px;border:1px solid var(--executor-warning);border-radius:3px;background:var(--executor-warning-bg);color:var(--executor-warning);box-shadow:none;font-size:10px;font-weight:700;line-height:1}
 .child-tab .child-tab-unread{margin-left:0}
 .child-tab-close{flex:0 0 auto;width:20px;height:20px;display:grid;place-items:center;margin:0 5px 0 0;border:0;border-radius:3px;background:transparent;color:var(--executor-icon);cursor:pointer}

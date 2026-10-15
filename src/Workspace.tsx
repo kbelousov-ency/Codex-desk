@@ -17,7 +17,7 @@ import { AppUpdateBanner, AppUpdateDialog, useAppUpdates } from './AppUpdates';
 import { ReleaseNotesDialog, useReleaseNotes } from './ReleaseNotes';
 import { OpenAppUpdatesContext } from './AppUpdateContext';
 import { errorText, folderName } from './useCodex';
-import type { AgentProvider, Attachment, CodexBridge, ExecutorAction, ExecutorThread, HistoryTarget, MessageQueueState, PendingMessage, PreservedDraft, ScrollAnchor, SessionAttentionEvent, SessionInfo, Settings, Thread, ThreadAction, ThreadChildLink, UpdateSnapshot, UpdateStatus, UpdateTabSnapshot } from './types';
+import type { AgentProvider, Attachment, CodexBridge, ExecutorAction, ExecutorThread, HistoryTarget, MessageQueueState, PendingMessage, PreservedDraft, RemoteAccessTab, RemoteThreadAccessState, ScrollAnchor, SessionAttentionEvent, SessionInfo, Settings, Thread, ThreadAction, ThreadChildLink, UpdateSnapshot, UpdateStatus, UpdateTabSnapshot } from './types';
 import { executorLabelLetter, nextExecutorLabel } from './executor-agents';
 import './nightly-update.css';
 import './workspace-state.css';
@@ -28,6 +28,8 @@ import HistoryLibrary from './HistoryLibrary';
 import SetupGate from './SetupGate';
 import { sameSessionSummary } from './session-summary';
 import ParallelActivity from './ParallelActivity';
+import { createExecutorAutoReviewState, reduceExecutorAutoReview, restoreExecutorAutoReview, reviewParentKey, type ExecutorAutoReviewState, type ReviewEvent, type ReviewMember, type ReviewParent } from './executor-auto-review';
+import type { WorkLifecycleEvent } from './useCodex';
 
 type Tab = SessionInfo & { bridge?: CodexBridge; initialThread?: Thread; archivedThread?: Thread; draft?: string; attachments?: Attachment[]; preservedDraft?: PreservedDraft; restoreSettings?: Settings; queue?: MessageQueueState; scrollTop?: number; scrollAnchor?: ScrollAnchor; jump?: { itemId: string; turnId?: string; key: number; excerpt?: string }; pinned?: boolean; pendingMessage?: PendingMessage; childOf?: string; childLabel?: string; fork?: { lastTurnId?: string } };
 /** What a closed tab needs to come back: the folder, agent and (if any) the dialog it showed. Processes are not kept. */
@@ -111,6 +113,23 @@ function TabbedWorkspace() {
   const [error, setError] = useState('');
   const [saveError, setSaveError] = useState('');
   const [attention, setAttention] = useState<Record<string, SessionAttentionEvent>>({});
+  // Per-conversation permission of every mounted tab, so the «Телефон» topic can list them all.
+  // Only the comparable part lives in state; the handler is a closure and would defeat any diff.
+  const [remoteAccess, setRemoteAccess] = useState<Record<string, { state: RemoteThreadAccessState | null; busy: boolean }>>({});
+  const remoteAccessChange = useRef<Record<string, (enabled: boolean) => Promise<void>>>({});
+  const reportRemoteAccess = useCallback((id: string, entry: { state: RemoteThreadAccessState | null; busy: boolean; change(enabled: boolean): Promise<void> } | null) => {
+    if (!entry) {
+      delete remoteAccessChange.current[id];
+      setRemoteAccess(previous => { if (!(id in previous)) return previous; const next = { ...previous }; delete next[id]; return next; });
+      return;
+    }
+    remoteAccessChange.current[id] = entry.change;
+    setRemoteAccess(previous => {
+      const old = previous[id];
+      return old && old.busy === entry.busy && JSON.stringify(old.state) === JSON.stringify(entry.state)
+        ? previous : { ...previous, [id]: { state: entry.state, busy: entry.busy } };
+    });
+  }, []);
   const [showAttention, setShowAttention] = useState(false);
   const [showNotificationSettings, setShowNotificationSettings] = useState(false);
   const [showLibrary, setShowLibrary] = useState(false);
@@ -185,6 +204,46 @@ function TabbedWorkspace() {
   const childLinkRequests = useRef(new Set<string>());
   /** Executor conversations whose default name has already been written as the dialog title. */
   const executorRenamed = useRef(new Set<string>());
+  const [executorReviews, setExecutorReviews] = useState<Record<string, ExecutorAutoReviewState>>({});
+  const executorReviewsRef = useRef(executorReviews);
+  const executorWorkGetters = useRef(new Map<string, () => { threadId: string; turnId: string } | null>());
+  const knownExecutorTabs = useRef(new Set<string>());
+  const updateExecutorReview = useCallback((parent: ReviewParent, event: ReviewEvent) => {
+    const key = reviewParentKey(parent), previous = executorReviewsRef.current[key] || createExecutorAutoReviewState(parent);
+    const next = reduceExecutorAutoReview(previous, event);
+    if (previous !== next) {
+      executorReviewsRef.current = { ...executorReviewsRef.current, [key]: next };
+      setExecutorReviews(executorReviewsRef.current); saveRevision.current++;
+    }
+    return next;
+  }, []);
+  const getExecutorReview = useCallback((cwd: string, threadId: string) => Object.values(executorReviewsRef.current)
+    .find(state => state.parent.threadId === threadId && sameFolder(state.parent.cwd, cwd)), []);
+  const reviewParent = useCallback((cwd: string, threadId: string): ReviewParent => {
+    const tab = tabsRef.current.find(t => !t.archivedThread && !t.childOf && sameFolder(t.cwd, cwd) && (summariesRef.current[t.id]?.threadId || t.initialThread?.id) === threadId);
+    return { cwd, threadId, provider: tab && (summariesRef.current[tab.id]?.settings.provider || tab.provider) || (threadId.startsWith('claude:') ? 'claude' : 'codex') };
+  }, []);
+  const reviewMember = useCallback((tab: Tab): ReviewMember => {
+    const summary = summariesRef.current[tab.id], active = executorWorkGetters.current.get(tab.id)?.();
+    return { id: tab.id, threadId: active?.threadId || summary?.threadId || tab.initialThread?.id, label: (tab.childLabel || summary?.title || 'Исполнитель').slice(0, 256),
+      turnId: active?.turnId, status: active ? 'running' : 'waiting', pending: Boolean(summary?.pending) };
+  }, []);
+  const onExecutorWork = useCallback((sessionId: string, event: WorkLifecycleEvent) => {
+    const tab = tabsRef.current.find(t => t.id === sessionId);
+    if (!tab?.childOf) return;
+    const parent = reviewParent(tab.cwd, tab.childOf);
+    if (event.kind === 'started') updateExecutorReview(parent, { type: 'start', member: { ...reviewMember(tab), threadId: event.threadId }, turnId: event.turnId, nextRoundId: crypto.randomUUID() });
+    else updateExecutorReview(parent, { type: 'complete', id: sessionId, threadId: event.threadId, turnId: event.turnId, status: event.status || 'failed', result: event.result, error: event.error });
+  }, [reviewParent, reviewMember, updateExecutorReview]);
+  const registerExecutorWork = useCallback((sessionId: string, getter: () => { threadId: string; turnId: string } | null) => {
+    executorWorkGetters.current.set(sessionId, getter);
+    return () => { if (executorWorkGetters.current.get(sessionId) === getter) executorWorkGetters.current.delete(sessionId); };
+  }, []);
+  const toggleExecutorReview = useCallback((cwd: string, threadId: string) => {
+    const parent = reviewParent(cwd, threadId), previous = executorReviewsRef.current[reviewParentKey(parent)];
+    updateExecutorReview(parent, previous?.enabled ? { type: 'disable' } : { type: 'enable', roundId: crypto.randomUUID(),
+      members: tabsRef.current.filter(t => !t.archivedThread && t.childOf === threadId && sameFolder(t.cwd, cwd)).map(reviewMember) });
+  }, [reviewParent, reviewMember, updateExecutorReview]);
   const previousSummaries = useRef<Record<string, SessionSummary>>({});
   tabsRef.current = tabs;
   projectsRef.current = projects;
@@ -212,12 +271,16 @@ function TabbedWorkspace() {
   }, []);
   const onSessionAttention = useCallback((id: string, event: SessionAttentionEvent, title: string) => {
     // Cancel immediately, even if request and completion arrive in the same React batch.
-    if (event.kind === 'question' || event.kind === 'approval') cancelCloseWait(id);
+    if (event.kind === 'question' || event.kind === 'approval') {
+      cancelCloseWait(id);
+      const tab = tabsRef.current.find(t => t.id === id);
+      if (tab?.childOf) updateExecutorReview(reviewParent(tab.cwd, tab.childOf), { type: 'pending', id, pending: true });
+    }
     if (workspaceClosing.current || updateRequest.current || !tabsRef.current.some(tab => tab.id === id && !tab.archivedThread)) return;
     if (!focusedWindow.current || updateState.current.activeId !== id) setAttention(previous => ({ ...previous, [id]: event }));
     // Host checks actual native focus independently and suppresses visible-tab toasts.
     void window.codex.notifySession?.({ ...event, sessionId: id, title: title.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 160) }).catch(() => {});
-  }, [cancelCloseWait]);
+  }, [cancelCloseWait, reviewParent, updateExecutorReview]);
   useEffect(() => {
     let subscribed = true;
     let observedFocus = false;
@@ -303,7 +366,7 @@ function TabbedWorkspace() {
     saveTimer.current = setTimeout(autoSave, 400);
   }, [autoSave]);
 
-  useEffect(() => { onSessionStateChange(); }, [tabs, activeId, starting, opening, closing, summaries, onSessionStateChange]);
+  useEffect(() => { onSessionStateChange(); }, [tabs, activeId, starting, opening, closing, summaries, executorReviews, onSessionStateChange]);
   useEffect(() => {
     if (!window.codex.saveWorkspaceState) return;
     // Maximum delay during continuous typing; retries also cover transient IPC failures.
@@ -422,6 +485,11 @@ function TabbedWorkspace() {
         ? info.restore.tabs.map(tab => ({ ...tab, initialThread: tab.thread, restoreSettings: tab.settings, ...(tab.pinned ? { pinned: true } : {}), ...(tab.archivedThread ? {} : { bridge: window.codex.forSession(tab.id) }) }))
         : info.sessions.map(session => ({ ...session, bridge: window.codex.forSession(session.id) }));
       const selected = opened[info.restore?.activeIndex ?? 0] || opened[0];
+      for (const tab of info.restore?.tabs || []) if (tab.executorAutoReview) {
+        const state = restoreExecutorAutoReview(tab.executorAutoReview);
+        executorReviewsRef.current[reviewParentKey(state.parent)] = state;
+      }
+      setExecutorReviews({ ...executorReviewsRef.current });
       restorePending.current = Boolean(info.restore);
       workspaceLoaded.current = true;
       setProjects(info.projects); setTabs(opened); setActiveId(selected?.id || '');
@@ -514,12 +582,16 @@ function TabbedWorkspace() {
    * archived, deleted or unlinked executor leaves the «Исполнители» row and the tree at once. */
   const dropChildLinks = useCallback((threadIds: Iterable<string>): void => {
     const ids = new Set(threadIds);
+    for (const state of Object.values(executorReviewsRef.current)) {
+      if (ids.has(state.parent.threadId)) updateExecutorReview(state.parent, { type: 'disable' });
+      for (const member of state.members) if (member.threadId && ids.has(member.threadId)) updateExecutorReview(state.parent, { type: 'exclude', id: member.id });
+    }
     updateChildLinks(previous => {
       const next: Record<string, ThreadChildLink[]> = {};
       for (const [key, links] of Object.entries(previous)) next[key] = links.filter(link => !ids.has(link.childThreadId) && !ids.has(link.parentThreadId));
       return next;
     });
-  }, [updateChildLinks]);
+  }, [updateChildLinks, updateExecutorReview]);
   const loadThreadChildLinks = useCallback(async (cwd: string): Promise<void> => {
     const key = projectKey(cwd);
     if (!window.codex.listThreadChildLinks || childLinkRequests.current.has(key) || !projectsRef.current.some(folder => sameFolder(folder, cwd))) return;
@@ -565,6 +637,10 @@ function TabbedWorkspace() {
       ? previous.map(tab => tab.id === id ? { ...tab, cwd: summary.cwd } : tab) : previous);
     if (summary.cwd) setProjects(previous => previous.some(folder => sameFolder(folder, summary.cwd)) ? previous : [...previous, summary.cwd]);
     const tab = tabsRef.current.find(item => item.id === id);
+    if (tab?.childOf) {
+      const parent = reviewParent(summary.cwd || tab.cwd, tab.childOf);
+      updateExecutorReview(parent, { type: 'pending', id, pending: summary.pending > 0 });
+    }
     if (tab?.childOf && summary.threadId && summary.cwd && window.codex.createThreadChildLink) {
       const key = projectKey(summary.cwd);
       const known = childLinksRef.current[key] || [];
@@ -587,7 +663,15 @@ function TabbedWorkspace() {
           .catch(() => executorRenamed.current.delete(threadId));
       }
     }
-  }, [updateChildLinks]);
+  }, [updateChildLinks, reviewParent, updateExecutorReview]);
+
+  useEffect(() => {
+    const previous = knownExecutorTabs.current;
+    knownExecutorTabs.current = new Set(tabs.map(tab => tab.id));
+    for (const tab of tabs) if (!previous.has(tab.id) && tab.childOf && !tab.archivedThread) {
+      updateExecutorReview(reviewParent(tab.cwd, tab.childOf), { type: 'member', member: reviewMember(tab) });
+    }
+  }, [tabs, reviewParent, reviewMember, updateExecutorReview]);
 
   const activate = (id: string) => { updateState.current.activeId = id; setActiveId(id); setError(''); if (focusedWindow.current) clearAttention(id); setShowAttention(false); setTabMenu(null); };
   const loadArchive = async (cursor?: string) => {
@@ -639,9 +723,14 @@ function TabbedWorkspace() {
         if (existing) { await window.codex.closeSession(created.id); created = null; setExpanded(previous => ({ ...previous, [projectKey(existing.cwd)]: true })); activate(existing.id); return true; }
       }
       const restored = options?.restore;
+      if (restored?.executorAutoReview) {
+        const state = restoreExecutorAutoReview(restored.executorAutoReview);
+        executorReviewsRef.current = { ...executorReviewsRef.current, [reviewParentKey(state.parent)]: state };
+        setExecutorReviews(executorReviewsRef.current);
+      }
       const tab: Tab = { ...created, initialThread, bridge: window.codex.forSession(created.id), jump, ...(options?.childOf ? { childOf: options.childOf } : {}), ...(options?.childLabel ? { childLabel: options.childLabel } : {}), ...(options?.draft !== undefined ? { draft: options.draft } : {}), ...(options?.fork ? { fork: options.fork } : {}),
         ...(restored ? { draft: restored.draft, attachments: restored.attachments, preservedDraft: restored.preservedDraft, restoreSettings: restored.settings,
-          pendingMessage: restored.pendingMessage, queue: restored.queue ? { ...restored.queue, paused: true } : undefined, scrollTop: restored.scrollTop, scrollAnchor: restored.scrollAnchor } : {}) };
+          pendingMessage: restored.pendingMessage, childOf: restored.childOf || options?.childOf, childLabel: restored.childLabel || options?.childLabel, queue: restored.queue ? { ...restored.queue, paused: true } : undefined, scrollTop: restored.scrollTop, scrollAnchor: restored.scrollAnchor } : {}) };
       setTabs(previous => restored?.pinned ? setTabPinned([...previous, tab], tab.id, true) : [...previous, tab]); activate(tab.id);
       setProjects(previous => previous.some(folder => sameFolder(folder, tab.cwd)) ? previous : [...previous, tab.cwd]);
       setExpanded(previous => ({ ...previous, [projectKey(tab.cwd)]: true }));
@@ -690,6 +779,10 @@ function TabbedWorkspace() {
   };
   // The upper tab and executor row use the same guard and the same explanation.
   const closeBlockedReason = (id: string) => {
+    const tab = tabsRef.current.find(t => t.id === id);
+    const threadId = summariesRef.current[id]?.threadId || tab?.initialThread?.id;
+    const delivery = tab && threadId && getExecutorReview(tab.cwd, threadId)?.delivery;
+    if (delivery && delivery.status !== 'sent') return delivery.status === 'uncertain' ? 'Сначала проверьте отправку сводки исполнителей' : 'Дождитесь сохранения сводки исполнителей';
     if (summariesRef.current[id]?.terminalOpen) return 'Сначала закройте терминал этого диалога';
     // Closing a parent closes its executors, so their terminals block it just as its own does.
     const terminalChild = executorTabsOf(id).find(tab => summariesRef.current[tab.id]?.terminalOpen);
@@ -703,7 +796,9 @@ function TabbedWorkspace() {
     const blocked = closeBlockedReason(id);
     if (blocked) { setError(blocked); return; }
     const tab = tabsRef.current.find(item => item.id === id);
-    if (!tab) { setError('Эта вкладка уже закрыта.'); return; }
+    // Клик мог обогнать автоматическое закрытие («закроется по завершении», каскад группы,
+    // двойной клик): вкладки уже нет, цель достигнута — молча убираем остатки вместо ошибки.
+    if (!tab) { cancelDeferredClose(id); setConfirmClose(current => current === id ? null : current); return; }
     // Capture before host disposal can deliver a final status and reset the view.
     const record = closedRecord(tab);
     closingTab.current = true;
@@ -750,8 +845,8 @@ function TabbedWorkspace() {
     } else {
       // A closed executor comes back into the row of its parent, not as a separate root tab:
       // the navigation link survived the closure, so the restored tab belongs under it again.
-      const parentId = snapshot.thread ? childParentOf(snapshot.thread.id) : undefined;
-      const label = snapshot.thread ? childLinkOf(snapshot.thread.id)?.label : null;
+      const parentId = snapshot.childOf || (snapshot.thread ? childParentOf(snapshot.thread.id) : undefined);
+      const label = snapshot.childLabel || (snapshot.thread ? childLinkOf(snapshot.thread.id)?.label : null);
       if (!await open(record.cwd, snapshot.thread, record.provider, undefined, { restore: snapshot, ...(parentId ? { childOf: parentId, ...(label ? { childLabel: label } : {}) } : {}) })) return;
     }
     closedTabsRef.current = closedTabsRef.current.filter(item => item !== record);
@@ -811,6 +906,8 @@ function TabbedWorkspace() {
     return '';
   };
   const requestClose = (id: string) => {
+    // Вкладка могла закрыться автоматически между отрисовкой кнопки и кликом — закрывать нечего.
+    if (!tabsRef.current.some(tab => tab.id === id)) { cancelDeferredClose(id); return; }
     const blocked = closeBlockedReason(id);
     if (blocked) { setError(blocked); return; }
     setError('');
@@ -846,6 +943,9 @@ function TabbedWorkspace() {
     const next = { ...deferredCloseRef.current, [id]: state.completedTurnRevision || 0 };
     deferredCloseRef.current = next; setDeferredClose(next); setConfirmClose(null);
   };
+  // Цель подтверждения могла закрыться автоматически, пока диалог был открыт: без вкладки
+  // кнопки модалки вели бы в «Эта вкладка уже закрыта», поэтому модалка снимается сама.
+  useEffect(() => { if (confirmClose && !tabs.some(tab => tab.id === confirmClose)) setConfirmClose(null); }, [confirmClose, tabs]);
   useEffect(() => {
     const cascade = cascadeCloseRef.current;
     // While a group close runs, its remaining members must not be closed a second time.
@@ -927,7 +1027,8 @@ function TabbedWorkspace() {
   const threadLocked = (threadId: string) => tabsRef.current.some(tab => {
     const state = summariesRef.current[tab.id];
     const id = state?.threadId || tab.initialThread?.id;
-    return id === threadId && (state?.busy || state?.loading || state?.terminalOpen || state?.pendingDelivery || Boolean(state?.pending));
+    const delivery = id && getExecutorReview(tab.cwd, id)?.delivery;
+    return id === threadId && (state?.busy || state?.loading || state?.terminalOpen || state?.pendingDelivery || Boolean(state?.pending) || delivery && delivery.status !== 'sent');
   });
   /** Keep failed RPCs entirely reversible in the UI. Close local views only after the agent
    * confirms the operation, including reported descendants. Returns a close error, if any. */
@@ -1144,7 +1245,23 @@ function TabbedWorkspace() {
   // waits for the already-running task to finish. Otherwise a new send can
   // race the updater and keep the Nightly in `waiting` indefinitely.
   const updateWaiting = updateStatus?.state === 'waiting';
+  // Archived views host no session and can never be remote-controlled, so they are not listed.
+  const remoteAccessTabs: RemoteAccessTab[] = tabs.filter(tab => !tab.archivedThread).map(tab => {
+    const entry = remoteAccess[tab.id], state = entry?.state || null, summary = summaries[tab.id];
+    const threadId = state?.threadId || summary?.threadId || tab.initialThread?.id || '';
+    return {
+      sessionId: tab.id,
+      title: threadNames[threadId] || summary?.title || tab.initialThread?.name || tab.initialThread?.preview || 'Новый диалог',
+      project: folderName(summary?.cwd || tab.cwd),
+      provider: state?.provider || summary?.settings.provider || tab.provider || 'codex',
+      state, busy: Boolean(entry?.busy),
+      change: (enabled: boolean) => remoteAccessChange.current[tab.id]?.(enabled) ?? Promise.resolve(),
+    };
+  });
   const controls: WorkspaceControls = {
+    remoteAccessTabs, reportRemoteAccess,
+    getExecutorReview, updateExecutorReview, toggleExecutorReview, onExecutorWork, registerExecutorWork,
+    executorReviewBlocked: () => closingTab.current || closingGroup.current || workspaceClosing.current || Boolean(updateRequest.current) || pendingOpen.current || actionPending.current,
     openLibrary: () => setShowLibrary(true),
     projects, opening: opening || actionBusy || Boolean(confirmCloseProject) || preparingUpdate || savingBeforeClose || updateWaiting, expanded, histories, threadNames, searchRevision,
     archiveOpen, archiveThreads, archiveLoading, archiveError, archiveCursor, actionBusy: actionBusy || Boolean(confirmCloseProject) || preparingUpdate || savingBeforeClose || updateWaiting,

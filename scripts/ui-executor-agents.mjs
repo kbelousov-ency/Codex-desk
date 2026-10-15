@@ -250,6 +250,21 @@ try {
     const saved = entry(threadId);
     await saved.locator('.child-tab-state.closed').waitFor();
     assert.match(await saved.locator('.child-tab').getAttribute('data-tooltip'), /Вкладка закрыта/);
+    // A closed record must not read as an open idle tab: own icon, dashed outline, muted text.
+    assert.equal(await saved.locator('svg.lucide-bot-off').count(), 1, 'a closed record carries the closed-agent icon');
+    assert.equal(await saved.locator('svg.lucide-bot').count(), 0, 'the live agent icon is gone once the tab is closed');
+    const look = await saved.evaluate(node => {
+      const live = document.querySelector('.session-view:not([hidden]) .child-tab-wrap:not(.closed)');
+      const style = getComputedStyle(node);
+      return { outline: style.outlineStyle, color: style.color, live: live ? getComputedStyle(live).color : '' };
+    });
+    assert.equal(look.outline, 'dashed', 'a closed record is outlined instead of being drawn as a tab');
+    if (look.live) assert.notEqual(look.color, look.live, 'a closed record is muted next to a live entry');
+    for (const theme of [null, 'kuzmich']) {
+      await setTheme(theme);
+      await row().screenshot({ path: `artifacts/executor-closed-record-${theme || 'default'}.png` });
+    }
+    await setTheme(null);
     const cross = saved.locator('.child-tab-close');
     assert.equal(await cross.getAttribute('data-tooltip'), 'Убрать из ряда (диалог останется в папке)');
     assert.equal(await cross.isEnabled(), true, 'a saved entry never becomes a ghost without a working cross');

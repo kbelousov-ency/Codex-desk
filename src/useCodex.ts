@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Access, AgentCapabilities, AgentDetails, AgentProvider, Attachment, CodexBridge, BridgeEvent, ConnectionSource, Item, Model, PendingMessage, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources, UsageLimits } from './types';
+import type { Access, AgentCapabilities, AgentDetails, AgentProvider, Attachment, CodexBridge, BridgeEvent, ConnectionSource, Item, Model, PendingMessage, RemoteDispatchContext, Request, SessionAttentionEvent, Settings, Thread, TurnWork, SettingSources, UsageLimits } from './types';
 import { agentName } from './AgentContext';
 import { mergeHistoricalTurnWork, observeTurnWork } from './turn-work';
 import { historicalCacheActivity, responseTime } from './cache-history';
@@ -22,6 +22,23 @@ type CompactionOperation = {
 type InterruptedTurn = { threadId: string; turnId: string };
 type RetryingTurn = { threadId: string; turnId: string; message: string };
 type AuthCompletion = { loggedIn?: boolean; error?: string; message?: string };
+export type WorkLifecycleEvent = {
+  threadId: string;
+  turnId: string;
+  kind: 'started' | 'completed';
+  status?: 'completed' | 'failed' | 'interrupted';
+  result?: string;
+  error?: string;
+};
+type LiveWorkTurn = { threadId: string; turnId: string | null; announced: boolean; messages: Map<string, Item> };
+const WORK_REPORT_LIMIT = 100_000;
+const WORK_REPORT_TRUNCATED = '\n\n[Итоговый отчёт сокращён: превышен предел 100000 символов.]';
+const workReport = (messages: Map<string, Item>) => {
+  const complete = [...messages.values()].filter(item => item.complete && typeof item.text === 'string' && item.text.trim());
+  const final = complete.filter(item => item.phase === 'final_answer');
+  const text = (final.length ? final : complete.filter(item => item.phase !== 'commentary').slice(-1)).map(item => item.text.trim()).join('\n\n');
+  return text.length > WORK_REPORT_LIMIT ? text.slice(0, WORK_REPORT_LIMIT - WORK_REPORT_TRUNCATED.length) + WORK_REPORT_TRUNCATED : text;
+};
 const STOPPED_NOTICE = 'Выполнение остановлено. Можно продолжить диалог.';
 const providerCapabilities = (provider: AgentProvider): AgentCapabilities => provider === 'claude'
   ? { compact: false, steer: false, terminal: false, mcp: false, archive: false, usage: false }
@@ -41,9 +58,17 @@ export function accessParams(access: Access, cwd: string, turn = false) {
   return { ...common, sandboxPolicy };
 }
 
-export function useCodex(bridge: CodexBridge = window.codex, options?: { restoreSettings?: Settings; restorePendingMessage?: PendingMessage; onAttention?(event: SessionAttentionEvent): void }) {
+export function useCodex(bridge: CodexBridge = window.codex, options?: { restoreSettings?: Settings; restorePendingMessage?: PendingMessage; onAttention?(event: SessionAttentionEvent): void; onWorkLifecycle?(event: WorkLifecycleEvent): void; canDispatchRemote?(context: RemoteDispatchContext): boolean; canStartMessage?(messageId?: string): boolean; flushPendingMessage?(): Promise<void> }) {
+  const remoteOptionsRef = useRef(options);
+  remoteOptionsRef.current = options;
   const attentionCallback = useRef(options?.onAttention);
   attentionCallback.current = options?.onAttention;
+  const workLifecycleCallback = useRef(options?.onWorkLifecycle);
+  workLifecycleCallback.current = options?.onWorkLifecycle;
+  // Live events are recorded before React batches a render. History never populates
+  // this ref, and each report belongs to one exact turn, not the last visible answer.
+  const liveWorkRef = useRef<LiveWorkTurn | null>(null);
+  const workSuppressedRef = useRef(false);
   const attentionSuppressed = useRef(false);
   const attentionSeen = useRef(new Set<string>());
   const reportAttention = useCallback((kind: SessionAttentionEvent['kind'], eventId: string) => {
@@ -68,6 +93,8 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const modelUnavailable = connectionSource !== 'inherited' && Boolean(model) && !models.some(candidate => candidate.model === model && !candidate.unavailable);
   const [effort, setEffort] = useState('');
   const [access, setAccess] = useState<Access>('workspace-write');
+  const liveSettingsRef = useRef({ cwd, model, effort, access, modelUnavailable });
+  liveSettingsRef.current = { cwd, model, effort, access, modelUnavailable };
   const [account, setAccount] = useState<any>(null);
   const [config, setConfig] = useState<any>(null);
   const [executable, setExecutable] = useState('');
@@ -118,6 +145,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const [pendingMessage, setPendingMessage] = useState<PendingMessage | null>(options?.restorePendingMessage || null);
   const pendingMessageRef = useRef<PendingMessage | null>(options?.restorePendingMessage || null);
   const acceptedMessagesRef = useRef(new Map<string, { turnId?: string; status?: string }>());
+  const rejectedMessagesRef = useRef(new Set<string>());
   const updatePendingMessage = (message: PendingMessage | null) => { pendingMessageRef.current = message; setPendingMessage(message); };
   const [diagnostics, setDiagnostics] = useState<string[]>([]);
   const threadRef = useRef<Thread | null>(null);
@@ -139,12 +167,42 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
   const lifecycleRef = useRef(0);
   const sendSequenceRef = useRef(0);
   const steerPendingRef = useRef(false);
+  // Shared preflight ownership. It covers persistence and asynchronous preparation,
+  // then yields to the existing active-turn/steer guards once the RPC is issued.
+  const dispatchRef = useRef<object | null>(null);
   const queuePauseRevisionRef = useRef(0);
   const attachmentCacheRef = useRef(new Map<string, Promise<string | null>>());
   const turnHistoryRef = useRef<{ cursor: string | null; known: Set<string> }>({ cursor: null, known: new Set() });
   const compactionRef = useRef<CompactionOperation | null>(null);
   const terminalRef = useRef<{ threadId: string; state: 'opening' | 'open' | 'restoring' } | null>(null);
   const restoreTerminalRef = useRef<(data: { threadId: string; error?: string }) => Promise<void>>(async () => {});
+  const remoteAllowed = (context: RemoteDispatchContext) => Boolean(
+    threadRef.current && threadRef.current.id === context.target.threadId
+    && providerRef.current === context.target.provider && resumedThreadRef.current === context.target.threadId
+    && !terminalRef.current && !loadingRef.current && !resumingRef.current && !connectingRef.current
+    && !authRef.current && !sourceChangingRef.current && connectionRef.current === 'ready'
+    && (context.kind === 'stop' || !liveSettingsRef.current.modelUnavailable)
+    && remoteOptionsRef.current?.canDispatchRemote?.(context)
+  );
+  const getRemoteSnapshot = () => ({
+    provider: providerRef.current, threadId: threadRef.current?.id || null, cwd: cwdRef.current,
+    threadReady: Boolean(threadRef.current && resumedThreadRef.current === threadRef.current.id),
+    connection: connectionRef.current, busy: activeRef.current, activeTurnId: turnRef.current,
+    terminal: Boolean(terminalRef.current), restoring: loadingRef.current || resumingRef.current || connectingRef.current,
+    pendingRequests: pendingRequestIdsRef.current.size,
+    question: requests.some(request => pendingRequestIdsRef.current.has(request.id) && ['item/tool/requestUserInput', 'mcpServer/elicitation/request'].includes(request.method)),
+    approval: requests.some(request => pendingRequestIdsRef.current.has(request.id) && !['item/tool/requestUserInput', 'mcpServer/elicitation/request'].includes(request.method)),
+    pendingMessage: pendingMessageRef.current, dispatching: Boolean(dispatchRef.current), steering: steerPendingRef.current,
+    compacting: Boolean(compactionRef.current), authInProgress: authRef.current,
+    settingsChanging: sourceChangingRef.current, modelUnavailable,
+  });
+  const resetWorkLifecycle = useCallback(() => { liveWorkRef.current = null; workSuppressedRef.current = false; }, []);
+  const getActiveWorkTurn = useCallback(() => {
+    const work = liveWorkRef.current;
+    return work?.turnId && work.threadId === threadRef.current?.id && activeRef.current && connectionRef.current === 'ready'
+      && !resumingRef.current && !compactionRef.current && !workSuppressedRef.current
+      ? { threadId: work.threadId, turnId: work.turnId } : null;
+  }, []);
   const updateInterrupted = useCallback((value: InterruptedTurn | null) => {
     interruptedRef.current = value; setInterruptedTurn(value);
   }, []);
@@ -306,6 +364,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     if (pendingMessageRef.current && !preservePending) { setNotice('Проверьте неподтверждённую отправку перед сменой диалога.'); return; }
     setRetry(null);
     attentionSuppressed.current = false;
+    resetWorkLifecycle();
     pauseQueue('Диалог отключён. Откройте прежний диалог перед продолжением очереди.');
     updateInterrupted(null);
     historyLoadSequenceRef.current++;
@@ -319,13 +378,15 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     threadRef.current = null; turnRef.current = null; activeRef.current = false;
     if (!preservePending) { pendingMessageRef.current = null; setPendingMessage(null); }
     acceptedMessagesRef.current.clear();
+    rejectedMessagesRef.current.clear();
     setThread(null); setItems([]); setTurnWork({}); setDiff(''); setDiffTurnId(undefined); setTurnDiffs({}); setPlan([]); setRequests([]); setItemCursor(null); setTokens(null); setBusy(false); setError('');
-  }, [invalidateCache, updateInterrupted, pauseQueue]);
+  }, [invalidateCache, updateInterrupted, pauseQueue, resetWorkLifecycle]);
 
   const detachThread = useCallback(() => {
     if (terminalRef.current) return;
     setRetry(null);
     attentionSuppressed.current = false;
+    resetWorkLifecycle();
     pauseQueue('Соединение восстанавливается. Проверьте историю перед продолжением очереди.');
     updateInterrupted(null);
     historyLoadSequenceRef.current++;
@@ -337,7 +398,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     pendingRequestIdsRef.current.clear(); setRequests([]);
     turnRef.current = null; activeRef.current = false; setBusy(false);
     setTurnWork(current => Object.fromEntries(Object.entries(current).map(([id, work]) => [id, work.status === 'inProgress' ? { ...work, status: 'disconnected' } : work])));
-  }, [invalidateCache, updateInterrupted, pauseQueue]);
+  }, [invalidateCache, updateInterrupted, pauseQueue, resetWorkLifecycle]);
 
   const connect = useCallback(async (directory?: string, options?: { keepThread?: boolean; refreshModels?: boolean }) => {
     if (connectingRef.current || terminalRef.current || authRef.current) return;
@@ -396,6 +457,15 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
 
   useEffect(() => {
     if (!bridge) { void connect(); return; }
+    const recordWorkMessage = (turnId: unknown, item: Item) => {
+      const work = liveWorkRef.current;
+      if (!work || item.type !== 'agentMessage' || !item.id || typeof turnId !== 'string' || !turnId
+        || work.threadId !== threadRef.current?.id || (work.turnId && work.turnId !== turnId)
+        || (turnRef.current && turnRef.current !== turnId) || settledTurnsRef.current.has(turnId)
+        || resumingRef.current || compactionRef.current || workSuppressedRef.current || connectionRef.current !== 'ready') return;
+      work.turnId = turnId;
+      work.messages.set(item.id, { ...work.messages.get(item.id), ...item, turnId });
+    };
     const upsert = (id: string, patch: Partial<Item> | ((item: Item) => Item), type = 'agentMessage') => {
       setItems(previous => {
         const index = previous.findIndex(item => item.id === id);
@@ -450,6 +520,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
           setTurnWork(current => Object.fromEntries(Object.entries(current).map(([id, work]) => [id, work.status === 'inProgress' ? { ...work, status: 'disconnected' } : work])));
           lifecycleRef.current++; sendSequenceRef.current++; invalidateCache(); updateConnection('error');
           compactionRef.current = null; setCompacting(false); setNotice('');
+          resetWorkLifecycle();
           setBusy(false); activeRef.current = false; turnRef.current = null;
           pendingRequestIdsRef.current.clear(); setRequests([]);
           setError(data.message || `Соединение с ${agentName(providerRef.current)} прервано. Подключитесь снова, затем откройте диалог из истории.`);
@@ -474,7 +545,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         if (connectionRef.current !== 'ready' || !p.turn?.id) return;
         if (settledTurnsRef.current.has(p.turn.id)) return;
         if (activeRef.current && turnRef.current && turnRef.current !== p.turn.id) return;
-        if (!activeRef.current) attentionSuppressed.current = false;
+        if (!activeRef.current) { attentionSuppressed.current = false; workSuppressedRef.current = false; }
         updateInterrupted(null);
         if (compactionRef.current) {
           const operation = matchCompactionTurn(p.turn.id);
@@ -487,6 +558,18 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         cacheTurnRef.current = { id: p.turn.id, observed, suppressed };
         lifecycleRef.current++;
         turnRef.current = p.turn.id; activeRef.current = true; setBusy(true); setDiff(''); setDiffTurnId(p.turn.id); setPlan([]);
+        if (!resumingRef.current && !compactionRef.current && !workSuppressedRef.current && threadRef.current) {
+          let work = liveWorkRef.current;
+          if (!work || work.threadId !== threadRef.current.id || (work.turnId && work.turnId !== p.turn.id)) {
+            work = { threadId: threadRef.current.id, turnId: p.turn.id, announced: false, messages: new Map() };
+            liveWorkRef.current = work;
+          }
+          work.turnId = p.turn.id;
+          if (!work.announced) {
+            work.announced = true;
+            workLifecycleCallback.current?.({ kind: 'started', threadId: work.threadId, turnId: p.turn.id });
+          }
+        }
       } else if (method === 'turn/completed') {
         const turnId = p.turn?.id;
         if (providerRef.current === 'claude') void refreshUsage();
@@ -504,6 +587,22 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         // A completion snapshot alone does not prove new work during attachment.
         // The loaded latest turn must win over replayed completions of older turns.
         if (resumingRef.current && !activeRef.current && !cacheTurnRef.current.observed) return;
+        const work = liveWorkRef.current;
+        let workCompletion: WorkLifecycleEvent | null = null;
+        if (work && work.threadId === threadRef.current?.id && (!work.turnId || work.turnId === turnId)
+          && activeRef.current && !resumingRef.current && !workSuppressedRef.current && connectionRef.current === 'ready') {
+          if (!work.announced) {
+            work.turnId = turnId; work.announced = true;
+            workLifecycleCallback.current?.({ kind: 'started', threadId: work.threadId, turnId });
+          }
+          // Some providers attach the authoritative final phase/text to the turn
+          // snapshot. Merge it only after this exact live completion was accepted.
+          for (const item of Array.isArray(p.turn.items) ? p.turn.items : []) recordWorkMessage(turnId, { ...item, complete: true });
+          const status = p.turn.status === 'interrupted' ? 'interrupted' : p.turn.status === 'completed' && !p.turn.error ? 'completed' : 'failed';
+          workCompletion = { kind: 'completed', threadId: work.threadId, turnId, status, result: workReport(work.messages),
+            ...(p.turn.error ? { error: typeof p.turn.error === 'string' ? p.turn.error : p.turn.error.message || `${agentName(providerRef.current)} завершил работу с ошибкой.` } : {}) };
+          liveWorkRef.current = null;
+        }
         setCompletedTurnRevision(value => value + 1);
         clearRetryOnResponse(p.threadId, turnId);
         observeTurn(p.turn);
@@ -538,10 +637,12 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         if (p.turn.status === 'interrupted' && threadRef.current) {
           updateInterrupted({ threadId: threadRef.current.id, turnId }); setNotice(STOPPED_NOTICE);
         } else updateInterrupted(null);
+        if (workCompletion) workLifecycleCallback.current?.(workCompletion);
         void refreshHistory();
       } else if (method === 'item/started' || method === 'item/completed') {
         const item = p.item;
         if (!item?.id) return;
+        recordWorkMessage(p.turnId, { ...item, complete: method === 'item/completed' });
         // Tool output may continue while the model is offline. Only model items
         // or streaming text confirm that this turn's response has resumed.
         if (['agentMessage', 'reasoning', 'plan'].includes(item.type)) clearRetryOnResponse(p.threadId, p.turnId);
@@ -585,6 +686,10 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         } else upsert(item.id, { ...item, turnId: p.turnId, complete: method === 'item/completed' });
       } else if (method === 'item/agentMessage/delta' || method === 'item/plan/delta') {
         if (p.delta) { clearRetryOnResponse(p.threadId, p.turnId); observeModelResponse(p.turnId, true); }
+        if (method === 'item/agentMessage/delta') {
+          const previous = liveWorkRef.current?.messages.get(p.itemId);
+          recordWorkMessage(p.turnId, { ...previous, id: p.itemId, type: 'agentMessage', text: (previous?.text || '') + (p.delta || '') });
+        }
         upsert(p.itemId, item => ({ ...item, text: (item.text || '') + p.delta, turnId: p.turnId }), method.includes('/plan/') ? 'plan' : 'agentMessage');
       } else if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
         if (p.delta) { clearRetryOnResponse(p.threadId, p.turnId); observeModelResponse(p.turnId, true); }
@@ -670,7 +775,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     });
     void connect();
     return unsubscribe;
-  }, [bridge, connect, detachThread, refreshHistory, restorePreviews, invalidateCache, observeModelResponse, updateConnection, updateLoading, observeTurn, matchCompactionTurn, finishCompaction, updateInterrupted, pauseQueue, reportAttention, clearRetryOnResponse]);
+  }, [bridge, connect, detachThread, refreshHistory, restorePreviews, invalidateCache, observeModelResponse, updateConnection, updateLoading, observeTurn, matchCompactionTurn, finishCompaction, updateInterrupted, pauseQueue, reportAttention, clearRetryOnResponse, resetWorkLifecycle]);
 
   const selectDirectory = async () => {
     if (terminalRef.current || authRef.current || busy || loading) return;
@@ -709,6 +814,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     if (pendingMessageRef.current && (fork || pendingMessageRef.current.threadId !== selected.id)) { setNotice('Проверьте неподтверждённую отправку перед сменой диалога.'); return false; }
     if (terminalRef.current || activeRef.current || loadingRef.current || connectionRef.current !== 'ready') return false;
     if ((selected.provider || 'codex') !== providerRef.current) { setError('Этот диалог принадлежит другому агенту. Откройте его в отдельной вкладке.'); return false; }
+    resetWorkLifecycle();
     updateInterrupted(null);
     updateLoading(true); setError(''); setRetry(null); setNotice('');
     const sameThread = threadRef.current?.id === selected.id;
@@ -980,6 +1086,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
 
   const readMessageStatus = async (clientUserMessageId: string, threadId = threadRef.current?.id) => {
     if (!threadId) return { accepted: false, rejected: false };
+    if (threadId === threadRef.current?.id && rejectedMessagesRef.current.has(clientUserMessageId)) return { accepted: false, rejected: true };
     const known = threadId === threadRef.current?.id ? acceptedMessagesRef.current.get(clientUserMessageId) : undefined;
     const receipt = known ? { accepted: true, ...known } : await bridge.request('message/status', { threadId, clientUserMessageId });
     if (receipt.accepted && threadRef.current?.id === threadId) {
@@ -1027,19 +1134,30 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     } catch (e) { setNotice(`Проверка отправки недоступна: ${errorText(e)}`); return { accepted: false, message }; }
   };
 
-  const send = async (text: string, attachments: Attachment[], silentCompletion = false, messageId?: string) => {
+  const send = async (text: string, attachments: Attachment[], silentCompletion = false, messageId?: string, remote?: RemoteDispatchContext) => {
+    const ownerMessageId = remote?.clientUserMessageId || messageId;
+    const ownsQueueHead = () => remoteOptionsRef.current?.canStartMessage?.(ownerMessageId) !== false;
+    if (!ownsQueueHead()) return false;
+    if (dispatchRef.current) return false;
+    if (remote && (!['send', 'enqueue'].includes(remote.kind) || !remote.clientUserMessageId || attachments.length || !remoteAllowed(remote))) return false;
     if (sourceChangingRef.current || modelUnavailable) return false;
     if (pendingMessageRef.current) { setNotice('Проверьте неподтверждённую отправку перед новым сообщением.'); return false; }
     if (terminalRef.current || activeRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size || (!text.trim() && !attachments.length)) return false;
     const selected = threadRef.current;
     if (selected && resumedThreadRef.current !== selected.id) {
+      if (remote) return false;
       // Retry attachment before storing images or creating an optimistic item.
       // A failed resume must never fall through to turn/start (or a new thread).
       if (!await resume(selected, true)) return false;
       if (threadRef.current?.id !== selected.id || activeRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size) return false;
     }
+    if (!ownsQueueHead() || dispatchRef.current) return false;
     const previousInterrupted = interruptedRef.current;
+    const dispatch = {};
+    dispatchRef.current = dispatch;
     attentionSuppressed.current = silentCompletion;
+    liveWorkRef.current = null;
+    workSuppressedRef.current = silentCompletion;
     const lifecycle = lifecycleRef.current;
     updateInterrupted(null);
     cacheTurnRef.current = { id: null, observed: false, suppressed: false };
@@ -1047,13 +1165,16 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     const sequence = ++sendSequenceRef.current;
     let clientId: string | undefined;
     let submittedThreadId: string | undefined;
+    let issued = false;
+    let remotePending: PendingMessage | null = null;
     try {
       const saved = attachments.length ? await bridge.saveImages(attachments) : [];
-      if (sendSequenceRef.current !== sequence || connectionRef.current !== 'ready') return false;
+      if (sendSequenceRef.current !== sequence || connectionRef.current !== 'ready' || !ownsQueueHead()) return false;
       let current = threadRef.current;
+      if (remote && (!current || current.id !== remote.target.threadId || !remoteAllowed(remote))) return false;
       if (!current) {
         const result = await bridge.request('thread/start', { cwd, ...accessParams(access, cwd), ...(model ? { model } : {}) });
-        if (sendSequenceRef.current !== sequence || connectionRef.current !== 'ready') return false;
+        if (sendSequenceRef.current !== sequence || connectionRef.current !== 'ready' || !ownsQueueHead()) return false;
         current = result.thread as Thread; threadRef.current = current; setThread(current);
         resumedThreadRef.current = current.id; setThreadReady(true);
         if (result.model) setModel(result.model);
@@ -1061,26 +1182,71 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       const input: any[] = [];
       if (text.trim()) input.push({ type: 'text', text: text.trim(), text_elements: [] });
       saved.forEach(image => input.push({ type: 'localImage', path: image.path }));
-      clientId = messageId || crypto.randomUUID();
+      clientId = remote?.clientUserMessageId || messageId || crypto.randomUUID();
+      if (remote) {
+        remotePending = { threadId: current.id, clientUserMessageId: clientId, kind: 'start', text, attachments, origin: 'remote', remote };
+        updatePendingMessage(remotePending);
+        const flush = remoteOptionsRef.current?.flushPendingMessage;
+        if (!flush) throw new Error('Не удалось сохранить удалённую отправку.');
+        await flush();
+        if (!remoteAllowed(remote) || sendSequenceRef.current !== sequence || pendingMessageRef.current !== remotePending || pendingRequestIdsRef.current.size || compactionRef.current || !ownsQueueHead()) return false;
+      }
       setItems(previous => [...previous, { id: clientId!, clientId, type: 'userMessage', content: input, previews: saved, optimistic: true }]);
       submittedThreadId = current.id;
+      if (!silentCompletion) liveWorkRef.current = { threadId: current.id, turnId: null, announced: false, messages: new Map() };
+      const dispatchSettings = remote ? liveSettingsRef.current : { cwd, model, effort, access };
+      if (dispatchRef.current === dispatch) dispatchRef.current = null;
+      issued = true;
       const result = await bridge.request('turn/start', {
-        threadId: current.id, clientUserMessageId: clientId, input, cwd,
-        ...accessParams(access, cwd, true), ...(model ? { model } : {}), ...(effort ? { effort } : {}),
+        threadId: current.id, clientUserMessageId: clientId, input, cwd: dispatchSettings.cwd,
+        ...accessParams(dispatchSettings.access, dispatchSettings.cwd, true),
+        ...(dispatchSettings.model ? { model: dispatchSettings.model } : {}), ...(dispatchSettings.effort ? { effort: dispatchSettings.effort } : {}),
+        ...(remote ? { _remote: remote } : {}),
       });
+      if (threadRef.current?.id === current.id) acceptedMessagesRef.current.set(clientId, { turnId: result.turn?.id, status: result.turn?.status || 'inProgress' });
+      if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null);
       if (sendSequenceRef.current === sequence && threadRef.current?.id === current.id && result.turn?.id) {
         observeTurn({ ...result.turn, status: result.turn.status || 'inProgress' });
         setItems(previous => previous.map(item => item.clientId === clientId && !item.turnId ? { ...item, turnId: result.turn.id } : item));
       }
       if (sendSequenceRef.current === sequence && activeRef.current && (!turnRef.current || turnRef.current === result.turn.id) && !settledTurnsRef.current.has(result.turn.id)) {
         turnRef.current = result.turn.id; cacheTurnRef.current.id = result.turn.id;
+        const work = liveWorkRef.current;
+        if (work?.threadId === current.id && (!work.turnId || work.turnId === result.turn.id)) {
+          work.turnId = result.turn.id;
+          if (!work.announced) {
+            work.announced = true;
+            workLifecycleCallback.current?.({ kind: 'started', threadId: work.threadId, turnId: result.turn.id });
+          }
+        }
       }
       void refreshHistory();
       return true;
     } catch (e) {
-      if (clientId && submittedThreadId && /timed?\s*out|timeout|не ответил|stream.*closed|exited|not running|соединени|подключени|поток.*закрыт|cli.*завершился/i.test(errorText(e))) {
-        try { if ((await readMessageStatus(clientId, submittedThreadId)).accepted) { setNotice('Сервер принял сообщение; подтверждение отправки восстановлено.'); return true; } } catch { /* The connection may still be unavailable. */ }
-        updatePendingMessage({ threadId: submittedThreadId, clientUserMessageId: clientId, kind: 'start', text, attachments });
+      const remoteBlocked = remote && (!issued || (e as { code?: string })?.code === 'REMOTE_BLOCKED' || /\bREMOTE_BLOCKED\b/.test(errorText(e)));
+      if (remoteBlocked) {
+        if (clientId) rejectedMessagesRef.current.add(clientId);
+        if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null);
+        if (clientId) setItems(previous => previous.filter(item => item.id !== clientId));
+        // A native/background turn may have started while host persistence was
+        // pending. Rejecting our unissued request must not fail that live turn.
+        if (sendSequenceRef.current === sequence && !turnRef.current) { activeRef.current = false; setBusy(false); resetWorkLifecycle(); }
+        setNotice('Удалённая отправка заблокирована до передачи агенту.');
+        return false;
+      } else if (clientId && submittedThreadId && (remote || /timed?\s*out|timeout|не ответил|stream.*closed|exited|not running|соединени|подключени|поток.*закрыт|cli.*завершился/i.test(errorText(e)))) {
+        try {
+          const receipt = await readMessageStatus(clientId, submittedThreadId);
+          if (receipt.accepted) { if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null); setNotice('Сервер принял сообщение; подтверждение отправки восстановлено.'); return true; }
+          if (remote && receipt.rejected) {
+            rejectedMessagesRef.current.add(clientId);
+            if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null);
+            setItems(previous => previous.filter(item => item.id !== clientId));
+            if (sendSequenceRef.current === sequence && !turnRef.current) { activeRef.current = false; setBusy(false); resetWorkLifecycle(); }
+            pauseQueue('Агент отклонил удалённое сообщение. Очередь приостановлена.');
+            return false;
+          }
+        } catch { /* The connection may still be unavailable. */ }
+        updatePendingMessage({ threadId: submittedThreadId, clientUserMessageId: clientId, kind: 'start', text, attachments, ...(remote ? { origin: 'remote' as const, remote } : {}) });
         pauseQueue('Отправка не подтверждена. Повторная отправка заблокирована до сверки идентификатора.');
         setError(''); setNotice('Отправка не подтверждена. Сообщение могло быть принято сервером.');
         // A timeout is not a failed turn: retain live lifecycle, optimistic message and stop control.
@@ -1090,6 +1256,7 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       // A reply from a previous request must not tear down a newer live turn.
       pauseQueue('Отправка завершилась с ошибкой. Проверьте историю перед продолжением очереди.');
       if (sendSequenceRef.current === sequence) {
+        resetWorkLifecycle();
         if (!silentCompletion) reportAttention('error', `turn:${turnRef.current || `send-${sequence}`}`);
         if (turnRef.current) { settledTurnsRef.current.add(turnRef.current); observeTurn({ id: turnRef.current, status: 'failed' }); }
         if (/thread.*not found|already has an active writer/i.test(errorText(e))) { resumedThreadRef.current = null; setThreadReady(false); }
@@ -1100,6 +1267,13 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       }
       if (clientId) setItems(previous => previous.filter(item => item.id !== clientId));
       return false;
+    } finally {
+      if (dispatchRef.current === dispatch) dispatchRef.current = null;
+      if (remote && !issued) {
+        if (clientId) rejectedMessagesRef.current.add(clientId);
+        if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null);
+      }
+      if (!issued && sendSequenceRef.current === sequence && !turnRef.current) { activeRef.current = false; setBusy(false); resetWorkLifecycle(); }
     }
   };
 
@@ -1110,14 +1284,20 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     return send(text, [], true);
   };
 
-  const steer = async (text: string, attachments: Attachment[]) => {
+  const steer = async (text: string, attachments: Attachment[], remote?: RemoteDispatchContext) => {
+    if (dispatchRef.current) return false;
+    if (remote && (remote.kind !== 'steer' || !remote.clientUserMessageId || !remote.expectedTurnId || attachments.length || !remoteAllowed(remote))) return false;
     if (pendingMessageRef.current) { setNotice('Проверьте неподтверждённую отправку перед уточнением.'); return false; }
     if (!capabilities.steer) { setError(`Уточнения во время выполнения для ${agentName(provider)} пока недоступны. Добавьте сообщение в очередь.`); return false; }
     const current = threadRef.current;
-    const expectedTurnId = turnRef.current;
-    if (!current || !expectedTurnId || !activeRef.current || steerPendingRef.current || terminalRef.current || compactionRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size || (!text.trim() && !attachments.length)) return false;
+    const expectedTurnId = remote?.expectedTurnId || turnRef.current;
+    if (!current || !expectedTurnId || turnRef.current !== expectedTurnId || !activeRef.current || steerPendingRef.current || terminalRef.current || compactionRef.current || loadingRef.current || connectionRef.current !== 'ready' || pendingRequestIdsRef.current.size || (!text.trim() && !attachments.length)) return false;
+    const dispatch = {};
+    dispatchRef.current = dispatch;
     steerPendingRef.current = true; setSteering(true); setError('');
     let clientId: string | undefined;
+    let issued = false;
+    let remotePending: PendingMessage | null = null;
     try {
       const saved = attachments.length ? await bridge.saveImages(attachments) : [];
       // Images can take time to save. Never steer a later turn or fall back to start.
@@ -1127,14 +1307,46 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       const input: any[] = [];
       if (text.trim()) input.push({ type: 'text', text: text.trim(), text_elements: [] });
       saved.forEach(image => input.push({ type: 'localImage', path: image.path }));
-      clientId = crypto.randomUUID();
+      clientId = remote?.clientUserMessageId || crypto.randomUUID();
+      if (remote) {
+        remotePending = { threadId: current.id, clientUserMessageId: clientId, kind: 'steer', text, attachments, origin: 'remote', remote };
+        updatePendingMessage(remotePending);
+        const flush = remoteOptionsRef.current?.flushPendingMessage;
+        if (!flush) throw new Error('Не удалось сохранить удалённое уточнение.');
+        await flush();
+        if (!remoteAllowed(remote) || turnRef.current !== expectedTurnId || !activeRef.current || pendingMessageRef.current !== remotePending || pendingRequestIdsRef.current.size || compactionRef.current) return false;
+      }
       setItems(previous => [...previous, { id: clientId!, clientId, type: 'userMessage', content: input, previews: saved, optimistic: true, turnId: expectedTurnId }]);
-      await bridge.request('turn/steer', { threadId: current.id, expectedTurnId, clientUserMessageId: clientId, input });
+      if (dispatchRef.current === dispatch) dispatchRef.current = null;
+      issued = true;
+      const result = await bridge.request('turn/steer', { threadId: current.id, expectedTurnId, clientUserMessageId: clientId, input, ...(remote ? { _remote: remote } : {}) });
+      // ACK means the provider owns the frame, not that Claude consumed it in this
+      // turn. Later native echo/result may move the same UUID to its follow-up turn.
+      if (threadRef.current?.id === current.id && !acceptedMessagesRef.current.has(clientId)) acceptedMessagesRef.current.set(clientId, { turnId: result?.turnId || expectedTurnId });
+      if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null);
       return true;
     } catch (e) {
-      if (clientId && /timed?\s*out|timeout|не ответил|stream.*closed|exited|not running|соединени|подключени|поток.*закрыт|cli.*завершился/i.test(errorText(e))) {
-        try { if ((await readMessageStatus(clientId, current.id)).accepted) return true; } catch { /* Remain uncertain. */ }
-        updatePendingMessage({ threadId: current.id, clientUserMessageId: clientId, kind: 'steer', text, attachments });
+      const remoteBlocked = remote && (!issued || (e as { code?: string })?.code === 'REMOTE_BLOCKED' || /\bREMOTE_BLOCKED\b/.test(errorText(e)));
+      if (remoteBlocked) {
+        if (clientId) rejectedMessagesRef.current.add(clientId);
+        if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null);
+        if (clientId) setItems(previous => previous.filter(item => item.id !== clientId));
+        setNotice('Удалённое уточнение заблокировано до передачи агенту.');
+        return false;
+      }
+      if (clientId && (remote || /timed?\s*out|timeout|не ответил|stream.*closed|exited|not running|соединени|подключени|поток.*закрыт|cli.*завершился/i.test(errorText(e)))) {
+        try {
+          const receipt = await readMessageStatus(clientId, current.id);
+          if (receipt.accepted) { if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null); return true; }
+          if (remote && receipt.rejected) {
+            rejectedMessagesRef.current.add(clientId);
+            if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null);
+            setItems(previous => previous.filter(item => item.id !== clientId));
+            pauseQueue('Агент отклонил удалённое уточнение. Очередь приостановлена.');
+            return false;
+          }
+        } catch { /* Remain uncertain. */ }
+        updatePendingMessage({ threadId: current.id, clientUserMessageId: clientId, kind: 'steer', text, attachments, ...(remote ? { origin: 'remote' as const, remote } : {}) });
         setError(''); setNotice('Уточнение не подтверждено. Текст сохранён, повторная отправка заблокирована до сверки.');
         pauseQueue('Уточнение не подтверждено. Проверьте отправку.');
         return false;
@@ -1143,10 +1355,17 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
       setError(`Уточнение не подтверждено: ${errorText(e)}. Текст сохранён. Проверьте историю перед повторной отправкой.`);
       pauseQueue('Уточнение не подтверждено. Проверьте историю.');
       return false;
-    } finally { steerPendingRef.current = false; setSteering(false); }
+    } finally {
+      if (dispatchRef.current === dispatch) dispatchRef.current = null;
+      if (remote && !issued) {
+        if (clientId) rejectedMessagesRef.current.add(clientId);
+        if (remotePending && pendingMessageRef.current === remotePending) updatePendingMessage(null);
+      }
+      steerPendingRef.current = false; setSteering(false);
+    }
   };
 
-  const canSendQueued = (pauseRevision = queuePause.revision) => !modelUnavailable && !sourceChangingRef.current && !pendingMessageRef.current && pauseRevision === queuePauseRevisionRef.current && !terminalRef.current && !activeRef.current && !loadingRef.current && !steerPendingRef.current && connectionRef.current === 'ready' && !pendingRequestIdsRef.current.size && (!threadRef.current || resumedThreadRef.current === threadRef.current.id);
+  const canSendQueued = (pauseRevision = queuePause.revision) => !dispatchRef.current && !modelUnavailable && !sourceChangingRef.current && !pendingMessageRef.current && pauseRevision === queuePauseRevisionRef.current && !terminalRef.current && !activeRef.current && !loadingRef.current && !steerPendingRef.current && connectionRef.current === 'ready' && !pendingRequestIdsRef.current.size && (!threadRef.current || resumedThreadRef.current === threadRef.current.id);
 
   const continueTurn = async () => {
     const stopped = interruptedRef.current;
@@ -1234,18 +1453,32 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     }
   };
 
-  const stop = async () => {
-    if (terminalRef.current) return;
-    pauseQueue('Выполнение остановлено пользователем.');
-    invalidateCache();
-    if (!threadRef.current) return;
+  const stop = async (remote?: RemoteDispatchContext) => {
+    if (terminalRef.current || dispatchRef.current) return false;
+    if (remote && (remote.kind !== 'stop' || !remote.expectedTurnId || !remoteAllowed(remote) || !activeRef.current || turnRef.current !== remote.expectedTurnId)) return false;
+    if (!threadRef.current) return false;
+    const dispatch = {};
+    dispatchRef.current = dispatch;
     const threadId = threadRef.current.id;
     const sequence = sendSequenceRef.current;
-    const isCurrent = () => activeRef.current && threadRef.current?.id === threadId && sendSequenceRef.current === sequence;
+    const isCurrent = () => activeRef.current && threadRef.current?.id === threadId && sendSequenceRef.current === sequence
+      && (!remote || (turnRef.current === remote.expectedTurnId && remoteAllowed(remote)));
+    let issued = false;
     try {
+      if (remote) {
+        const flush = remoteOptionsRef.current?.flushPendingMessage;
+        if (!flush) return false;
+        await flush();
+        if (!isCurrent()) return false;
+      }
+      pauseQueue('Выполнение остановлено пользователем.');
+      invalidateCache();
       if (!turnRef.current) {
+        // A remote button always names an exact turn. Never discover and stop a
+        // newer turn as a fallback for an old or unacknowledged button.
+        if (remote) return false;
         const result = await bridge.request('thread/read', { threadId, includeTurns: true });
-        if (!isCurrent()) return;
+        if (!isCurrent()) return false;
         turnRef.current = result.thread.turns?.find((turn: any) => turn.status === 'inProgress')?.id || null;
         if (compactionRef.current && turnRef.current) {
           const operation = matchCompactionTurn(turnRef.current);
@@ -1254,9 +1487,16 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
         }
       }
       if (!turnRef.current) throw new Error(`${agentName(providerRef.current)} ещё запускает запрос. Повторите остановку через секунду.`);
-      if (!isCurrent()) return;
-      await bridge.request('turn/interrupt', { threadId, turnId: turnRef.current });
-    } catch (e) { if (isCurrent()) setError(errorText(e)); }
+      if (!isCurrent()) return false;
+      if (dispatchRef.current === dispatch) dispatchRef.current = null;
+      issued = true;
+      await bridge.request('turn/interrupt', { threadId, turnId: turnRef.current, ...(remote ? { _remote: remote } : {}) });
+      return true;
+    } catch (e) {
+      if (remote && issued && (e as { code?: string })?.code !== 'REMOTE_BLOCKED' && !/\bREMOTE_BLOCKED\b/.test(errorText(e))) throw e;
+      if (isCurrent()) setError(errorText(e));
+      return false;
+    } finally { if (dispatchRef.current === dispatch) dispatchRef.current = null; }
   };
 
   const respond = async (request: Request, result: any, options?: { remember?: boolean }) => {
@@ -1271,6 +1511,6 @@ export function useCodex(bridge: CodexBridge = window.codex, options?: { restore
     canContinue: Boolean(interruptedTurn && notice === STOPPED_NOTICE), requests, diff, diffTurnId, turnDiffs, plan, tokens, diagnostics,
     cacheActivityAt, cacheGeneration, cacheTurnCompleted, completedTurnRevision, queueCompletion, queuePause, steering, usage, usageLoading, refreshUsage, agentDetails, agentDetailsLoading, refreshAgentDetails,
     connect, reconnect, connectionSource, sourceChanging, modelUnavailable, selectConnectionSource, selectProvider, selectDirectory, selectExecutable, selectModel, selectEffort, selectAccess, refreshHistory, clearThread,
-    resume, loadEarlier, readFullHistory, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice, pendingMessage, reconcileMessage, reconcileQueuedMessage,
+    resume, loadEarlier, readFullHistory, send, steer, canSendQueued, sendPing, continueTurn, compact, openTerminal, stop, respond, setError, setNotice, pendingMessage, reconcileMessage, reconcileQueuedMessage, getActiveWorkTurn, getRemoteSnapshot, getMessageReceipt: readMessageStatus,
   };
 }

@@ -1,5 +1,10 @@
 # Восстановление рабочего места
 
+2026-10-12: snapshot также сохраняет `childOf/childLabel` исполнителя (включая пустой черновик)
+и `executorAutoReview` родителя: участников, отчёты, точные round/message ID и исход доставки.
+Host проверяет владельца по реальным cwd/provider и выбранному диалогу; Авто восстанавливается
+выключенным, зарезервированная доставка — неподтверждённой. Подробности в [SUBAGENTS.md](SUBAGENTS.md).
+
 Поручено 2026-09-19, пункт 1 [списка идей](ROADMAP.md). Реализация расширяет существующий снимок Nightly на обычное закрытие и аварийное завершение. Рабочие вкладки и черновики принадлежат оболочке; история, авторизация и конфигурация по-прежнему принадлежат Codex.
 
 ## Поведение
@@ -23,6 +28,13 @@
 - `nightly-update-workspace.json` имеет приоритет. `restore.kind` различает `workspace`/`update`; подтверждение восстановления удаляет только одноразовый Nightly checkpoint. Подготовка Nightly также сохраняет постоянный снимок. Ранее восстановление существовало только для специального Nightly restart; старые ограничения в [TABS.md](TABS.md) и [RELEASES.md](RELEASES.md) относятся к прежней реализации.
 
 ## Проверки
+
+2026-10-13: общий writer workspace/Nightly повторяет только Windows `rename` при
+`EPERM/EBUSY` (10 попыток, до 750 мс суммарных задержек), сохраняя прежний файл
+при окончательном отказе. `flush` больше не поглощает отказ записи; чтение старого
+снимка его не сбрасывает. Детерминированные файловые инъекции и native send barrier —
+`tests/workspace-writer-retry.test.mjs`, `tests/remote-dispatch-hooks.test.mjs`;
+границы исходного инцидента и результаты — [REMOTE_CONTROL](REMOTE_CONTROL.md).
 
 `tests/workspace-state.test.mjs` проверяет ограничения, атомарность, повреждённые файлы, очередь/доступ, close handshake и изоляцию от Nightly checkpoint. `scripts/ui-workspace-state.mjs` — настоящий production renderer с mock bridge: несколько вкладок, busy autosave, изображения, preservedDraft, delayed/paginated history и anchor, ошибка/retry, close freeze, пустое рабочее место, отсутствие model calls.
 

@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Attachment, MessageQueueState } from './types';
+import type { Attachment, MessageQueueState, RemoteDispatchContext } from './types';
 
 type QueueSession = {
   busy: boolean; blocked: boolean; completion: number; pause: { revision: number; reason: string };
   canSend(pauseRevision?: number): boolean;
   send(text: string, attachments: Attachment[], silentCompletion?: boolean, messageId?: string): Promise<boolean>;
+  sendRemote?(text: string, attachments: Attachment[], context: RemoteDispatchContext): Promise<boolean>;
+  /** Identity/grant validity, independent of temporary busy or this queue's inFlight. */
+  canRemote?(context: RemoteDispatchContext): boolean;
   reconcile?(id: string): Promise<{ accepted: boolean; rejected?: boolean }>;
   flush?(): Promise<void>;
 };
@@ -18,6 +21,10 @@ export function useMessageQueue(initial: MessageQueueState | undefined, session:
   const [inFlight, setInFlight] = useState<string | null>(null);
   const flightRef = useRef<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  // Remote enqueue is admitted by the host and persisted by App separately from
+  // this hook's normal queue snapshot. Keep its head inert until the caller has
+  // durably committed the operation and explicitly releases it.
+  const heldRemoteRef = useRef(new Set<string>());
   const completion = useRef(session.completion);
   const pauseRevision = useRef(session.pause.revision);
   const mayAdvance = useRef(false);
@@ -37,7 +44,12 @@ export function useMessageQueue(initial: MessageQueueState | undefined, session:
       mayAdvance.current = true;
     }
     const first = current.current.items[0];
-    if (!first || first.state === 'uncertain' || current.current.paused || flightRef.current || editing || session.busy || session.blocked || !mayAdvance.current || !session.canSend()) return;
+    if (!first || heldRemoteRef.current.has(first.id) || first.state === 'uncertain' || current.current.paused || flightRef.current || editing || session.busy || session.blocked || !mayAdvance.current || !session.canSend()) return;
+    if (first.remote && (!session.sendRemote || !session.canRemote?.(first.remote))) {
+      update({ ...current.current, items: current.current.items.filter(item => item.id !== first.id), paused: true, reason: 'Удалённое сообщение отменено: доступ или привязка беседы изменились.' });
+      mayAdvance.current = false;
+      return;
+    }
     mayAdvance.current = false;
     const pauseFence = session.pause.revision;
     flightRef.current = first.id; setInFlight(first.id);
@@ -49,16 +61,29 @@ export function useMessageQueue(initial: MessageQueueState | undefined, session:
       try {
         await sessionRef.current.flush?.();
         if (!alive.current) return;
+        if (first.remote && !sessionRef.current.canRemote?.(first.remote)) {
+          update({ ...current.current, items: current.current.items.filter(item => item.id !== first.id), paused: true, reason: 'Удалённое сообщение отменено: доступ или привязка беседы изменились.' });
+          return;
+        }
         if (current.current.paused || sessionRef.current.blocked || !sessionRef.current.canSend(pauseFence)) {
           update({ ...current.current, items: current.current.items.map(item => item.id === first.id ? { ...item, state: 'waiting' } : item) });
           pause('Отправка отложена. Нажмите «Продолжить очередь», когда диалог будет готов.');
           return;
         }
         started = true;
-        const sent = await sessionRef.current.send(first.text, first.attachments, false, first.id);
+        const sent = first.remote
+          ? await sessionRef.current.sendRemote!(first.text, first.attachments, first.remote)
+          : await sessionRef.current.send(first.text, first.attachments, false, first.id);
         if (!alive.current) return;
-        if (sent) update({ ...current.current, items: current.current.items.filter(item => item.id !== first.id) });
-        else pause('Отправка не подтверждена. Проверьте историю: сообщение могло быть принято.');
+        if (sent) { heldRemoteRef.current.delete(first.id); update({ ...current.current, items: current.current.items.filter(item => item.id !== first.id) }); }
+        else if (first.remote && sessionRef.current.reconcile) {
+          const receipt = await sessionRef.current.reconcile(first.id);
+          if (!alive.current) return;
+          if (receipt.accepted || receipt.rejected) { heldRemoteRef.current.delete(first.id); update({ ...current.current, items: current.current.items.filter(item => item.id !== first.id) }); }
+          pause(receipt.accepted ? 'Сообщение уже принято. Повторная отправка не нужна.'
+            : receipt.rejected ? 'Удалённое сообщение не передано агенту. Очередь приостановлена.'
+              : 'Отправка не подтверждена. Проверьте историю: сообщение могло быть принято.');
+        } else pause('Отправка не подтверждена. Проверьте историю: сообщение могло быть принято.');
       } catch {
         if (alive.current) {
           if (!started) update({ ...current.current, items: current.current.items.map(item => item.id === first.id ? { ...item, state: 'waiting' } : item) });
@@ -74,17 +99,39 @@ export function useMessageQueue(initial: MessageQueueState | undefined, session:
   return {
     state, inFlight, editing, setEditing,
     snapshot: () => current.current,
-    enqueue: (text: string, attachments: Attachment[]) => {
-      if (!text.trim() && !attachments.length) return;
-      update({ ...current.current, items: [...current.current.items, { id: crypto.randomUUID(), text, attachments, state: 'waiting' }] });
+    enqueue: (text: string, attachments: Attachment[], options?: { id?: string; remote?: RemoteDispatchContext; holdUntilPersisted?: boolean }) => {
+      if ((!text.trim() && !attachments.length) || current.current.items.length >= 50) return false;
+      const remote = options?.remote;
+      if (remote && (remote.kind !== 'enqueue' || !remote.clientUserMessageId || attachments.length || !sessionRef.current.canRemote?.(remote))) return false;
+      const id = options?.id || remote?.clientUserMessageId || crypto.randomUUID();
+      if ((remote && id !== remote.clientUserMessageId) || current.current.items.some(item => item.id === id)) return false;
+      if (remote && options?.holdUntilPersisted) heldRemoteRef.current.add(id);
+      if (!current.current.paused && !sessionRef.current.busy) mayAdvance.current = true;
+      update({ ...current.current, items: [...current.current.items, { id, text, attachments, state: 'waiting', ...(remote ? { remote } : {}) }] });
+      return true;
+    },
+    releaseRemote: (id: string) => {
+      if (!heldRemoteRef.current.delete(id)) return false;
+      // A new object identity wakes the queue effect after admission has been
+      // durably committed; no local draft or ordering field is changed.
+      update({ ...current.current });
+      return true;
+    },
+    cancelRemote: (matches: (context: RemoteDispatchContext) => boolean) => {
+      const removed = current.current.items.filter(item => item.remote && item.state !== 'uncertain' && flightRef.current !== item.id && matches(item.remote));
+      if (!removed.length) return [];
+      const ids = new Set(removed.map(item => item.id));
+      for (const id of ids) heldRemoteRef.current.delete(id);
+      update({ ...current.current, items: current.current.items.filter(item => !ids.has(item.id)) });
+      return [...ids];
     },
     remove: (id: string) => {
-      if (flightRef.current === id) return;
+      if (flightRef.current === id || current.current.items.find(item => item.id === id)?.remote) return;
       if (editing === id) setEditing(null);
       update({ ...current.current, items: current.current.items.filter(item => item.id !== id) });
     },
     edit: (id: string, text: string, attachments: Attachment[]) => {
-      if (flightRef.current === id || (!text.trim() && !attachments.length)) return;
+      if (flightRef.current === id || current.current.items.find(item => item.id === id)?.remote || (!text.trim() && !attachments.length)) return;
       update({ ...current.current, items: current.current.items.map(item => item.id === id ? { ...item, text, attachments } : item) });
       setEditing(null);
     },
@@ -95,6 +142,7 @@ export function useMessageQueue(initial: MessageQueueState | undefined, session:
         const receipt = await sessionRef.current.reconcile(id);
         if (!alive.current) return;
         if (receipt.accepted) update({ ...current.current, paused: true, reason: 'Сообщение уже принято. Оно удалено из очереди без повторной отправки.', items: current.current.items.filter(item => item.id !== id) });
+        else if (receipt.rejected && current.current.items.find(item => item.id === id)?.remote) update({ ...current.current, paused: true, reason: 'Агент отклонил сообщение с телефона. Запись удалена без повторной отправки; новый запрос отправьте отдельно.', items: current.current.items.filter(item => item.id !== id) });
         else if (receipt.rejected) update({ ...current.current, paused: true, reason: 'Сервер отклонил сообщение. Можно изменить его и продолжить очередь.', items: current.current.items.map(item => item.id === id ? { ...item, state: 'waiting' } : item) });
         else pause('Подтверждение не найдено. Сообщение могло быть принято; повторная отправка заблокирована. Проверьте позже.');
       } catch { if (alive.current) pause('Проверка отправки недоступна. Повторная отправка заблокирована.'); }

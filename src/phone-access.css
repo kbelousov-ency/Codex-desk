@@ -1,0 +1,18 @@
+.phone-access{margin:14px 0;padding:14px 16px;border:1px solid #3c493d;border-radius:9px;background:#20281f}
+.phone-access h3{display:flex;align-items:center;gap:6px;margin:0 0 10px;font-size:12px;font-weight:550;color:#c8d6c8}
+.phone-access>p{margin:10px 0;font-size:11px;line-height:1.75;color:#92a696}
+.phone-access-status{display:flex;align-items:flex-start;gap:7px;font-size:12px;line-height:1.6;color:#c4d2c6}
+.phone-access-status>svg{margin-top:3px;flex-shrink:0}
+.phone-access-threads{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:10px}
+.phone-access-thread{display:flex;flex-direction:column;gap:5px;min-width:0}
+.phone-access-thread-switch{display:flex;align-items:center;gap:8px;width:100%;text-align:left;border:1px solid #465644;border-radius:6px;background:#2b352c;color:#bbcbbd;padding:7px 10px;font-size:11px;font-weight:500}
+.phone-access-thread-switch:hover:not(:disabled){background:#354334}
+.phone-access-thread-switch.enabled{border-color:#6f8c6c;background:#31402f;color:#d2e3cf}
+.phone-access-thread-switch:disabled{opacity:.6}
+.phone-access-thread-switch>svg{flex-shrink:0}
+.phone-access-thread-name{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.phone-access-thread-name strong{font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.phone-access-thread-name small{font-size:10px;color:#8ea291;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.phone-access-thread-value{flex-shrink:0;font-size:9px;padding:1px 5px;border-radius:4px;border:1px solid #4d5c4b;color:#9db0a0}
+.phone-access-thread-switch.enabled .phone-access-thread-value{border-color:#8aa883;color:#cfe2c7}
+.phone-access-thread-hint{font-size:10px;line-height:1.75;color:#7f9484;overflow-wrap:anywhere}

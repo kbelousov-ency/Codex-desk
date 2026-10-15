@@ -181,7 +181,7 @@ test('failed write keeps atomic previous bytes and queue recovers on subsequent 
   const blocker = path.join(directory, 'workspace-state.json');
   await rm(blocker); await mkdir(blocker);
   await assert.rejects(store.save(value));
-  await store.flush();
+  await assert.rejects(store.flush());
   assert.deepEqual(await readdir(directory), ['workspace-state.json'], 'Failed temporary write is cleaned up');
   await rm(blocker, { recursive: true });
   await store.save(value);

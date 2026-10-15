@@ -1,6 +1,6 @@
 {
   "name": "codex-desk",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "private": true,
   "description": "Local desktop interface for Codex CLI",
   "type": "module",
@@ -101,6 +101,7 @@
     "test:archive-host": "node scripts/ui-archive-host.mjs",
     "test:bulk-archive": "node scripts/ui-bulk-archive.mjs",
     "test:executors": "node scripts/ui-executor-agents.mjs",
+    "test:executor-auto": "node scripts/ui-executor-auto-review.mjs",
     "test:executor-nav": "node scripts/ui-executor-nav.mjs",
     "test:mcp": "node scripts/ui-mcp.mjs",
     "test:mcp-host": "node scripts/ui-mcp-host.mjs",
@@ -116,12 +117,17 @@
     "test:app-updates-host": "node scripts/ui-app-updates-host.mjs",
     "test:conversation-outline": "node scripts/ui-conversation-outline.mjs",
     "test:quote-results": "node scripts/ui-quote-results.mjs",
-    "test:parallel-activity": "node scripts/ui-parallel-activity.mjs"
+    "test:parallel-activity": "node scripts/ui-parallel-activity.mjs",
+    "test:remote-control-host": "node scripts/ui-remote-control-host.mjs",
+    "test:phone-access": "node scripts/ui-phone-access.mjs",
+    "test:relay-connection": "node scripts/ui-relay-connection.mjs",
+    "test:phone-pult": "node scripts/ui-phone-pult-channel.mjs"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.278",
     "@iarna/toml": "^2.2.5",
     "lucide-react": "^0.468.0",
+    "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.1.0",

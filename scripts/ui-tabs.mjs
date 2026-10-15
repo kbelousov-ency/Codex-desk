@@ -294,6 +294,10 @@ try {
   await waitUntil(async () => await streamCount(idB) > beforeReconnect, 'B continues through A reconnect');
   assert.equal(requests(await logFor(projectB), 'turn/interrupt', pidB).length, 0);
   await send(idA, 'Второй запрос PROJECT_A', 'PROJECT_A');
+  // Explicit refreshModels reconnect replaces the CLI process. Close/cancel must
+  // inspect the process that accepted this turn, not the original bootstrap PID.
+  const reconnectedPidA = requests(await logFor(projectA), 'turn/start').at(-1).pid;
+  fixturePids.add(reconnectedPidA);
   await assertLayout();
   await page.screenshot({ path: path.join(runDir, 'tabs-project-a.png') });
   await activate(idB);
@@ -309,10 +313,10 @@ try {
   await confirmation.waitFor();
   await confirmation.getByRole('button', { name: 'Отмена', exact: true }).click();
   assert.equal((await workspace()).sessions.length, 2);
-  assert.ok(isAlive(pidA));
+  assert.ok(isAlive(reconnectedPidA));
   await closeTab(idA);
   await confirmation.getByRole('button', { name: 'Остановить и закрыть', exact: true }).click();
-  await waitUntil(async () => (await workspace()).sessions.length === 1 && !isAlive(pidA), 'A process closes with its tab');
+  await waitUntil(async () => (await workspace()).sessions.length === 1 && !isAlive(reconnectedPidA), 'A process closes with its tab');
   assert.equal(await activeId(), idB);
   assert.ok(isAlive(pidB));
   assert.equal(await stopButton().isVisible(), true);

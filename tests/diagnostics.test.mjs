@@ -18,6 +18,18 @@ function readEntries(directory) {
     fs.readFileSync(path.join(directory, name), 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)));
 }
 
+test('workspace close flush failure keeps its event/code without exposing snapshot paths or drafts', t => {
+  const { diagnostics, directory } = fixture(t);
+  const error = Object.assign(new Error('PRIVATE_DRAFT E:/private/workspace-state.json'), { code: 'EPERM' });
+  diagnostics.error('workspace.saveFailed', error, { windowId: 1 });
+  const entry = readEntries(directory).at(-1);
+  assert.equal(entry.event, 'workspace.saveFailed');
+  assert.equal(entry.data.error.code, 'EPERM');
+  assert.equal(entry.data.windowId, 1);
+  assert.equal(JSON.stringify(entry).includes('PRIVATE_DRAFT'), false);
+  assert.equal(JSON.stringify(entry).includes('E:/private'), false);
+});
+
 test('run marker records an abnormal previous process without user data', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-desk-run-marker-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

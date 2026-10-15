@@ -139,7 +139,7 @@ try {
     assert.deepEqual(accessFields(params), expected(scenario.mode, true), `${scenario.name}: turn/start policy`);
     assert.equal(params.model, 'fixture-model'); assert.equal(params.effort, 'high');
     assert.deepEqual(params.input, [{ type: 'text', text: `Проверка режима ${scenario.name}`, text_elements: [] }], 'Only visible user input is sent');
-    assert.equal(await access().isDisabled(), true, 'Access cannot change during an active task');
+    assert.equal(await access().isDisabled(), false, 'Access can change during an active task');
     await finish();
     await page.getByRole('button', { name: 'Сохранённый диалог session-1', exact: true }).click();
     await page.getByText('Сохранённый ответ', { exact: true }).waitFor();
@@ -171,9 +171,17 @@ try {
   await activate('session-1'); assert.equal(await access().getAttribute('data-value'), 'rules');
   await access().click();
   await page.evaluate(() => { const state = window.__access.sessions['session-1']; state.activeTurn = { id: 'external-turn', status: 'inProgress', items: [] }; state.emit('turn/started', { turn: state.activeTurn }); });
-  await page.waitForFunction(() => document.querySelector('.session-view:not([hidden]) [aria-label="Режим доступа"]').disabled);
-  assert.equal(await menu().count(), 0, 'An incoming task closes an already open menu');
+  await page.waitForFunction(() => !document.querySelector('.session-view:not([hidden]) [aria-label="Режим доступа"]').disabled);
+  assert.equal(await menu().count(), 1, 'An incoming task keeps the access menu available');
+  const callsBeforeSwitch = (await calls()).length;
+  await menu().locator('[data-value="auto"]').click();
+  assert.equal(await access().getAttribute('data-value'), 'auto', 'Access changes while the task is running');
+  assert.equal((await calls()).length, callsBeforeSwitch, 'Changing access does not interrupt, steer or restart the active task');
   await finish();
+  await send('Проверка следующего запроса');
+  assert.deepEqual(accessFields(await lastCall('turn/start')), expected('auto', true));
+  await finish();
+  await select('rules');
   for (const size of [{ width: 1440, height: 900 }, { width: 940, height: 640 }, { width: 650, height: 600 }]) {
     await page.setViewportSize(size); await access().click();
     const box = await page.locator('.access-menu').evaluate(node => { const r = node.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return { top: r.top, left: r.left, right: r.right, bottom: r.bottom, height: innerHeight, width: innerWidth, visible: node.contains(hit) }; });
@@ -187,7 +195,7 @@ try {
   await activate('session-2'); await send('Ручной режим вкладки B');
   assert.deepEqual(accessFields(await lastCall('turn/start')), expected('workspace-write', true, 'C:/Fixtures/Another Project'));
   assert.deepEqual(errors, []);
-  console.log('PASS: four access choices; keyboard and full confirmation; explicit manual default and saved-full reset; legacy settings preserved; exact thread/start, turn/start and thread/resume policies; busy locks and tab isolation; 1440/940/650px layout. Fixture bridges only, no model or user data.');
+  console.log('PASS: four access choices; keyboard and full confirmation; explicit manual default and saved-full reset; legacy settings preserved; exact thread/start, turn/start and thread/resume policies; access switching during active work without restart and next-turn policy; tab isolation; 1440/940/650px layout. Fixture bridges only, no model or user data.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/access-failure.png' }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '(page unavailable)')); }
   throw error;

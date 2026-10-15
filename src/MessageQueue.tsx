@@ -30,7 +30,7 @@ export default function MessageQueue({ queue, blocked }: { queue: ReturnType<typ
     </div>
     {paused && queue.state.reason && <p className="queue-reason" role="status">{queue.state.reason}</p>}
     <ol>{queue.state.items.map((item, index) => <li key={item.id} data-queue-id={item.id} className={item.state === 'uncertain' ? 'uncertain' : ''}>
-      {queue.editing === item.id ? <QueueEdit key={item.id} item={item} save={(text, images) => queue.edit(item.id, text, images)} cancel={() => queue.setEditing(null)} /> : <>
+      {queue.editing === item.id && !item.remote ? <QueueEdit key={item.id} item={item} save={(text, images) => queue.edit(item.id, text, images)} cancel={() => queue.setEditing(null)} /> : <>
         <span className="queue-index" aria-hidden="true">{index + 1}</span>
         <div className="queue-content" data-tooltip={item.text}>
           <p>{item.text || 'Изображения'}</p>
@@ -39,8 +39,8 @@ export default function MessageQueue({ queue, blocked }: { queue: ReturnType<typ
         </div>
         <div className="queue-item-actions">
           {item.state === 'uncertain' && queue.inFlight !== item.id && <button type="button" className="queue-text-button" onClick={() => void queue.markWaiting(item.id)}><RotateCcw size={11} />Проверить отправку</button>}
-          <button type="button" className="queue-icon-button" aria-label="Изменить" data-tooltip="Изменить сообщение" disabled={Boolean(queue.inFlight) || item.state === 'uncertain'} onClick={() => queue.setEditing(item.id)}><Pencil size={12} /></button>
-          <button type="button" className="queue-icon-button" aria-label="Удалить из очереди" data-tooltip="Удалить из очереди" disabled={queue.inFlight === item.id} onClick={() => queue.remove(item.id)}><X size={13} /></button>
+          <button type="button" className="queue-icon-button" aria-label="Изменить" data-tooltip={item.remote ? 'Сообщение с телефона; для отмены отзовите доступ к беседе' : 'Изменить сообщение'} disabled={Boolean(queue.inFlight) || item.state === 'uncertain' || Boolean(item.remote)} onClick={() => queue.setEditing(item.id)}><Pencil size={12} /></button>
+          <button type="button" className="queue-icon-button" aria-label="Удалить из очереди" data-tooltip={item.remote ? 'Сообщение с телефона; для отмены отзовите доступ к беседе' : 'Удалить из очереди'} disabled={queue.inFlight === item.id || Boolean(item.remote)} onClick={() => queue.remove(item.id)}><X size={13} /></button>
         </div>
       </>}
     </li>)}</ol>

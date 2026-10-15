@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, writeFile, symlink, rm, access } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveReleaseChannel, resolveChannelPaths, initializeChannelProfile } from '../electron/release-channel.mjs';
+import { resolveReleaseChannel, resolveChannelPaths, initializeChannelProfile, phonePultEnabled } from '../electron/release-channel.mjs';
 
 const buildInfo = { version: '0.1.0', buildId: 'a'.repeat(64), builtAt: '2026-09-18T12:34:56.000Z' };
 
@@ -188,4 +188,11 @@ test('source settings symlinks and destination symlinks are never followed', asy
     if (kind === 'source') await assert.rejects(access(path.join(paths.userData, 'settings.json')));
   }
   assert.equal(await readFile(outside, 'utf8'), '{"model":"private-model"}');
+});
+
+test('the phone pult ships in every channel except stable, and unknown channels stay off', () => {
+  // Решение владельца 2026-10-15: stable обновляется без пульта, включение — отдельное решение.
+  assert.equal(phonePultEnabled('stable'), false);
+  for (const channel of ['nightly', 'experimental3', 'development']) assert.equal(phonePultEnabled(channel), true);
+  for (const value of ['', undefined, null, 'Stable', 'release', 'beta']) assert.equal(phonePultEnabled(value), false);
 });

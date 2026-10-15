@@ -75,6 +75,7 @@ export default function AccessSelect({ value, disabled, active = true, onChange,
     }}><ModeIcon size={13} aria-hidden="true" /><span>{label}</span><ChevronDown size={11} aria-hidden="true" className={visible ? 'access-chevron-open' : ''} /></button>
     {visible && <div className="access-menu">
       <div className="access-menu-header">Как подтверждать действия {engineName}?</div>
+      <div className="access-menu-header">Допуск применяется со следующего запроса. Уже запущенный ход не перезапускается.</div>
       {!currentMode && <p id={`${id}-legacy`} className="access-current-note"><strong>Сейчас: {label}</strong><span>Текущий режим сохраняется до выбора одного из вариантов.</span></p>}
       <div id={id} role="listbox" aria-label="Выберите режим доступа" aria-describedby={!currentMode ? `${id}-legacy` : undefined}>
         {modes.map((mode, index) => <div role="option" aria-selected={effective === mode.value} id={`${id}-${index}`} data-value={mode.value} key={mode.value} className={`access-option ${highlight === index ? 'highlighted' : ''} ${mode.value === 'danger-full-access' ? 'danger-option' : ''}`} onPointerMove={() => setHighlight(index)} onPointerDown={event => event.preventDefault()} onClick={() => choose(index)}>

@@ -33,7 +33,11 @@ import { readAttachment, hydrateAttachmentPreviews } from './attachments.mjs';
 import { SettingsStore, WorkspaceStore, WindowSession, cleanSettings, sessionForEvent, windowForEvent } from './window-session.mjs';
 import { ApprovalCatalog } from './approval-catalog.mjs';
 import { createDiagnostics } from './diagnostics.mjs';
-import { resolveReleaseChannel, resolveChannelPaths, initializeChannelProfile } from './release-channel.mjs';
+import { createRemoteControl } from './remote-control.mjs';
+import { createRemoteControlHost } from './remote-control-host.mjs';
+import { removeLegacyPhoneBotData } from './phone-bot-migration.mjs';
+import { createRemoteBridgeService } from './remote-bridge/service.mjs';
+import { resolveReleaseChannel, resolveChannelPaths, initializeChannelProfile, phonePultEnabled } from './release-channel.mjs';
 import { createNightlyUpdate } from './nightly-update.mjs';
 import { captureUpdateCheckpoint, createUpdateCheckpoint } from './update-checkpoint.mjs';
 import { captureWorkspaceState, createWorkspaceState, createWorkspaceSaveHandshake } from './workspace-state.mjs';
@@ -79,6 +83,10 @@ catch {
 }
 const windowAppearance = applicationWindowAppearance(releaseInfo.channel);
 const routerOnly = releaseInfo.channel === 'experimental3';
+// Рубильник телефонного пульта: в stable выключен (решение владельца 2026-10-15).
+// CODEX_DESK_TEST_CHANNEL подменяет ТОЛЬКО этот признак и только в непакованном тестовом запуске.
+const phonePult = phonePultEnabled(!app.isPackaged && process.env.CODEX_DESK_TEST === '1' && process.env.CODEX_DESK_TEST_CHANNEL
+  ? process.env.CODEX_DESK_TEST_CHANNEL : releaseInfo.channel);
 const channelPaths = resolveChannelPaths({ appData: app.getPath('appData'), channel: releaseInfo.channel, dataDirOverride: process.env.CODEX_DESK_DATA_DIR });
 const standardChannelPaths = resolveChannelPaths({ appData: app.getPath('appData'), channel: releaseInfo.channel });
 const isolatedProfile = path.resolve(channelPaths.userData).toLowerCase() !== path.resolve(standardChannelPaths.userData).toLowerCase();
@@ -296,6 +304,16 @@ const workspaceSave = createWorkspaceSaveHandshake({
   save: (record, snapshot) => workspaceState.save(captureWorkspaceState(snapshot, record.sessions)),
 });
 const updateAllowedChannels = new Set(['host:completeWorkspaceSave', 'host:completeUpdatePrepare', 'host:completeUpdateRestore', 'host:getUpdateStatus', 'host:decideUpdate', 'host:forceUpdate', 'host:getBuildInfo', 'host:getReleaseNotes', 'host:acknowledgeReleaseNotes', 'host:getDiagnosticsStatus', 'host:exportDiagnostics', 'host:openDiagnosticsFolder', 'host:getNotificationSettings', 'host:setNotificationContext', 'host:notifySession', 'host:getWindowFocus']);
+export const remoteControl = createRemoteControl({ userData: channelPaths.userData });
+const remoteHost = createRemoteControlHost({ controller: remoteControl, windows,
+  assertAllowed: (record, session) => {
+    if (quitting || updateFrozen || record.workspaceClosing || record.rendererGone || record.window.isDestroyed()
+      || record.closingProjects.has(projectKey(session.currentCwd)) || setupService?.busy || setupAuth.activeProvider
+      || [...rollbackReservations].some(cwd => pathsOverlap(cwd, session.currentCwd))) throw new Error('REMOTE_BLOCKED: На компьютере выполняется локальное действие.');
+    session.assertLocalControl();
+  },
+});
+let relayBridgeService;
 const projectKey = cwd => process.platform === 'win32' ? path.resolve(cwd).toLowerCase() : path.resolve(cwd);
 
 function updateBusy() {
@@ -415,12 +433,14 @@ function addSession(record, settings) {
     // The tab can change agent in place, so the profile is the one in force at save time, not at creation.
     persistSettings: patch => Promise.all([settingsStore.updateProvider(session.settings.provider || 'codex', patch), ...(patch.cwd ? [workspaceStore.addProject(patch.cwd)] : [])]),
     send: (type, data) => {
+      remoteHost.observe(id, type, data);
       const win = record.window;
       if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
         win.webContents.send('codex:event', { sessionId: id, defaultSession: record.defaultSessionId === id, type, data });
       }
     },
   });
+  session.onRemoteInvalidated = () => { void remoteHost.invalidate(id).catch(() => {}); };
   record.sessions.set(id, session);
   record.defaultSessionId ??= id;
   diagnostics.record('info', 'session.created', { windowId: record.window.webContents.id, sessionId: diagnostics.id(id), projectId: diagnostics.id(session.currentCwd) });
@@ -428,6 +448,32 @@ function addSession(record, settings) {
 }
 
 function installHandlers() {
+  // Local-only control of the relay bridge, with no access to the remote facade and no method
+  // that could grant a conversation: permissions are issued on the computer only.
+  for (const method of ['getState', 'setRelayUrl', 'setLabel', 'setEnabled', 'startPairing', 'confirmPairing', 'cancelPairing', 'unlink']) {
+    ipcMain.handle(`relayBridge:${method}`, (event, ...args) => {
+      windowForEvent(windows, event);
+      if (!phonePult) throw new Error('Телефонный пульт недоступен в этой сборке.');
+      if (!relayBridgeService || quitting) throw new Error('Служба подключения к серверу недоступна.');
+      return relayBridgeService.local[method](...args);
+    });
+  }
+  const remoteHandler = (name, count, fn) => ipcMain.handle(`remoteControl:${name}`, (event, ...args) => {
+    const record = windowForEvent(windows, event), id = args[count];
+    if (typeof id !== 'string' || !id || !record.sessions.has(id)) throw new Error('REMOTE_BLOCKED: Нет точного адреса беседы.');
+    return fn(record, id, ...args.slice(0, count));
+  });
+  remoteHandler('getThreadAccess', 0, (record, id) => remoteHost.getAccess(record, id));
+  remoteHandler('setThreadAccess', 1, async (record, id, options) => {
+    const result = await remoteHost.setAccess(record, id, options);
+    // Revoking a grant is silent in the core's event stream, so the relay is told explicitly.
+    relayBridgeService?.refresh();
+    return result;
+  });
+  remoteHandler('publishState', 1, (record, id, snapshot) => remoteHost.publish(record, id, snapshot));
+  remoteHandler('publishAnswer', 1, (record, id, answer) => remoteHost.publishAnswer(record, id, answer));
+  remoteHandler('completeDispatch', 1, (record, id, response) => remoteHost.complete(record, id, response));
+
   handle('host:getRouterUsage', 1, ({ session }, options) => readSessionRouterUsage({ session, options, routerClient: routerUsage, portalClient: portalLimits, routerOnly }));
   workspaceHandle('skills:list', (_record, _event, options) => agentSkills.list(options || {}));
   workspaceHandle('memoryRules:preview', (_record, _event, provider) => setupService.previewMemoryRules(provider));
@@ -700,7 +746,8 @@ function installHandlers() {
   handle('host:reloadMcp', 0, ({ session }) => session.mcpRuntime());
   handle('host:checkMcp', 0, ({ session }) => session.mcpRuntime(true));
   handle('codex:start', 1, ({ session }, options) => session.start(options));
-  handle('codex:request', 2, ({ session }, method, params) => session.request(method, params));
+  handle('codex:request', 2, (scoped, method, params) => params?._remote
+    ? remoteHost.request(windows.get(scoped.window.webContents.id), scoped.sessionId, method, params) : scoped.session.request(method, params));
   handle('codex:respond', 3, ({ session }, id, result, options) => session.respond(id, result, options));
   handle('host:listApprovalRules', 0, ({ session }) => session.listApprovalRules());
   handle('host:dropApprovalRule', 1, ({ session }, number) => session.dropApprovalRule(number));
@@ -1231,7 +1278,7 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
   const win = new BrowserWindow({
     width: 1480, height: 960, minWidth: 940, minHeight: 640,
     ...windowAppearance, icon: windowIcon, show: false, autoHideMenuBar: true,
-    webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+    webPreferences: { preload: path.join(here, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, additionalArguments: [`--kuzmich-phone-pult=${phonePult ? '1' : '0'}`] },
   });
   if (process.platform === 'win32') win.setAppDetails({
     appId: identity.appId, appIconPath: shellIcon, appIconIndex: 0,
@@ -1243,7 +1290,8 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
     record.restoration = { kind: restoreKind, activeIndex: checkpoint.activeIndex, tabs: checkpoint.tabs.map(tab => {
       if (tab.archivedThread) return { id: `archive:${tab.archivedThread.id}`, cwd: tab.archivedThread.cwd || '', archivedThread: tab.archivedThread, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor, pinned: tab.pinned };
       const created = addSession(record, tab.settings);
-      return { ...created, thread: tab.thread, draft: tab.draft, attachments: tab.attachments, settings: tab.settings, queue: tab.queue, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor, preservedDraft: tab.preservedDraft, pinned: tab.pinned, pendingMessage: tab.pendingMessage };
+      return { ...created, thread: tab.thread, draft: tab.draft, attachments: tab.attachments, settings: tab.settings, queue: tab.queue, scrollTop: tab.scrollTop, scrollAnchor: tab.scrollAnchor, preservedDraft: tab.preservedDraft, pinned: tab.pinned, pendingMessage: tab.pendingMessage,
+        childOf: tab.childOf, childLabel: tab.childLabel, executorAutoReview: tab.executorAutoReview };
     }) };
   } else if (cwd) addSession(record, { ...settings, cwd });
   const contentsId = win.webContents.id;
@@ -1288,7 +1336,9 @@ async function createWindow(initialSettings, checkpoint = null, restoreKind = 'w
     event.preventDefault();
     if (record.workspaceClosing) return;
     record.workspaceClosing = true;
-    void workspaceSave.request(record).then(async () => { await Promise.allSettled([...rollbackJobs]); await workspaceState.flush(); await bookmarks.flush(); }).finally(() => {
+    void workspaceSave.request(record).then(async () => { await Promise.allSettled([...rollbackJobs]); await workspaceState.flush(); await bookmarks.flush(); }).catch(error => {
+      diagnostics.error('workspace.saveFailed', error, { windowId: contentsId });
+    }).finally(() => {
       record.closeReady = true;
       if (!win.isDestroyed()) win.close();
     });
@@ -1419,6 +1469,23 @@ else {
     releaseNotesService = new ReleaseNotesService({ channel: releaseInfo.channel, currentVersion: releaseInfo.version,
       releases: releaseNotes, store: releaseNotesStore, isNewProfile: setupInitiallyNew });
     diagnostics.record(initialized.status === 'failed' ? 'warn' : 'info', 'app.profile', { success: initialized.status !== 'failed', count: initialized.copied.length });
+    await remoteControl.start().catch(() => { diagnostics.record('error', 'remoteControl.storageUnavailable', {}); });
+    // Stage 5 of the plan: the personal bot is out of the build, so its token must not stay on disk.
+    try {
+      const migration = await removeLegacyPhoneBotData({ userData: channelPaths.userData });
+      if (migration.removed.length || migration.errors.length) {
+        diagnostics.record(migration.errors.length ? 'warn' : 'info', 'phoneBot.legacyDataRemoved',
+          { count: migration.removed.length, success: !migration.errors.length });
+      }
+    } catch (error) { diagnostics.error('phoneBot.legacyDataRemoved', error); }
+    if (phonePult) {
+      relayBridgeService = createRemoteBridgeService({ userData: channelPaths.userData, safeStorage, remote: remoteControl.remote,
+        appVersion: releaseInfo.version, channel: releaseInfo.channel });
+      relayBridgeService.local.onState(state => {
+        for (const { window } of windows.values()) if (!window.isDestroyed()) window.webContents.send('relayBridge:state', state);
+      });
+      await relayBridgeService.start();
+    } else diagnostics.record('info', 'relayBridge.channelDisabled', { channel: releaseInfo.channel });
     diagnostics.record('info', 'app.ready'); installHandlers();
     let checkpoint = null;
     let restoreKind = 'workspace';
@@ -1463,6 +1530,9 @@ else {
       await setupService?.waitForIdle();
       for (const record of windows.values()) record.portalSetup?.dispose();
       setupService?.dispose();
+      await relayBridgeService?.stop();
+      await remoteHost.stop();
+      await remoteControl.stop();
       // Capture while sessions still exist; the final quit then skips window handshakes.
       const records = [...windows.values()];
       if (!updateFrozen) await Promise.all(records.map(record => {

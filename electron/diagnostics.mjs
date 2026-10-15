@@ -21,7 +21,7 @@ const EVENTS = new Set([
   'window.rendererGone', 'window.recovery', 'window.preloadError', 'window.openFailed',
   'session.created', 'session.disposed', 'ipc.start', 'ipc.complete', 'ipc.failed',
   'renderer.error', 'diagnostics.run', 'diagnostics.exported', 'diagnostics.exportFailed', 'update.failed',
-  'notification.failed',
+  'notification.failed', 'workspace.saveFailed',
   'transport.start', 'transport.ready', 'transport.end', 'transport.exit', 'transport.diagnostic',
   'rpc.start', 'rpc.complete', 'rpc.failed', 'rpc.respond', 'rpc.serverRequest', 'rpc.notification',
   'codex.notification', 'codex.serverRequest', 'codex.version', 'claude.version',

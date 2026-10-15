@@ -214,6 +214,7 @@ export class WindowSession {
     this.diagnostics = diagnostics;
     this.diagnosticContext = diagnosticContext;
     this.currentThreadId = null;
+    this.remoteRuntimeId = randomUUID();
     this.pendingThreadIds = new Map();
     this.messageReceipts = new Map();
     this.compactingThreads = new Set();
@@ -236,6 +237,11 @@ export class WindowSession {
 
   assertActive(generation = this.generation) {
     if (this.disposed || generation !== this.generation) throw new Error('Сеанс окна завершён.');
+  }
+
+  invalidateRemoteControl() {
+    this.remoteRuntimeId = randomUUID();
+    this.onRemoteInvalidated?.();
   }
 
   assertLocalControl() {
@@ -392,6 +398,7 @@ export class WindowSession {
     const owned = (provider === 'claude' ? this.createClaudeClient : this.createClient)({ executable: nextExecutable, cwd, ...(provider === 'claude' ? { settings: this.settings, attachmentsDirectory: this.attachmentsDirectory, history: this.claudeHistory, ...connection } : { ...(connection.env ? { env: connection.env } : {}), ...(connection.configOverrides ? { configOverrides: connection.configOverrides } : {}) }), ...(this.diagnostics ? {
       diagnostics: this.diagnostics, diagnosticContext: { ...this.diagnosticContext, projectId: this.diagnostics.id(cwd) },
     } : {}) });
+    this.invalidateRemoteControl();
     this.client = owned;
     const current = () => !this.disposed && generation === this.generation && owned === this.client;
     const checkCurrent = () => {
@@ -420,6 +427,7 @@ export class WindowSession {
         }
         if (event === 'notification' && data.method === 'serverRequest/resolved') this.requests.delete(data.params?.requestId);
         if (event === 'notification' && data.method === 'thread/started' && data.params?.thread?.id) {
+          if (this.currentThreadId !== data.params.thread.id) this.invalidateRemoteControl();
           this.currentThreadId = data.params.thread.id;
           this.threadActions?.remember(data.params.thread);
         }
@@ -438,6 +446,7 @@ export class WindowSession {
           for (const [key, receipt] of this.messageReceipts) if (key.startsWith(`${data.params.threadId}:`) && receipt.turnId === data.params.turn.id) receipt.status = data.params.turn.status;
         }
         if (event === 'status' && ['error', 'stopped'].includes(data.state)) {
+          this.invalidateRemoteControl();
           this.client = null;
           this.bootstrap = null;
           this.requests.clear();
@@ -525,6 +534,7 @@ export class WindowSession {
       if (found) { this.rememberMessage(params.threadId, params.clientUserMessageId, found); return found; }
       return { accepted: false, rejected: false };
     }
+    if (['thread/start', 'thread/resume', 'thread/fork'].includes(method)) this.invalidateRemoteControl();
     // Project operations and history remain bound to this tab's working folder.
     if (projectMethods.has(method)) params = { ...params, cwd: this.currentCwd };
     if (this.settings.provider !== 'claude' && this.connectionProfile?.modelProvider && ['thread/start', 'thread/resume', 'thread/fork'].includes(method)) params = { ...params, modelProvider: this.connectionProfile.modelProvider };
@@ -798,6 +808,7 @@ export class WindowSession {
   }
 
   stop() {
+    this.invalidateRemoteControl();
     this.mcpConfigService?.dispose(); this.mcpConfigService = null;
     // Invalidates both in-flight awaits and queued boots, including renderer crashes.
     this.generation += 1;

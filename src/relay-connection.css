@@ -1,0 +1,27 @@
+.relay-connection{margin:14px 0;padding:14px 16px;border:1px solid #3c493d;border-radius:9px;background:#20281f}
+.relay-connection h3{display:flex;align-items:center;gap:6px;margin:0 0 10px;font-size:12px;font-weight:550;color:#c8d6c8}
+.relay-connection>p{margin:10px 0;font-size:11px;line-height:1.75;color:#92a696}
+.relay-connection>p.inline-error{color:#e1ad92;overflow-wrap:anywhere}
+.relay-connection>p.relay-connection-notice{color:#bdcaaa;overflow-wrap:anywhere}
+.relay-connection-status{display:flex;align-items:flex-start;gap:7px;font-size:12px;line-height:1.6;color:#c4d2c6}
+.relay-connection-status>svg{margin-top:3px;flex-shrink:0}
+.relay-connection-status small{display:block;font-size:11px;color:#92a696;overflow-wrap:anywhere}
+.relay-connection-toggle{cursor:pointer}
+.relay-connection-toggle input{accent-color:#bbd6a2;flex-shrink:0}
+.relay-connection-block{margin-top:16px;padding-top:14px;border-top:1px solid #3c493d}
+.relay-connection-block h4{display:flex;align-items:center;gap:6px;margin:0 0 10px;font-size:12px;font-weight:550;color:#c8d6c8}
+.relay-connection-block>p{margin:10px 0;font-size:11px;line-height:1.75;color:#92a696}
+.relay-connection-block>p.muted{font-size:10px}
+.relay-connection code{font:10px/1.6 'Cascadia Code',Consolas,monospace;color:#b9c9bc;background:#171e18;padding:1px 4px;border-radius:3px}
+.relay-connection-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:12px}
+.relay-connection-form .text-input{flex:1;min-width:150px;font-family:'Cascadia Code',Consolas,monospace}
+.relay-connection-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.relay-connection-actions a.secondary-button{text-decoration:none}
+.relay-connection-code{margin-top:12px;padding:12px 14px;border:1px solid #5d6b4a;border-radius:8px;background:#242d20}
+.relay-connection-qr{display:block;margin:0 auto 10px;border-radius:6px;background:#e8f0e4;image-rendering:pixelated}
+.relay-connection-code code{display:block;background:none;padding:0;font:600 13px/1.7 'Cascadia Code',Consolas,monospace;color:#d9e8c8;overflow-wrap:anywhere;user-select:all}
+.relay-connection-code small{display:block;margin-top:7px;font-size:10px;line-height:1.7;color:#92a696}
+.relay-connection-claim{margin-top:12px;padding:12px 14px;border:1px solid #7d7a4a;border-radius:8px;background:#2b2b1f}
+.relay-connection-claim strong{display:block;font-size:12px;color:#e3e2c3}
+.relay-connection-claim small{display:block;margin-top:5px;font-size:10px;line-height:1.7;color:#a8a98c;overflow-wrap:anywhere}
+@media(max-width:700px){.relay-connection-form .text-input{min-width:0;flex-basis:100%}}

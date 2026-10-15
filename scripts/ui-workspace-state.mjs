@@ -136,7 +136,7 @@ try {
   assert.equal(await input().inputValue(), 'Черновик A');
   assert.equal(await view().locator('.attachment img').getAttribute('alt'), 'draft.png');
   await page.evaluate(() => window.__workspace.releaseHistory());
-  await view().getByText('Исторический запрос 35', { exact: true }).waitFor();
+  await view().locator('.chat-scroll').getByText('Исторический запрос 35', { exact: true }).waitFor();
   await page.waitForFunction(() => Math.abs(document.querySelector('.session-view:not([hidden]) .chat-scroll').scrollTop - 620) < 3);
   assert.equal(await view().getByRole('combobox', { name: 'Модель', exact: true }).getAttribute('data-value'), 'fixture-b');
   assert.equal(await view().getByRole('combobox', { name: 'Глубина размышлений', exact: true }).getAttribute('data-value'), 'high');
@@ -149,7 +149,7 @@ try {
   // User scroll is saved and survives switching to an archived tab and back.
   await view().locator('.chat-scroll').evaluate(el => { el.scrollTop = 910; el.dispatchEvent(new Event('scroll', { bubbles: true })); });
   await activate('archive:archived');
-  await view().getByText('Исторический запрос 35', { exact: true }).waitFor();
+  await view().locator('.chat-scroll').getByText('Исторический запрос 35', { exact: true }).waitFor();
   await page.waitForFunction(() => Math.abs(document.querySelector('.session-view:not([hidden]) .chat-scroll').scrollTop - 310) < 3);
   await activate('session-a');
   await page.waitForFunction(() => Math.abs(document.querySelector('.session-view:not([hidden]) .chat-scroll').scrollTop - 910) < 3);
@@ -166,7 +166,7 @@ try {
   assert.equal(saved.tabs[0].thread.id, 'dialogue-a');
   assert.equal(saved.tabs[0].thread.turns, undefined, 'Workspace snapshots reference history rather than copying messages');
   assert.deepEqual(saved.tabs[0].attachments.map(item => item.name), ['draft.png']);
-  assert.deepEqual(saved.tabs[0].settings, { model: 'fixture-b', effort: 'high', access: 'danger-full-access' });
+  assert.deepEqual(saved.tabs[0].settings, { connectionSource: 'inherited', model: 'fixture-b', effort: 'high', access: 'danger-full-access' });
   assert.equal(saved.tabs[1].archivedThread.id, 'archived');
   assert.equal(saved.tabs[1].scrollTop, 310);
   assert.equal(saved.tabs[2].thread, undefined, 'A new unsent tab must not create a thread');
@@ -227,7 +227,7 @@ try {
   await page.goto(`${url}/?edit=1`);
   await page.waitForFunction(() => typeof window.__workspace.releaseHistory === 'function');
   await page.evaluate(() => window.__workspace.releaseHistory());
-  await view().getByText('Исторический запрос 35', { exact: true }).waitFor();
+  await view().locator('.chat-scroll').getByText('Исторический запрос 35', { exact: true }).waitFor();
   await view().getByText('Редактирование сообщения', { exact: true }).waitFor();
   assert.equal(await input().inputValue(), 'Исправление прошлого сообщения');
   assert.equal(await view().locator('.attachment img').getAttribute('alt'), 'edited.png');
@@ -253,7 +253,7 @@ try {
   await page.waitForFunction(() => typeof window.__workspace.releaseHistory === 'function');
   await page.evaluate(() => window.__workspace.releaseHistory());
   await page.waitForFunction(() => window.__workspace.requests.some(request => request.method === 'thread/items/list' && request.params.cursor === 'older-page'));
-  await view().getByText('Исторический запрос 4', { exact: true }).waitFor();
+  await view().locator('.chat-scroll').getByText('Исторический запрос 4', { exact: true }).waitFor();
   await page.waitForFunction(() => {
     const scroller = document.querySelector('.session-view:not([hidden]) .chat-scroll');
     const anchor = scroller?.querySelector('.message[data-item-id="answer-3"]');

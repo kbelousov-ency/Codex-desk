@@ -247,8 +247,8 @@ try {
   await menu().waitFor({ state: 'hidden' });
   await page.evaluate(id => window.__panels.sessions[id].emit('turn/started', { threadId: 'saved-history', turn: { id: 'busy-turn', status: 'inProgress', items: [] } }), await activeId());
   await access().waitFor({ state: 'visible' });
-  await page.waitForFunction(id => document.querySelector(`.session-view[data-session-id="${id}"] [aria-label="Режим доступа"]`).disabled, await activeId());
-  assert.equal(await access().isDisabled(), true, 'Access remains locked while a turn is running');
+  await page.waitForFunction(id => !document.querySelector(`.session-view[data-session-id="${id}"] [aria-label="Режим доступа"]`).disabled, await activeId());
+  assert.equal(await access().isDisabled(), false, 'Access remains available while a turn is running');
   await page.evaluate(id => window.__panels.sessions[id].emit('turn/completed', { threadId: 'saved-history', turn: { id: 'busy-turn', status: 'completed', items: [], error: null } }), await activeId());
   await ready();
   for (const size of [{ width: 1440, height: 900 }, { width: 940, height: 640 }]) {

@@ -9,7 +9,7 @@ import type { ExecutorAction, ExecutorThread } from './types';
  * the workspace is busy or while that conversation is working. An executor that has not sent
  * anything yet has no conversation at all, so only its tab can be closed. «Отвязать от
  * родителя» drops the navigation link alone — the dialog itself stays in the folder. */
-export default function ExecutorTabMenu({ thread, title, x, y, locked = false, onAction, onClose }: {
+export default function ExecutorTabMenu({ thread, title, x, y, locked = false, onAction, onClose, onExcludeReview }: {
   thread: ExecutorThread;
   title: string;
   x: number;
@@ -18,6 +18,7 @@ export default function ExecutorTabMenu({ thread, title, x, y, locked = false, o
   locked?: boolean;
   onAction(action: ExecutorAction): void;
   onClose(): void;
+  onExcludeReview?(): void;
 }) {
   const menu = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -45,5 +46,6 @@ export default function ExecutorTabMenu({ thread, title, x, y, locked = false, o
     else if (event.key === 'Tab') onClose();
   }}>
     {entries.map(({ action, label, icon: Icon, disabled, hint }) => <button type="button" role="menuitem" key={action} disabled={disabled} data-executor-action={action} data-tooltip={hint} onClick={() => { onClose(); onAction(action); }}><Icon size={14} />{label}</button>)}
+    {onExcludeReview && <button type="button" role="menuitem" onClick={() => { onClose(); onExcludeReview(); }}><Link2Off size={14} />Не ждать в этой проверке</button>}
   </div>, document.body);
 }
