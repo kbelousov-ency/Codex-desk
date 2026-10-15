@@ -160,6 +160,17 @@ export function AppUpdateDialog({ control, onClose }: { control: UpdateControl; 
     document.addEventListener('keydown', onKey, true);
     return () => { document.removeEventListener('keydown', onKey, true); if (previous?.isConnected) previous.focus(); };
   }, []);
+  // Прошлый отказ висит в окне до следующей проверки: пользователь успевает
+  // исправить причину (войти в Portal, включить VPN) и видит устаревший текст.
+  // Открытие окна — явное действие, поэтому проверяем заново один раз.
+  // Решение принимается ОДИН раз, по состоянию на момент открытия: ошибка,
+  // полученная при открытом окне, — свежая, её нельзя стирать перепроверкой.
+  const recheck = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (recheck.current !== null || !control.status) return;
+    recheck.current = control.status.phase === 'error' && !control.pending;
+    if (recheck.current) control.check();
+  }, [control]);
   const busy = Boolean(pending || status?.phase === 'checking' || status?.phase === 'downloading');
   const local = status && status.channel !== 'stable';
   return <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) onClose(); }}>

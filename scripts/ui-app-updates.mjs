@@ -262,6 +262,14 @@ try {
   await page.evaluate(() => window.__appUpdates.emit({ phase: 'error', needsPortalLogin: false, error: 'Доступ к роутеру не подтверждён в Portal. Обновления пока недоступны.' }));
   await dialog().getByText('Доступ к роутеру не подтверждён в Portal. Обновления пока недоступны.', { exact: true }).waitFor();
   assert.equal(await dialog().getByRole('button', { name: 'Войти в Portal', exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => window.__appUpdates.checks), 1, 'ошибка при открытом окне не перепроверяется сама');
+  // Устаревший отказ: первая автоматическая проверка падает до входа в Portal,
+  // пользователь входит, открывает окно — и видит свежий результат, а не старый текст.
+  await close();
+  await page.evaluate(() => window.__appUpdates.emit({ phase: 'error', error: 'Проверьте подключение к сети компании и повторите.' }));
+  await open();
+  await page.waitForFunction(() => window.__appUpdates.checks === 2);
+  await dialog().getByText('Установлена актуальная версия.', { exact: true }).waitFor();
   await page.close();
 
   page = await createPage({ missing: true });
