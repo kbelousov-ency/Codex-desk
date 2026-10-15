@@ -116,6 +116,8 @@ export type AppUpdateStatus = {
   skippedVersion?: string;
   /** Тихая установка доступна только упакованному Release. */
   canApply?: boolean;
+  /** Проверка упёрлась в отсутствующий вход в Portal — окно предлагает войти. */
+  needsPortalLogin?: boolean;
   progress?: { received: number; total: number };
   /** Итог прошлой попытки тихой установки, прочитанный при запуске. */
   outcome?: { state: 'applied'; version: string } | { state: 'failed'; version: string; reason: 'ok' | 'timeout' | 'error' | 'unknown'; installerPath: string | null };

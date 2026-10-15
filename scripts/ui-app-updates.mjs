@@ -28,7 +28,7 @@ try {
       const channel = options.channel || 'stable';
       const saved = JSON.parse(localStorage.getItem('fixture-updates') || '{}');
       const state = window.__appUpdates = {
-        listeners: new Set(), checks: 0, downloads: 0, installs: 0, acks: 0, reveals: 0, writes: [],
+        listeners: new Set(), checks: 0, downloads: 0, installs: 0, acks: 0, reveals: 0, logins: 0, writes: [],
         failLoad: Boolean(options.failLoad), failSave: false, failDownload: false, failInstall: false,
         total: 120 * 1024 * 1024,
         status: { currentVersion: '0.2.0', channel, supported: channel === 'stable', enabled: true, phase: channel === 'stable' ? 'up-to-date' : 'disabled', checkedAt: '2026-09-21T10:20:00Z', canApply: Boolean(options.canApply), ...saved },
@@ -76,6 +76,16 @@ try {
         },
         async acknowledgeAppUpdateOutcome() { state.acks++; state.emit({ outcome: undefined }); return structuredClone(state.status); },
         async revealAppUpdateFile() { state.reveals++; return structuredClone(state.status); },
+      };
+      // Вход в Portal живёт в мосте мастера настройки; окно обновлений вызывает его,
+      // потому что подключение роутера мастером сессию Portal не создаёт.
+      if (options.portalLogin) window.codex.setup = {
+        async state() { return { show: false }; },
+        async portalLogin() {
+          state.logins++;
+          state.emit({ phase: 'up-to-date', error: undefined, needsPortalLogin: false, checkedAt: '2026-09-21T11:30:00Z' });
+          return { state: 'signed-in' };
+        },
       };
       if (options.missing) for (const key of ['getAppUpdateStatus', 'onAppUpdateStatus', 'checkAppUpdates', 'setAppUpdatePreferences', 'openAppUpdateDownload', 'installAppUpdate', 'acknowledgeAppUpdateOutcome', 'revealAppUpdateFile']) delete window.codex[key];
     }, options);
@@ -237,12 +247,29 @@ try {
   await banner().getByText(/Не удалось обновить приложение/).waitFor();
   await page.close();
 
+  // Отказ «не выполнен вход» — единственный, который пользователь может исправить
+  // кнопкой. Мастер подключений роутера сессию Portal не создаёт.
+  page = await createPage({ portalLogin: true });
+  await open();
+  await page.evaluate(() => window.__appUpdates.emit({ phase: 'error', needsPortalLogin: true, error: 'Войдите в Portal, чтобы проверять обновления приложения.' }));
+  await dialog().getByText('Войдите в Portal, чтобы проверять обновления приложения.', { exact: true }).waitFor();
+  await dialog().getByRole('button', { name: 'Войти в Portal', exact: true }).click();
+  await page.waitForFunction(() => window.__appUpdates.logins === 1 && window.__appUpdates.checks === 1);
+  await dialog().getByText('Установлена актуальная версия.', { exact: true }).waitFor();
+  assert.equal(await dialog().getByRole('button', { name: 'Войти в Portal', exact: true }).count(), 0,
+    'после входа кнопка исчезает');
+  // Прочие отказы кнопку входа не показывают: нажимать там нечего.
+  await page.evaluate(() => window.__appUpdates.emit({ phase: 'error', needsPortalLogin: false, error: 'Доступ к роутеру не подтверждён в Portal. Обновления пока недоступны.' }));
+  await dialog().getByText('Доступ к роутеру не подтверждён в Portal. Обновления пока недоступны.', { exact: true }).waitFor();
+  assert.equal(await dialog().getByRole('button', { name: 'Войти в Portal', exact: true }).count(), 0);
+  await page.close();
+
   page = await createPage({ missing: true });
   await open();
   await dialog().getByText('Онлайн-обновления недоступны в этой сборке.', { exact: true }).waitFor();
   assert.equal(await banner().count(), 0);
   assert.deepEqual(errors, []);
-  console.log('PASS: online update events, status race, version, plain release notes, download action, silent install with progress and outcome notices, later/skip/re-enable, manual check with automatic off, error retries, keyboard/focus, compact layout, palette/badge entry and Nightly/dev/legacy bridge fallback. Fixture IPC only.');
+  console.log('PASS: online update events, status race, version, plain release notes, download action, silent install with progress and outcome notices, portal sign-in from the update dialog, later/skip/re-enable, manual check with automatic off, error retries, keyboard/focus, compact layout, palette/badge entry and Nightly/dev/legacy bridge fallback. Fixture IPC only.');
 } catch (error) {
   if (page && !page.isClosed()) { await page.screenshot({ path: 'artifacts/app-updates-failure.png' }).catch(() => {}); console.error(await page.locator('body').innerText().catch(() => '(page unavailable)')); }
   throw error;

@@ -102,7 +102,9 @@ test('проверка процесса различает одинаковые 
   await copyFile(process.execPath, application);
   const running = spawn(application, ['-e', 'setTimeout(() => {}, 120000)'], { windowsHide: true, stdio: 'ignore' });
   const finished = new Promise(resolve => running.once('exit', resolve));
-  context.after(async () => { running.kill(); await finished; await rm(temporary, { recursive: true, force: true }); });
+  // Windows освобождает файл образа не мгновенно после выхода процесса: без
+  // повторов уборка изредка падает с EBUSY и роняет весь набор.
+  context.after(async () => { running.kill(); await finished; await rm(temporary, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); });
   await new Promise(resolve => setTimeout(resolve, 1500));
   assert.equal(probe(application), 1);
   // Тот же файл по другому пути — не считается работающим: Release и Nightly

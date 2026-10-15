@@ -253,6 +253,9 @@ export class AppUpdateService {
     const controller = new AbortController();
     this.controller = controller;
     let timeout;
+    // Отличаем «не выполнен вход» от прочих отказов: только в этом случае
+    // пользователю есть что нажать, и окно обновлений показывает вход.
+    let needsPortalLogin = false;
     try {
       const attemptedAt = new Date(this.now()).toISOString();
       await this.store.markAttempt(attemptedAt);
@@ -263,7 +266,10 @@ export class AppUpdateService {
       // к продукту каталог не запрашивается вовсе.
       const portal = await this.portal.status();
       if (this.closed || generation !== this.generation) return { ...this.state };
-      if (portal?.state !== 'signed-in') throw new Error('Войдите в Portal, чтобы проверять обновления приложения.');
+      if (portal?.state !== 'signed-in') {
+        needsPortalLogin = true;
+        throw new Error('Войдите в Portal, чтобы проверять обновления приложения.');
+      }
       if (portal.keyState !== 'approved' || !(portal.products?.codex || portal.products?.claude)) {
         throw new Error('Доступ к роутеру не подтверждён в Portal. Обновления пока недоступны.');
       }
@@ -283,14 +289,14 @@ export class AppUpdateService {
       if (this.closed || generation !== this.generation) return { ...this.state };
       this.saved.checkedAt = checkedAt;
       this.lastSuccess = this.now();
-      return this.emit({ phase: update ? 'available' : 'up-to-date', checkedAt, error: undefined, ...RESET, ...update });
+      return this.emit({ phase: update ? 'available' : 'up-to-date', checkedAt, error: undefined, needsPortalLogin: false, ...RESET, ...update });
     } catch (error) {
       if (this.closed || generation !== this.generation) return { ...this.state };
       // Fetch errors can include network details; expose only our own bounded messages.
       const message = controller.signal.aborted ? 'Проверка заняла слишком много времени. Проверьте сеть и повторите.'
         : /^(Войдите в Portal|Доступ к роутеру|Сессия Portal|Portal |Каталог обновлений|Ответ Portal|Не удалось проверить Portal|Не удалось прочитать настройки)/.test(error?.message)
           ? error.message : 'Не удалось проверить обновления. Проверьте подключение к сети компании и повторите.';
-      return this.emit({ phase: 'error', error: message, ...RESET });
+      return this.emit({ phase: 'error', error: message, needsPortalLogin, ...RESET });
     } finally { this.clearTimer(timeout); if (this.controller === controller) this.controller = null; }
   }
   /** Скачивает установщик Portal-сессией в папку загрузок, сверяет размер и SHA-256. */

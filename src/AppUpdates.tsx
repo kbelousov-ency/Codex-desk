@@ -4,7 +4,7 @@ import { BuildDetails, useBuildInfo, useProductName } from './BuildInfo';
 import type { AppUpdateStatus } from './types';
 import './app-updates.css';
 
-type UpdateAction = { kind: 'load' | 'check' | 'download' | 'install' } | { kind: 'save'; patch: { enabled?: boolean; skippedVersion?: string | null } };
+type UpdateAction = { kind: 'load' | 'check' | 'download' | 'install' | 'login' } | { kind: 'save'; patch: { enabled?: boolean; skippedVersion?: string | null } };
 const causeText = (cause: unknown) => cause instanceof Error ? cause.message : String(cause);
 const megabytes = (value: number) => `${Math.round(value / 1024 / 1024)} МБ`;
 
@@ -50,12 +50,17 @@ export function useAppUpdates() {
       else if (action.kind === 'check') next = await window.codex.checkAppUpdates();
       else if (action.kind === 'save') next = await window.codex.setAppUpdatePreferences(action.patch);
       else if (action.kind === 'install') next = await window.codex.installAppUpdate();
+      else if (action.kind === 'login') {
+        // Вход в Portal открывает окно приложения; после него сразу повторяем проверку.
+        await window.codex.setup?.portalLogin();
+        next = await window.codex.checkAppUpdates();
+      }
       else await window.codex.openAppUpdateDownload();
       if (!mounted.current) return;
       if (next && revision.current === started) setStatus(next);
       if (action.kind === 'download') setDownloadOpened(true);
     } catch (cause) {
-      if (mounted.current) setFailure({ action, message: `${action.kind === 'save' ? 'Не удалось сохранить настройку.' : action.kind === 'download' ? 'Не удалось скачать установщик.' : action.kind === 'install' ? 'Не удалось обновить приложение.' : 'Не удалось проверить обновления.'} ${causeText(cause)}` });
+      if (mounted.current) setFailure({ action, message: `${action.kind === 'save' ? 'Не удалось сохранить настройку.' : action.kind === 'download' ? 'Не удалось скачать установщик.' : action.kind === 'install' ? 'Не удалось обновить приложение.' : action.kind === 'login' ? 'Не удалось войти в Portal.' : 'Не удалось проверить обновления.'} ${causeText(cause)}` });
     } finally {
       running.current = false;
       if (mounted.current) setPending(null);
@@ -84,6 +89,8 @@ export function useAppUpdates() {
     check: () => void perform({ kind: 'check' }),
     download: () => void perform({ kind: 'download' }),
     install: () => void perform({ kind: 'install' }),
+    signIn: () => void perform({ kind: 'login' }),
+    needsPortalLogin: Boolean(status?.needsPortalLogin) && typeof window.codex?.setup?.portalLogin === 'function',
     acknowledgeOutcome: () => { void window.codex?.acknowledgeAppUpdateOutcome?.(); },
     revealFile: () => { void window.codex?.revealAppUpdateFile?.(); },
     save: (patch: { enabled?: boolean; skippedVersion?: string | null }) => void perform({ kind: 'save', patch }),
@@ -171,7 +178,11 @@ export function AppUpdateDialog({ control, onClose }: { control: UpdateControl; 
           <label className="settings-row app-update-option"><span><strong>Проверять автоматически</strong><small>Периодически проверять новые версии в каталоге Portal и предлагать обновление.</small></span><input type="checkbox" aria-label="Проверять обновления автоматически" checked={status.enabled} disabled={busy} onChange={event => control.save({ enabled: event.target.checked })} /></label>
           <p className="app-update-last-check">Последняя проверка: <span>{lastChecked(status.checkedAt)}</span></p>
           <p className="app-update-status" role="status">{status.phase === 'checking' && <LoaderCircle className="spin" size={15} />}{statusText(status)}</p>
-          {status.phase === 'error' && status.error && !failure && <p className="app-update-error" role="alert">{status.error}</p>}
+          {status.phase === 'error' && status.error && !failure && <p className="app-update-error" role="alert">
+            <span>{status.error}</span>
+            {/* Подключение роутера мастером не создаёт сессию Portal: вход нужен отдельный. */}
+            {control.needsPortalLogin && <button type="button" className="secondary-button" disabled={busy} onClick={control.signIn}>Войти в Portal</button>}
+          </p>}
           {control.offered && <>
             {status.skippedVersion === status.latestVersion && <p className="app-update-note">Вы пропустили эту версию. Её по-прежнему можно скачать вручную.</p>}
             <div className="app-update-actions">

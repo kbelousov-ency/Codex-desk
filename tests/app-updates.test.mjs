@@ -118,20 +118,25 @@ test('check requires the portal session and sends only cookie-authorised metadat
 });
 
 test('signed-out, pending key and missing entitlement block the catalog request', async t => {
-  for (const [portalStatus, pattern] of [
-    [async () => ({ state: 'signed-out', keyState: 'none', products: {} }), /Войдите в Portal/],
-    [async () => ({ ...signedIn, keyState: 'pending' }), /Доступ к роутеру/],
-    [async () => ({ ...signedIn, products: { codex: false, claude: false } }), /Доступ к роутеру/],
-    [async () => { throw new Error('portal offline password=private'); }, /Не удалось проверить обновления/],
+  // needsPortalLogin отмечает единственный случай, который пользователь может
+  // исправить кнопкой: подключение роутера мастером сессию Portal не создаёт.
+  for (const [portalStatus, pattern, needsPortalLogin] of [
+    [async () => ({ state: 'signed-out', keyState: 'none', products: {} }), /Войдите в Portal/, true],
+    [async () => ({ ...signedIn, keyState: 'pending' }), /Доступ к роутеру/, false],
+    [async () => ({ ...signedIn, products: { codex: false, claude: false } }), /Доступ к роутеру/, false],
+    [async () => { throw new Error('portal offline password=private'); }, /Не удалось проверить обновления/, false],
   ]) {
     const f = await fixture(t, { portalStatus });
     const status = await f.service.check();
     assert.equal(status.phase, 'error');
     assert.match(status.error, pattern);
     assert.equal(status.error.includes('private'), false);
+    assert.equal(status.needsPortalLogin, needsPortalLogin);
     assert.equal(f.calls.length, 0, 'no catalog request without an authorised session');
     await assert.rejects(f.service.openDownload());
   }
+  const recovered = await fixture(t);
+  assert.equal((await recovered.service.check()).needsPortalLogin, false, 'успешная проверка снимает требование входа');
 });
 
 test('portal errors remain bounded and retryable, never a download', async t => {
